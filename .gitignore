@@ -1,4 +1,6 @@
 reference/*
+build*
+output*
 .vscode
 .qtcreator
 

@@ -40,11 +40,11 @@ ReverseModeling/
 要求 CMake 3.25+、Visual Studio 2022 的 v143 x64 C++ 工具链，以及配套 SDK。`RM_SDK_ROOT` 直接指向包含 `include`、`lib`、`share` 的 SDK 目录，不能指向它的父目录或其中的 `bin`、`lib` 子目录。建议在 VS 2022 Developer PowerShell 中运行：
 
 ```powershell
-cd D:/projectWQZ/ProjectManager/project/PointCloudReverseModeling/ReverseModeling
+cd D:/projectWQZ/PointCloudReverseModeling/ReverseModeling
 $env:RM_SDK_ROOT = 'D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20'
 
 # 编译 Qt 桌面程序及定向测试。
-cmake --preset windows-vs2022
+cmake --preset vc143-cpp20
 cmake --build --preset windows-release --target ReverseModeler ReverseServiceTests
 ctest --preset windows-release
 ```
@@ -61,11 +61,15 @@ ctest --preset windows-release
 
 Qt Creator 选择 `Windows / Qt desktop / installed SDK`。在项目的构建环境中设置 `RM_SDK_ROOT`，保存后重新运行 CMake；如果修改的是系统/用户环境变量，需要重新启动 Qt Creator。非空的 `RM_SDK_ROOT` 环境变量始终优先，并同步更新同名 CMake 缓存，旧路径不会遮蔽新的环境设置。仅在没有设置环境变量时，才使用 CMake 缓存或 `-DRM_SDK_ROOT:PATH=...` 指定的路径。若要通过 CMake 配置单独选择 SDK，先移除构建环境中的同名变量。运行配置选择 `ReverseModeler` 启动界面。
 
+构建临时目录统一位于仓库根的 `build/<预设名>/`，当前为 `PointCloudReverseModeling/build/vc143-cpp20/`。预设名称 `vc143-cpp20` 对应已选工具集 `v143` 与工程使用的 C++20；`${presetName}` 按该名称展开，不读取 `CMakeLists.txt` 中的编译器或标准变量，也不会在编译器检测后自动改名。升级工具集或语言标准时，应同步调整对应预设的名称和配置。
+
+Qt Creator 已有配置如果仍使用旧的 `windows-vs2022` 预设或 `ReverseModeling/out` 路径，应执行 `Build > Reload CMake Presets`，选择 `vc143-cpp20` 对应配置，并确认构建目录已切换到新位置；必要时在构建设置中重新选择该目录。由 CMake 在新位置生成缓存和工程文件，不直接搬移旧缓存。
+
 旧的 `windows-vcpkg` / `windows-vcpkg-release` 配置已移除。从旧配置迁移时，请选择上述 installed SDK 配置并使用新的构建目录，移除 Qt Creator 初始配置或环境中的 vcpkg `CMAKE_TOOLCHAIN_FILE`，不要复用原工具链缓存；旧的 `RM_USE_VCPKG_TOOLCHAIN`、`VCPKG_*` 构建参数也不再需要。工程会在加载工具链前提示残留设置，不会自动修改用户环境。
 
 ## 运行桌面程序
 
-各配置的可执行程序和工程库统一生成到 `PointCloudReverseModeling/output/<编译器>-cpp<标准>/<构建模式>/`。编译器标记取实际工具链版本（MSVC 使用工具集版本，如 `vc143`；GCC 使用主版本，如 `gcc16`），C++ 标准取 `CMAKE_CXX_STANDARD`，构建模式使用小写。当前 Windows / v143 / C++20 / Release 对应 `../output/vc143-cpp20/release/`，桌面程序为 `ReverseModeler.exe`。CMake 命令中的 `-B .../ReverseModeling/out/windows-vs2022` 指定缓存、项目文件和编译中间文件的位置，生成的 Release 程序输出到前述 `output` 目录。开发环境需设置同一 SDK 的 DLL 和 OCCT 资源路径：
+各配置的可执行程序和工程库统一生成到 `PointCloudReverseModeling/output/<编译器>-cpp<标准>/<构建模式>/`。编译器标记取实际工具链版本（MSVC 使用工具集版本，如 `vc143`；GCC 使用主版本，如 `gcc16`），C++ 标准取 `CMAKE_CXX_STANDARD`，构建模式使用小写。当前 Windows / v143 / C++20 / Release 对应 `../output/vc143-cpp20/release/`，桌面程序为 `ReverseModeler.exe`。CMake 命令中的 `-B .../PointCloudReverseModeling/build/vc143-cpp20` 指定缓存、项目文件和编译中间文件的位置，生成的 Release 程序输出到前述 `output` 目录。开发环境需设置同一 SDK 的 DLL 和 OCCT 资源路径：
 
 ```powershell
 $sdkPrefix = $env:RM_SDK_ROOT

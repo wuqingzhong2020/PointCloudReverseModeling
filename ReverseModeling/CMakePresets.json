@@ -8,22 +8,22 @@
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
       "toolset": "v143",
-      "binaryDir": "${sourceDir}/out/${presetName}",
+      "binaryDir": "${sourceDir}/../build/${presetName}",
       "cacheVariables": {
         "BUILD_TESTING": "ON"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
-      "name": "windows-vs2022",
+      "name": "vc143-cpp20",
       "displayName": "Windows / Qt desktop / installed SDK",
       "inherits": "windows-base"
     }
   ],
   "buildPresets": [
-    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release" }
+    { "name": "windows-release", "configurePreset": "vc143-cpp20", "configuration": "Release" }
   ],
   "testPresets": [
-    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release", "output": { "outputOnFailure": true } }
+    { "name": "windows-release", "configurePreset": "vc143-cpp20", "configuration": "Release", "output": { "outputOnFailure": true } }
   ]
 }

@@ -3,7 +3,7 @@ include_guard(GLOBAL)
 # Consume SDK package exports directly; reject an old toolchain before project().
 if(CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg[.]cmake$"
         OR "$ENV{CMAKE_TOOLCHAIN_FILE}" MATCHES "vcpkg[.]cmake$")
-    message(FATAL_ERROR "This project uses the prebuilt SDK without a vcpkg toolchain. Remove CMAKE_TOOLCHAIN_FILE from the IDE configuration/environment and select windows-vs2022 with a fresh build directory. Only RM_SDK_ROOT is required on Windows.")
+    message(FATAL_ERROR "This project uses the prebuilt SDK without a vcpkg toolchain. Remove CMAKE_TOOLCHAIN_FILE from the IDE configuration/environment and select vc143-cpp20 with a fresh build directory. Only RM_SDK_ROOT is required on Windows.")
 endif()
 
 # 环境变量作为 SDK 路径的首选来源，避免 Qt Creator 的旧缓存遮蔽新设置。
