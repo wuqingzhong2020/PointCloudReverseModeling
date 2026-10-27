@@ -1,0 +1,38 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "toolset": "v143",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-vs2022",
+      "displayName": "Windows / Qt desktop / installed SDK",
+      "inherits": "windows-base",
+      "cacheVariables": { "RM_BUILD_GUI": "ON" }
+    },
+    {
+      "name": "windows-headless",
+      "displayName": "Windows / CLI and services / installed SDK",
+      "inherits": "windows-base",
+      "cacheVariables": { "RM_BUILD_GUI": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release" },
+    { "name": "windows-headless-release", "configurePreset": "windows-headless", "configuration": "Release" }
+  ],
+  "testPresets": [
+    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "windows-headless-release", "configurePreset": "windows-headless", "configuration": "Release", "output": { "outputOnFailure": true } }
+  ]
+}

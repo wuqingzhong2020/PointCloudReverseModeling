@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "lengthUnit": "mm",
+  "parameters": {
+    "length": 1000.0,
+    "width": 200.0,
+    "height": 300.0,
+    "webThickness": 8.0,
+    "flangeThickness": 12.0,
+    "ribThickness": 8.0,
+    "ribStations": [333.3333, 666.6667],
+    "swapCrossSection": false
+  }
+}
