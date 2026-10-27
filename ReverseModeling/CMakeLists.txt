@@ -4,7 +4,6 @@ cmake_minimum_required(VERSION 3.25)
 include(cmake/PrebuiltSdk.cmake)
 project(ReverseModeling VERSION 0.1.0 LANGUAGES C CXX)
 
-option(RM_BUILD_GUI "Build the Qt Widgets / OCCT desktop application" ON)
 include(CTest)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -78,29 +77,21 @@ add_library(ReverseModeling::Commands ALIAS ReverseCommands)
 target_link_libraries(ReverseCommands PUBLIC ReverseModelCore nlohmann_json::nlohmann_json
     PRIVATE ReverseGeometry Threads::Threads)
 
-add_executable(ReverseCmd src/cli/main.cpp)
-target_link_libraries(ReverseCmd PRIVATE ReverseCommands)
-
-if(RM_BUILD_GUI)
-    add_library(ReverseWorkbench STATIC
-        include/reverse/workbench/OccViewport.h
-        include/reverse/workbench/MainWindow.h
-        src/workbench/OccViewport.cpp
-        src/workbench/MainWindow.cpp)
-    target_link_libraries(ReverseWorkbench PUBLIC ReverseCommands Qt6::Widgets
-        PRIVATE TKService TKV3d TKOpenGl)
-    add_executable(ReverseModeler WIN32 src/app/main.cpp)
-    target_link_libraries(ReverseModeler PRIVATE ReverseWorkbench)
-    # Qt Creator 仅自动生成桌面程序的运行配置，避免默认选中命令行工具。
-    set_target_properties(ReverseModeler PROPERTIES FOLDER "qtc_runnable")
-    set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT ReverseModeler)
-endif()
+add_library(ReverseWorkbench STATIC
+    include/reverse/workbench/OccViewport.h
+    include/reverse/workbench/MainWindow.h
+    src/workbench/OccViewport.cpp
+    src/workbench/MainWindow.cpp)
+target_link_libraries(ReverseWorkbench PUBLIC ReverseCommands Qt6::Widgets
+    PRIVATE TKService TKV3d TKOpenGl)
+add_executable(ReverseModeler WIN32 src/app/main.cpp)
+target_link_libraries(ReverseModeler PRIVATE ReverseWorkbench)
+# Qt Creator 与 Visual Studio 默认运行桌面程序。
+set_target_properties(ReverseModeler PROPERTIES FOLDER "qtc_runnable")
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT ReverseModeler)
 
 include(cmake/RuntimeEnvironment.cmake)
-rm_configure_runtime(ReverseCmd)
-if(RM_BUILD_GUI)
-    rm_configure_runtime(ReverseModeler)
-endif()
+rm_configure_runtime(ReverseModeler)
 
 if(BUILD_TESTING)
     add_executable(ReverseServiceTests tests/service_tests.cpp)
@@ -110,10 +101,7 @@ if(BUILD_TESTING)
     rm_configure_test_runtime(ReverseModeling.Service)
 endif()
 
-install(TARGETS ReverseCmd RUNTIME DESTINATION bin)
-if(RM_BUILD_GUI)
-    install(TARGETS ReverseModeler RUNTIME DESTINATION bin)
-endif()
+install(TARGETS ReverseModeler RUNTIME DESTINATION bin)
 
 message(STATUS "ReverseModeling SDK prefix: ${RM_SDK_PREFIX}")
-message(STATUS "Desktop UI: ${RM_BUILD_GUI}; C++20; SDK dependencies are read-only")
+message(STATUS "Application: ReverseModeler (Qt desktop); C++20; SDK dependencies are read-only")

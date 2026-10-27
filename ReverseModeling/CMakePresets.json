@@ -17,22 +17,13 @@
     {
       "name": "windows-vs2022",
       "displayName": "Windows / Qt desktop / installed SDK",
-      "inherits": "windows-base",
-      "cacheVariables": { "RM_BUILD_GUI": "ON" }
-    },
-    {
-      "name": "windows-headless",
-      "displayName": "Windows / CLI and services / installed SDK",
-      "inherits": "windows-base",
-      "cacheVariables": { "RM_BUILD_GUI": "OFF" }
+      "inherits": "windows-base"
     }
   ],
   "buildPresets": [
-    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release" },
-    { "name": "windows-headless-release", "configurePreset": "windows-headless", "configuration": "Release" }
+    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release" }
   ],
   "testPresets": [
-    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release", "output": { "outputOnFailure": true } },
-    { "name": "windows-headless-release", "configurePreset": "windows-headless", "configuration": "Release", "output": { "outputOnFailure": true } }
+    { "name": "windows-release", "configurePreset": "windows-vs2022", "configuration": "Release", "output": { "outputOnFailure": true } }
   ]
 }
