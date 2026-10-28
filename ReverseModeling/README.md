@@ -74,42 +74,6 @@ flowchart LR
 - 取消通过 `std::stop_token` 协作完成。关闭窗口时服务请求取消并等待工作线程结束，单次 OCCT 内核调用可能需要等待其返回。
 - 当前工程状态保存在内存，任务与资产 ID 在本次服务生命周期内有效。
 
-## 构建与运行
-
-Windows 开发环境使用 CMake 3.25+、Visual Studio 2022 的 MSVC v143 x64 工具链。第三方库需要与编译器、架构和 Debug/Release 运行库匹配，由开发人员预先准备。
-
-| 依赖 | 用途 |
-|---|---|
-| Eigen3 | PCA 与线性代数 |
-| PCL 1.15+，common/io | PCD 点云读取 |
-| OCCT 8+ | 几何建模、显示、XCAF 装配及 STEP 交换 |
-| Qt6 Core/Gui/Widgets | 桌面界面 |
-| nlohmann_json 3.11+ | JSON 数据契约 |
-| Google Test | 测试程序与测试入口 |
-
-依赖统一在 [Dependencies.cmake](../cmake/Dependencies.cmake) 中使用 `find_package()` 查找，系统线程通过 `Threads::Threads` 接入。[CMakePresets.json](../CMakePresets.json) 提供默认 `CMAKE_PREFIX_PATH`；其他开发环境可修改该值，或用命令行 `-DCMAKE_PREFIX_PATH="<安装前缀1>;<安装前缀2>"` 覆盖。
-
-在仓库根目录执行：
-
-```powershell
-cmake --preset vc143-cpp20
-cmake --build --preset windows-release
-```
-
-仅编译一个程序时，追加 `--target ReverseModeler` 或 `--target ReverseServiceTests`。更换工具链或依赖位置后，使用新的构建目录或 `cmake --fresh --preset vc143-cpp20` 重新配置。
-
-- 构建中间文件：`build/vc143-cpp20/`。
-- 当前 Release 程序输出：`output/vc143-cpp20/release/`。
-- 通用输出规则：`output/<编译器>-cpp<标准>/<构建模式>/`，由 [common.cmake](../cmake/common.cmake) 统一设置。
-
-运行前将匹配的依赖 DLL 目录加入 `PATH`，并按安装布局配置 Qt 插件和 OCCT 资源路径。`CMAKE_PREFIX_PATH` 负责配置阶段的依赖查找，运行环境需要另外准备。
-
-```powershell
-& './output/vc143-cpp20/release/ReverseModeler.exe'
-```
-
-在 Qt Creator 中打开根 `CMakeLists.txt`，选择 `vc143-cpp20` 预设及要运行的程序，桌面开发使用默认本机部署配置。`cmake --install` 仅安装主程序，完整的 DLL、插件和资源部署需要另行准备。
-
 ## 修改代码与添加文件
 
 头文件与源文件放在同一功能目录，各目录的同名 `.cmake` 分别使用 `RM_SOURCES` 和 `RM_HEARDERS` 汇总文件。**每个文件单独一条追加语句**：
@@ -133,20 +97,7 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/Example.h")
 
 ## 单元测试
 
-从仓库根目录执行；运行前同样需要配置依赖 DLL 的 `PATH`：
-
-```powershell
-cmake --build --preset windows-release --target ReverseServiceTests
-ctest --preset windows-release
-```
-
-也可以直接运行测试程序，按 Google Test 用例名过滤：
-
-```powershell
-& './output/vc143-cpp20/release/ReverseServiceTests.exe' --gtest_filter=PointCloud.*
-```
-
-现有用例覆盖单位与点云属性、PCA 初值、参考参数、板件几何与偏差、取消与异常输入，以及服务版本控制、失败保留、STEP/JSON 往返。测试维护入口见 [测试程序说明](../tests/README.md)。
+测试程序位于独立的 [tests/](../tests/) 目录，直接编译公共服务实现。现有用例覆盖单位、点云属性、参考参数、几何与偏差、取消及异常输入，以及服务版本控制、失败保留和 STEP/JSON 往返。配置、构建与运行方式见 [测试程序说明](../tests/README.md)；工程整体环境与运行说明见 [根 README](../README.md)。
 
 ## 当前能力边界
 

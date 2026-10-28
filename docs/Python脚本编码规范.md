@@ -1,50 +1,40 @@
-# 逆向建模软件嵌入式 Python 脚本编码规范
+# ReverseModeling Python 脚本编码规范
 
-更新日期：2026-10-26。适用运行时：LibPackByVcpkgWindows 的 `python3` overlay 3.15.0 free-threaded；当前清单外部后端为 libffi 3.8.0、mpdecimal 4.0.1、zlib 1.3.2#2，按公共动态配置消费。
+本规范用于本工程的 Python 脚本以及未来的嵌入式 Python 扩展。当前 `ReverseModeler` 尚未接入 CPython、pybind11 或 Python 业务接口；SDK 具备相应能力并不表示宿主已经提供脚本入口。下文宿主接口示例仅用于说明设计方式。
 
-Python 用于宏、命令编排、参数校验和结果报告；点云、曲面、拓扑与模型修改通过宿主提供的业务接口执行。缺少某些 C/C++ 后端限制的是相应标准库功能，不限制 Python 3.15 的语言语法，也不表示只能使用三个 Python 模块。
+运行时基线为 `LibPackByVcpkgWindows` 的 CPython **3.15.2 自由线程共享 SDK（3.15t）**。其本地 `python3` overlay 将 libffi、mpdecimal、zlib、OpenSSL、SQLite3、Zstandard、bzip2、liblzma 和 Expat 九个公共 C 库作为依赖。实际产品使用时仍须按所选平台、Debug/Release 和部署内容验证对应模块及动态库。
 
-本规范中的“必须、禁止”是项目脚本约束，“当前不可用”是当前 SDK 的能力边界。宿主 `rm` 接口仍按设计文档逐步实现；下文接口示例不表示对应业务命令已经可调用。构建依据见 [CPython 介绍与编译探索](../reference/CPython介绍与编译探索.md)、[当前 vcpkg port](../../../../LibPackByVcpkgWindows/ports/python3/portfile.cmake)；绑定与业务合同见 [pybind11 文档](../reference/pybind11介绍与编译探索.md)、[Python 嵌入与命令化回归测试方案](../reference/Python嵌入与命令化回归测试方案.md)。
+本规范中的“必须、禁止”约束项目脚本；SDK 已编入的模块、实际发布内容和尚未实现的宿主接口分别判断。构建依据见 [CPython 介绍与编译探索](../reference/CPython介绍与编译探索.md)和 SDK 的 [python3 配方](../../LibPackByVcpkgWindows/ports/python3/portfile.cmake)；扩展设计参考 [pybind11 文档](../reference/pybind11介绍与编译探索.md)及 [Python 嵌入与命令化回归测试方案](../reference/Python嵌入与命令化回归测试方案.md)。
 
 ## 1 运行环境与依赖边界
 
-下表表示当前 port 选择的功能合同；新安装包须分别完成导入和产品宿主验收，本轮文档核对不等于运行验证。完整 SDK 中的 OpenSSL、SQLite、独立 Tcl/Tk 不会自动给裁剪的 CPython 增加对应模块。
+使用目标 SDK 的 3.15t 解释器进行开发与定向检查。脚本只能依赖产品实际交付的标准库、自有包及已公开宿主接口；开发机上另外安装的 Python、pip 包和 DLL 不自动成为产品依赖。
 
-脚本只依赖产品交付的标准库、自有脚本包和已公布的宿主接口。安装在开发机上的 Python、pip 包及 PATH 中的 DLL，不属于产品运行环境。开发、检查和运行均以自编译的 3.15t SDK 为基准；普通安装版只作对照。
-
-| 能力 | 当前状态 | 编写规则 |
+| 公共后端 | 对应标准库或能力 | 使用约定 |
 |---|---|---|
-| `decimal`、`_decimal` | mpdecimal 4.0.1 后端已选 | 十进制参数、计价及十进制舍入可使用；不替代几何内核的浮点数与容差 |
-| `ctypes` | libffi 3.8.0 后端已选 | 业务脚本通过宿主 API 操作模型；不自行用 ctypes 加载 PCL、OCCT、Qt 或操纵宿主指针 |
-| `zlib`、`gzip`、`zipfile`、`tarfile` | zlib 1.3.2 动态后端已选 | 支持 DEFLATE ZIP、GZIP、`.tar.gz`、压缩 ZIP 导入；ZIP 明确指定压缩方法 |
-| `binascii`、`base64` | 可用 | 用于编码与校验；Base64 不是压缩，CRC32 不是安全签名 |
-| `json`、`csv`、`tomllib`、`pathlib`、`dataclasses`、`typing`、`annotationlib` | 可用 | 参数与小型报告优先使用这些标准库；`tomllib` 只负责读取 TOML |
-| `math`、`statistics`、`array`、`memoryview`、`struct` | 可用 | 可处理小型数值与二进制数据；大点云及几何批运算交给 C++ |
-| `hashlib`、`hmac`、`secrets` | 基础功能可用 | 文件摘要优先 SHA-256；不要假定 OpenSSL 扩展算法存在 |
-| `threading`、`queue`、`concurrent.futures`、`asyncio` | 模块可用 | 调度、取消、线程数量和事件循环必须服从宿主约定 |
-| `xml.etree.ElementTree`、`pyexpat`、`uuid` | 可用 | 无须为了普通 XML 或 UUID 再加入第三方 Python 包 |
+| libffi | `ctypes` / `_ctypes` | 业务操作通过将来公开的宿主接口；不自行加载 PCL、OCCT、Qt 或操作宿主裸指针 |
+| mpdecimal | `decimal` / `_decimal` | 用于精确十进制计算，不替代几何内核的浮点数和容差 |
+| zlib | `zlib`、`gzip`、DEFLATE ZIP | 跨工具交换可优先使用 GZIP 或 DEFLATE，明确归档方法 |
+| OpenSSL | `ssl` / `_ssl`、`hashlib` / `_hashlib` | 支持 TLS 和 OpenSSL 提供的散列、`pbkdf2_hmac`、`scrypt`；算法可用性仍以实际 OpenSSL 配置为准 |
+| SQLite3 | `sqlite3` / `_sqlite3` | 可用于脚本负责的缓存和报告；使用参数化 SQL，按所有权关闭连接；当前工程持久化尚未实现 |
+| bzip2 | `bz2` / `_bz2` | 可使用 BZIP2 压缩；交换时确认接收方支持 |
+| liblzma | `lzma` / `_lzma` | 可使用 XZ/LZMA 压缩；交换时确认接收方支持 |
+| Zstandard | `compression.zstd` / `_zstd` | 可使用 Zstandard 压缩；交换时确认接收方与格式版本支持 |
+| Expat | `pyexpat`、`xml.etree.ElementTree` | 使用标准库 XML 接口；不为普通 XML 额外引入 Python 包 |
 
-三个外部 C 库不是 pip 包：脚本通常导入 `ctypes`、`decimal`、`zlib`，不写 `import libffi` 或 `import mpdecimal`。动态后端由产品部署并验证，脚本仍使用 `import zlib` 等标准接口；缺失后端 DLL/SO 属于部署问题，不能从其他 Python 安装目录补取。
+这些 C 库通过 Python 标准模块使用，不写 `import libffi` 或 `import mpdecimal`。对应动态库由 SDK 和产品部署提供；链接或导入失败应检查版本、配置和部署路径，不从系统 Python 目录临时拼接依赖。[Python SSL](https://docs.python.org/3.15/library/ssl.html)、[sqlite3](https://docs.python.org/3.15/library/sqlite3.html)、[Zstandard](https://docs.python.org/3.15/library/compression.zstd.html)。
 
-### 1.1 当前不可依赖的功能
+### 1.1 未接入和平台边界
 
-| 避免写入交付脚本的内容 | 原因与替代方式 |
-|---|---|
-| `import ssl`，以及要求 TLS 的 HTTPS、WSS、SMTP_SSL 等流程 | 未编入 `_ssl`。需要网络下载或认证时交给宿主已提供的网络接口；不能用关闭证书验证或降级明文 HTTP 代替 TLS |
-| `hashlib.pbkdf2_hmac()`、`hashlib.scrypt()`、假定 `hashlib.new()` 支持任意算法 | 未编入 OpenSSL `_hashlib`，当前两项函数不存在。普通文件校验可用 `hashlib.sha256()`；密码派生交给批准的宿主服务 |
-| `sqlite3.connect()`，或依赖 SQLite 的 ORM/缓存 | 未编入 `_sqlite3`。小参数与报告用 JSON/CSV；模型持久化通过宿主工程文件接口 |
-| `bz2`、`lzma`、`compression.zstd` | `_bz2`、`_lzma`、`_zstd` 未编入。不要生成或读取 `.bz2`、`.xz`、`.zst`，也不要选 ZIP_BZIP2、ZIP_LZMA、ZIP_ZSTANDARD |
-| `tarfile.open(..., "w:bz2")`、`"r:xz"`、`"w:zst"` 等 | 对应后端缺失。统一选择普通 TAR 或 GZIP TAR |
-| `tkinter`、`turtle` 图形窗口 | 未交付 Tk 后端。GUI 由 Qt 宿主提供，不能因宿主使用 C++ Qt 就假定存在 PySide/PyQt |
-| 依赖 `readline`、`curses`、GNU DBM 等的平台脚本 | 不属于两平台共同功能合同。使用宿主控制台、日志及存储接口 |
-| `numpy`、`scipy`、`pandas`、`requests`、`lxml`、PySide/PyQt 等未经纳入发布清单的包 | 当前没有交付这些 Python 包；安装了 C++ Eigen/PCL/Qt 不等于安装了对应 Python 包 |
-| 脚本内 `pip install`、启动 `ensurepip`、创建 venv 后自动装依赖 | 当前不交付 pip 引导流程；zlib 可解压 wheel 不等于具备完整包管理和 HTTPS 能力。依赖由产品构建与发布管理 |
-
-没有 `_ssl` 不会取消普通 `socket`，没有 `_hashlib` 也不会取消所有散列算法。`dbm.dumb` 是可用的纯 Python 后端，但不把 `dbm.open()` 自动选择的文件格式或 `shelve` 作为跨平台工程文件格式。`zoneinfo.ZoneInfo("Asia/Shanghai")` 另依赖时区数据库，Windows 发布包不能默认拥有；不需要地区规则时用 `datetime.UTC`。这些是具体依赖条件，不扩大成“所有网络、散列、时间和存储功能都不可用”。[hashlib](https://docs.python.org/3.15/library/hashlib.html)、[zoneinfo 数据来源](https://docs.python.org/3.15/library/zoneinfo.html#data-sources)
+- CPython 配方不引入 Tcl/Tk 和 GNU Readline，禁用 `_tkinter` 与 `readline`；独立 Tcl/Tk SDK 的存在不使 `tkinter` 可用。界面由 Qt 宿主负责，C++ Qt 的存在也不代表已提供 PySide/PyQt。
+- Linux 配方还禁用 `_curses`、`_curses_panel`、`_dbm`、`_gdbm` 和系统 `_uuid` 后端；不同平台的可选模块以实际包为准，不把 curses、GNU DBM 或 `readline` 当成共同功能。纯 Python 的 UUID 等能力应按实际解释器检查。
+- 未列入产品发布清单的 NumPy、SciPy、pandas、requests、lxml、PySide/PyQt 等第三方 Python 包，不作为脚本依赖；C++ SDK 中有同类库不代表这些包已交付。
+- 当前配方不交付 pip 引导流程。脚本不在运行时自动安装包或创建环境；依赖由产品构建与发布过程管理。
+- `zoneinfo` 的地区时区规则依赖时区数据库；Windows 产品包需显式准备数据。不依赖地区规则时使用 `datetime.UTC`。[zoneinfo 数据来源](https://docs.python.org/3.15/library/zoneinfo.html#data-sources)
 
 ## 2 文件组织与基础风格
 
-- 使用 UTF-8 源文件、4 个空格缩进；不混入 Tab。BOM 等文件编码细节遵守所在仓库规则。代码行建议不超过 100 个字符。
+- 使用 UTF-8 源文件、4 个空格缩进；不混入 Tab。新增 Python 源文件使用 UTF-8 无 BOM；修改已有文件保留原编码和换行。代码行建议不超过 100 个字符。
 - 模块、变量、函数用 `snake_case`，类用 `PascalCase`，常量用 `UPPER_SNAKE_CASE`。业务标识符使用明确英文，注释和用户错误信息可以使用中文。
 - 文件以模块说明开头；普通导入分为标准库、自有包两组。禁止 `from ... import *`，不以标准库名称命名脚本，例如 `json.py`、`typing.py`、`zlib.py`。
 - 公开入口写参数类型、返回类型和简短 docstring，说明单位、是否修改模型、失败条件。类型标注不能替代运行时输入校验。
@@ -116,13 +106,13 @@ def summarize(values: list[float]) -> float:
     return statistics.fmean(values)
 ```
 
-`lazy` 不能写在函数、类体或 `try/except/finally` 内，也不能用于星号导入或 future 导入。缺少模块的错误发生在首次使用时；不能在一条 lazy 导入外包 `try/except` 来实现可选依赖判断。必须立即完成的 `rm` 注册、日志初始化、依赖自检由宿主显式执行；需要动态立即导入时用 `importlib.import_module()`。脚本不得修改全局 lazy 模式或通过 lazy 绕过未交付依赖。[Python 3.15 延迟导入](https://docs.python.org/3.15/whatsnew/3.15.html#pep-810-explicit-lazy-imports)
+`lazy` 不能写在函数、类体或 `try/except/finally` 内，也不能用于星号导入或 future 导入。缺少模块的错误发生在首次使用时；不能在一条 lazy 导入外包 `try/except` 来实现可选依赖判断。将来宿主需要立即完成的注册、日志初始化和依赖自检应显式执行；需要动态立即导入时用 `importlib.import_module()`。脚本不得修改全局 lazy 模式或通过 lazy 绕过未交付依赖。[Python 3.15 延迟导入](https://docs.python.org/3.15/whatsnew/3.15.html#pep-810-explicit-lazy-imports)
 
 ## 4 业务入口与模型数据
 
 会话、对象 ID、单位、容差、算法选项和随机种子必须显式传入。不读取“当前选中对象”作为隐藏输入；不通过 Python 指针、`id()` 或对象地址持久化模型引用。点云和 Shape 保留在 C++ 会话中，以稳定 ID 和小型参数传递，避免将百万点复制成嵌套 Python 列表。
 
-下面是未来业务接口的形状示例；命令名及参数最终以宿主已公布 API 为准。它只定义函数，不会在导入时修改模型。
+下面是未来业务接口的形状示例；`CommandSession`、`cloud.voxel_filter` 和脚本宿主均未在当前程序中实现。命令名及参数以未来实际公开的 API 为准。它只定义函数，不会在导入时修改模型。
 
 ```python
 import math
@@ -152,7 +142,7 @@ def run(
     )
 ```
 
-模型修改必须遵守宿主事务、撤销和取消协议；不要自行把异常吞掉后继续提交部分模型。Python 函数返回后，不能留下访问已关闭会话的回调、后台线程或裸内存视图。
+未来的模型修改必须遵守宿主实际提供的提交、版本和取消协议；不要自行把异常吞掉后继续提交部分模型。当前 C++ 服务使用工程快照和版本检查，撤销功能尚未实现。Python 函数返回后，不能留下访问已关闭会话的回调、后台线程或裸内存视图。
 
 ## 5 数值与可重复结果
 
@@ -181,7 +171,7 @@ def rounded_decimal(text: str) -> str:
 
 3.15 默认启用 UTF-8 模式，但项目文本合同仍显式指定 `encoding="utf-8"`；读已知旧编码时明确写实际编码，不用 `errors="ignore"` 静默丢数据。JSON 使用 `ensure_ascii=False, allow_nan=False`；标准 JSON 不保存 NaN/Infinity。CSV 用 `newline=""` 打开文件，保证双平台一致。[UTF-8 默认行为](https://docs.python.org/3.15/library/os.html#python-utf-8-mode)
 
-跨平台交换优先选择普通 JSON/CSV、GZIP 或 DEFLATE ZIP。读取外部 ZIP 时需要验证成员压缩方法、路径及大小；扩展名为 `.zip` 不保证所有成员均能解压。不要直接把外部归档全部解压进工程目录；文件导入与覆盖由宿主管理。[ZIP 压缩后端](https://docs.python.org/3.15/library/zipfile.html)
+可根据数据和接收方能力选择 GZIP、BZIP2、XZ/LZMA 或 Zstandard；需要与未知接收方交换时优先普通 JSON/CSV、GZIP 或 DEFLATE ZIP。读取外部 ZIP 时验证成员压缩方法、路径及大小；扩展名为 `.zip` 不保证接收方支持所有成员算法。不要直接把外部归档全部解压进工程目录；文件导入与覆盖由宿主管理。[ZIP 压缩后端](https://docs.python.org/3.15/library/zipfile.html)
 
 ```python
 import hashlib
@@ -212,7 +202,7 @@ free-threaded 允许真正并行，但不自动保护模型、Qt 控件或跨多
 - Qt 控件只能由宿主 GUI 线程更新。长任务通过宿主任务队列执行；不在 GUI 线程 `sleep()`、`input()` 或同步等待耗时算法。
 - 脚本优先使用宿主线程池、进度与取消接口。确需自建 Python 线程池时限制线程数，使用上下文管理并在返回前等待结束；不得遗留 daemon 线程，不按“CPU 核数 × 点云任务数”无限扩张并行。
 - 每个任务使用独立参数和工作状态，必要时以 `Lock`、`Event`、`Queue` 协调。取消必须合作式检查；不能通过强杀线程回滚 C++ 几何状态。
-- `asyncio` 模块可用，但事件循环由宿主决定；宏不得自行调用 `asyncio.run()`、修改事件循环策略或安装 Qt 适配器。异步语法不保证 Qt 事件循环已经集成，TLS 异步连接仍不可用。
+- `asyncio` 模块可用，但事件循环由宿主决定；宏不得自行调用 `asyncio.run()`、修改事件循环策略或安装 Qt 适配器。异步语法不保证 Qt 事件循环已经集成；TLS 客户端仍须按部署环境正确配置证书与主机名验证。
 - `multiprocessing`、`ProcessPoolExecutor`、子解释器不是缺库而被统一禁用；它们涉及宿主入口、原生对象和解释器隔离，必须先有产品级运行方案。尤其不能假定 `sys.executable` 是可启动的 python.exe，它可能是 GUI 宿主。
 - 原生扩展必须匹配产品 Python 版本、平台、架构及 free-threaded/Debug 合同。不能把普通 `cp315`、旧版本或系统 `.pyd/.so` 拷入后强制关闭 GIL；没有声明 free-threading 支持的扩展可能使 GIL 自动启用。
 
@@ -227,10 +217,10 @@ free-threaded 允许真正并行，但不自动保护模型、Qt 控件或跨多
 ## 9 交付前检查
 
 1. 使用产品自编译的 3.15t 解释器做语法与定向运行检查，不能只在用户安装版上测试。普通语法编译不会发现 lazy 首次使用错误，关键路径必须实际调用。
-2. 检查导入清单和实际调用路径：无未交付 Python 包、SSL/SQLite/BZIP2/XZ/Zstandard 依赖，无运行时自动安装或系统路径补救。
+2. 检查导入清单与实际调用路径：确认所用标准模块及对应公共动态库随产品交付；无未交付的 Python 包、运行时自动安装或系统路径补救。涉及 TLS 时验证证书和主机名；涉及 SQLite 或压缩时验证实际读写。
 3. 用中文、空格路径及只读安装目录验证读写；检查输入错误、空数据、NaN/Infinity、重复输出和取消行为。
 4. 对使用压缩的流程验证实际成员内容；对 no GIL 流程在导入及首次使用原生模块后检查 `sys._is_gil_enabled()`。该检查属于宿主验收，不应靠业务宏强行切换 GIL。
 5. 有并发时检查共享状态、Qt 线程归属、任务结束与回调清理；有模型修改时检查事务与失败后的状态。
-6. 当前跨平台基线为 Windows vc143 与 Ubuntu 26.04/GCC 16.2.0/Qt6；Linux 应用及脚本行为需在该组合下验收。宿主 `rm` 行为应在实际产品宿主中测试，不能用独立解释器测试代替。
+6. 当前应用以 Windows / MSVC v143 预设为构建入口。其他平台与部署配置分别验证，不能根据 SDK 配方或另一平台结果推断应用已支持。未来的宿主脚本行为必须在实际产品宿主中测试，不能用独立解释器测试代替。
 
 开发期格式化、静态类型检查等工具可安装在独立开发环境，目标版本设置为 Python 3.15；这些开发工具不自动成为产品运行依赖。单元测试可使用标准库 `unittest`，具体测试文件放置遵守项目规则。
