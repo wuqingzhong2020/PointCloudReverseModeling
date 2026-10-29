@@ -25,6 +25,8 @@ endif()
 
 find_package(Threads REQUIRED)
 find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Gui Widgets)
+find_package(SARibbonBar 2.8.0 CONFIG REQUIRED)
+find_package(qtadvanceddocking-qt6 4.5.0 CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
 # 两个程序共用的第三方库；各程序专用库在自己的 CMakeLists.txt 中链接。

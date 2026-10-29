@@ -14,7 +14,9 @@ target_link_libraries(ReverseModeler PRIVATE ${RM_COMMON_LIBRARIES})
 
 # 主程序专用的 Qt Widgets 和 OCCT 显示库。
 target_link_libraries(ReverseModeler PRIVATE
-    Qt6::Widgets TKService TKV3d TKOpenGl)
+    Qt6::Widgets TKService TKV3d TKOpenGl
+    SARibbonBar::SARibbonBar ads::qtadvanceddocking-qt6)
+set_target_properties(ReverseModeler PROPERTIES AUTOMOC ON AUTORCC ON)
 set_target_properties(ReverseModeler PROPERTIES FOLDER "qtc_runnable")
 
 install(TARGETS ReverseModeler RUNTIME DESTINATION bin)

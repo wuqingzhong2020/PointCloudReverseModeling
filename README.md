@@ -9,6 +9,7 @@
 | 入口 | 内容 |
 |---|---|
 | [主业务开发指南](ReverseModeling/README.md) | 代码结构、调用流程、数据约定与能力边界 |
+| [桌面工作台开发约定](ReverseModeling/README.md#桌面工作台) | SARibbon + ADS、窗口标识、布局恢复与 UI 接入边界 |
 | [单元测试程序](tests/README.md) | Google Test 构建、运行与用例选择 |
 | [研究与实现参考资料](reference/README.md) | 参考文档目录、实施背景、维护约定与原始材料归档说明 |
 | [C++ 编码规范](docs/cpp编码规范.md) | C++、Qt、CMake 与测试维护约定 |
@@ -59,6 +60,8 @@ PointCloudReverseModeling/
 | PCL 1.15+，common/io | PCD 点云读取 |
 | OCCT 8+ | 几何建模、显示及 STEP 交换 |
 | Qt6 Core/Gui/Widgets | 桌面界面 |
+| SARibbon 2.8.0+ | 顶部 Ribbon 功能区；本机包要求 Qt 6.11+ |
+| Qt Advanced Docking System 4.5.0+（Qt6） | 工具窗口停靠、浮动、显隐与布局恢复 |
 | nlohmann_json 3.11+ | JSON 数据契约 |
 | Google Test | `ReverseServiceTests` 测试程序 |
 
@@ -91,3 +94,15 @@ ctest --preset windows-release
 打开仓库根目录的 `CMakeLists.txt`，选择 `Windows / Qt desktop + Google Test / MSVC v143 / C++20` 预设，并在运行配置中选择 `ReverseModeler` 或 `ReverseServiceTests`。桌面程序使用默认本机部署配置；若部署步骤选中了 Application Manager，应在 **Deploy Settings** 中切换为默认部署或停用其安装步骤。
 
 `cmake --install` 仅安装主程序；独立运行所需的 DLL、Qt 插件和 OCCT 资源需要按实际发布方式另行准备。
+
+## 桌面工作台
+
+顶部 Ribbon 按文件、编辑、点云、重建、模型修改和工具分组，中央为三维视图，底部状态栏显示任务进度并提供取消入口。通过 **窗口** 菜单显示或隐藏模型树、属性、重建参数、操作面板、日志及任务信息；工具窗口可拖动、浮动或合并为标签。首次启动辅助窗口默认收起，后续启动恢复上次布局。关闭工具窗口保留内容，日志隐藏时继续收集最近 2000 个文本块；“恢复默认布局”收起辅助窗口，不清空当前数据。正常退出保存窗口布局，点云、模型和参数仍只保存在本次运行的内存中。
+
+打开 PCD 后明确选择原始单位，核对重建参数，再执行“开始重建”。参数编辑后点击“应用参数”；直接开始重建时也会提示应用尚未提交的编辑。现有 STEP 导出和偏差计算继续可用。移动、旋转、基准面、孔洞等目前提供表单，几何执行标注为待接入。
+
+视图工具条中“点云”和“实体”的主按钮控制显隐，箭头展开显示模式菜单；未接入的模式保持禁用。“停止重建”只取消当前重建任务，导入、导出及偏差计算通过状态栏的“取消任务”取消。窗口入口也位于视图工具条旁，独立于工具条溢出区域。
+
+运行环境需要匹配的 `SARibbonBar.dll`、`qtadvanceddocking-qt6.dll`；默认 SDK 的 Qt 为 6.11.2，不能混用参考平台的 Qt 6.8.4 DLL。快捷键：`Ctrl+O` 打开点云、`Ctrl+P` 重建参数、`Ctrl+Shift+E` 导出 STEP、`F` 适合视图。
+
+窗口生命周期、主题资源和后续功能接入约定见[桌面工作台开发说明](ReverseModeling/README.md#桌面工作台)。

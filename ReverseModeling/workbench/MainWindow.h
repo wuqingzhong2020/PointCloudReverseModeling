@@ -4,12 +4,13 @@
  */
 #pragma once
 
-#include <QMainWindow>
 #include <memory>
+
+#include <SARibbonMainWindow.h>
 
 namespace reverse::workbench {
 
-class MainWindow final : public QMainWindow {
+class MainWindow final : public SARibbonMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
@@ -22,6 +23,9 @@ private:
     std::unique_ptr<State> state_;
     void importCloud();
     void restoreReferenceParameters();
+    bool applyParameters();
+    void cancelTask();
+    void refreshProjectPanels();
     void reconstruct();
     void exportStep();
     void evaluateDeviation();

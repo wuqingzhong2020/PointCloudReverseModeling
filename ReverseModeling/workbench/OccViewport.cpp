@@ -133,7 +133,7 @@ void OccViewport::initialize() {
         state_->view->SetWindow(window);
         if (!window->IsMapped()) window->Map();
 #endif
-        state_->view->SetBackgroundColor(Quantity_Color(0.08, 0.11, 0.16, Quantity_TOC_RGB));
+        state_->view->SetBackgroundColor(Quantity_Color(0.031, 0.082, 0.129, Quantity_TOC_sRGB));
         state_->view->SetProj(V3d_XposYnegZpos);
         state_->context = new AIS_InteractiveContext(state_->viewer);
         rebuildCloud();
