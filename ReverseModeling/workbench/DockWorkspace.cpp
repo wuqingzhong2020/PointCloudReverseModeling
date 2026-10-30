@@ -58,9 +58,10 @@ DockWorkspace::DockWorkspace(QMainWindow *window, QWidget *viewport)
 {
     ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
     ads::CDockManager::setConfigFlag(ads::CDockManager::XmlCompressionEnabled, false);
-    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaCloseButtonClosesTab, true);
-    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasCloseButton, true);
-    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasUndockButton, true);
+    // 面板标题栏不显示右侧工具按钮；显隐仍由标签关闭按钮和“窗口”菜单控制。
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasTabsMenuButton, false);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasCloseButton, false);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasUndockButton, false);
     m_manager = new ads::CDockManager(window);
     m_manager->setObjectName(QStringLiteral("workspace.docks"));
     m_manager->setStyleSheet(QString()); // 统一使用应用 QSS，不叠加 ADS 默认浅色样式。
