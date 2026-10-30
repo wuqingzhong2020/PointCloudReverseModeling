@@ -22,7 +22,7 @@ namespace reverse::workbench
 {
 namespace
 {
-constexpr int layoutVersion = 1;
+constexpr int layoutVersion = 2;
 
 void recoverWindow(QWidget *window)
 {
@@ -74,7 +74,8 @@ DockWorkspace::DockWorkspace(QMainWindow *window, QWidget *viewport)
     m_menu->setIcon(WorkbenchTheme::icon(QStringLiteral("window")));
 }
 
-void DockWorkspace::addPanel(const QString &id, const QString &title, QWidget *content, DockPosition position)
+void DockWorkspace::addPanel(const QString &id, const QString &title, QWidget *content, DockPosition position,
+                            const QString &belowPanel)
 {
     auto *dock = new ads::CDockWidget(m_manager, title);
     dock->setObjectName(id);
@@ -82,7 +83,11 @@ void DockWorkspace::addPanel(const QString &id, const QString &title, QWidget *c
     dock->setWidget(content, ads::CDockWidget::ForceNoScrollArea);
     dock->setMinimumSizeHintMode(ads::CDockWidget::MinimumSizeHintFromContentMinimumSize);
     dock->setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, false);
-    if (m_anchors.contains(position))
+    if (m_panels.contains(belowPanel))
+    {
+        m_manager->addDockWidget(ads::BottomDockWidgetArea, dock, m_panels.value(belowPanel)->dockAreaWidget());
+    }
+    else if (m_anchors.contains(position))
     {
         m_manager->addDockWidgetTabToArea(dock, m_anchors.value(position)->dockAreaWidget());
     }
@@ -103,13 +108,15 @@ void DockWorkspace::initializeLayout()
 {
     if (m_anchors.contains(DockPosition::Right))
     {
-        m_manager->setSplitterSizes(m_anchors.value(DockPosition::Right)->dockAreaWidget(), {360, 900, 300});
+        m_manager->setSplitterSizes(m_anchors.value(DockPosition::Right)->dockAreaWidget(), {460, 340});
     }
     if (m_anchors.contains(DockPosition::Bottom))
     {
         m_manager->setSplitterSizes(m_anchors.value(DockPosition::Bottom)->dockAreaWidget(), {650, 190});
     }
     hidePanels();
+    showPanel(QStringLiteral("dock.modelTree"));
+    showPanel(QStringLiteral("dock.properties"));
     m_defaultState = m_manager->saveState(layoutVersion);
     m_menu->addSeparator();
     auto *hide = m_menu->addAction(QStringLiteral("隐藏所有辅助窗口"));
@@ -131,7 +138,7 @@ void DockWorkspace::initializeLayout()
 void DockWorkspace::restoreLayout()
 {
     QSettings settings;
-    settings.beginGroup(QStringLiteral("ui/layout/v1"));
+    settings.beginGroup(QStringLiteral("ui/layout/v2"));
     const auto geometry = settings.value(QStringLiteral("geometry")).toByteArray();
     if (!geometry.isEmpty())
     {
@@ -152,7 +159,7 @@ void DockWorkspace::restoreLayout()
 void DockWorkspace::saveLayout() const
 {
     QSettings settings;
-    settings.beginGroup(QStringLiteral("ui/layout/v1"));
+    settings.beginGroup(QStringLiteral("ui/layout/v2"));
     settings.setValue(QStringLiteral("geometry"), m_window->saveGeometry());
     settings.setValue(QStringLiteral("docks"), m_manager->saveState(layoutVersion));
 }

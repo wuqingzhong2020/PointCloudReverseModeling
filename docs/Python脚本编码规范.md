@@ -169,6 +169,8 @@ def rounded_decimal(text: str) -> str:
 
 路径使用 `pathlib.Path`；输入目录、输出目录由宿主传入，不硬编码 `D:/...`、`/mnt/d/...`、反斜杠或可执行文件后缀。不改变进程工作目录，也不修改 `sys.path`、`PYTHONPATH`、DLL 搜索路径以借用开发机环境。安装目录视为只读，报告写入指定输出目录。
 
+`envBuild.py` 和 `pythonProject/` 是仓库外部开发工具，不属于产品内的 Python 功能。它们从本地配置、工程预设和 CMake 生成信息取得路径，可用 `subprocess` 的参数列表、`cwd` 及独立 `env` 设置子进程环境；不修改系统环境或调用者会话。Windows 专用的工具名称与配置分支可明确使用 `.exe`。运行依赖由 CMake 部署，启动器不注入 SDK PATH；CPack 负责压缩，Python 仅编排、校验并归档最终产物。该入口不使主程序链接或分发 CPython。
+
 3.15 默认启用 UTF-8 模式，但项目文本合同仍显式指定 `encoding="utf-8"`；读已知旧编码时明确写实际编码，不用 `errors="ignore"` 静默丢数据。JSON 使用 `ensure_ascii=False, allow_nan=False`；标准 JSON 不保存 NaN/Infinity。CSV 用 `newline=""` 打开文件，保证双平台一致。[UTF-8 默认行为](https://docs.python.org/3.15/library/os.html#python-utf-8-mode)
 
 可根据数据和接收方能力选择 GZIP、BZIP2、XZ/LZMA 或 Zstandard；需要与未知接收方交换时优先普通 JSON/CSV、GZIP 或 DEFLATE ZIP。读取外部 ZIP 时验证成员压缩方法、路径及大小；扩展名为 `.zip` 不保证接收方支持所有成员算法。不要直接把外部归档全部解压进工程目录；文件导入与覆盖由宿主管理。[ZIP 压缩后端](https://docs.python.org/3.15/library/zipfile.html)

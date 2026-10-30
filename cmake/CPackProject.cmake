@@ -1,0 +1,12 @@
+# 文件描述：区分原生 CPack 的多配置包名，Python 仍可指定完整包名。
+if(NOT CPACK_BUILD_CONFIG)
+    message(FATAL_ERROR "Specify a configuration: cpack -C Release or -C Debug")
+endif()
+if(CPACK_BUILD_CONFIG MATCHES ";")
+    message(FATAL_ERROR "Package one configuration at a time")
+endif()
+if(NOT RM_PACKAGE_NAMED)
+    string(TOLOWER "${CPACK_BUILD_CONFIG}" _mode)
+    string(TIMESTAMP _stamp "%Y%m%d-%H%M%S")
+    set(CPACK_PACKAGE_FILE_NAME "ReverseModeler-${CPACK_PACKAGE_VERSION}-win-x64-${_mode}-${_stamp}")
+endif()

@@ -43,6 +43,8 @@ PointCloudReverseModeling/
 | [MainWindow.cpp](workbench/MainWindow.cpp) | 用户操作、参数面板、任务轮询和界面刷新 |
 | [WorkbenchActions.cpp](workbench/WorkbenchActions.cpp) / [RibbonBuilder.cpp](workbench/RibbonBuilder.cpp) | 共用动作、能力标记、Ribbon 与视图工具条 |
 | [DockWorkspace.cpp](workbench/DockWorkspace.cpp) | ADS 工具窗口、窗口菜单、布局保存与恢复 |
+| [ModelInspector.cpp](workbench/ModelInspector.cpp) | 部件模型树、只读属性、稳定 ID 与三维选择联动 |
+| [OccPartMesh.h](workbench/OccPartMesh.h) | 为部件网格提供按真实三角面命中的整件选择实体 |
 | [RecentFilesMenu.cpp](workbench/RecentFilesMenu.cpp) | 最近成功导入的点云/模型路径、排序去重、持久保存与清空记录 |
 | [WorkbenchPanels.cpp](workbench/WorkbenchPanels.cpp) / [HBeamTemplateFields.cpp](workbench/HBeamTemplateFields.cpp) | H 型钢模板入口、逐板识别结果、镜像选项、手动参数、待接入参数说明和后续操作表单 |
 | [WorkbenchTheme.cpp](workbench/WorkbenchTheme.cpp) | 深色主题、自有图标与高 DPI 图标尺寸 |
@@ -94,18 +96,18 @@ flowchart LR
 
 | 窗口 | 稳定 `objectName` | 初始停靠位置 | 当前内容 |
 |---|---|---|---|
-| 模型树 | `dock.modelTree` | 左侧 | 当前工程、点云及板件模型状态摘要 |
-| 属性 | `dock.properties` | 右侧 | 工程版本、来源、有效点数和实体数；对象选择与编辑待接入 |
+| 模型树 | `dock.modelTree` | 右侧上方 | 工程、点云、模型及实际部件；名称、颜色和板厚，与三维选择联动 |
+| 属性 | `dock.properties` | 右侧下方 | 当前对象的只读信息；部件 ID、板厚依据、网格包围盒、来源等 |
 | 重建参数 | `dock.reconstruction` | 左侧 | 逐板识别结果、默认关闭的镜像选项及独立手动参数模式 |
 | 操作面板 | `dock.operation` | 左侧 | 移动、旋转、基准面、孔洞等操作表单 |
 | 日志窗口 | `dock.log` | 底部 | 日志、复制所选和清空；隐藏时继续收集 |
 | 任务信息 | `dock.tasks` | 底部 | 当前任务名称、状态、阶段和进度，不维护历史任务列表 |
 
-中央三维视图使用 `dock.viewport`，不可关闭、移动或浮动，不列入窗口菜单。辅助窗口默认隐藏，按需打开；同侧窗口可标签化组合，自动隐藏侧边栏暂未启用。窗口菜单直接复用 `CDockWidget::toggleViewAction()`，勾选表示窗口已打开，标签被其他窗口遮挡不代表关闭。
+中央三维视图使用 `dock.viewport`，不可关闭、移动或浮动，不列入窗口菜单。模型树和属性默认在右侧上下显示，其他辅助窗口按需打开；同侧窗口可标签化组合，自动隐藏侧边栏暂未启用。窗口菜单直接复用 `CDockWidget::toggleViewAction()`，勾选表示窗口已打开，标签被其他窗口遮挡不代表关闭。
 
-关闭辅助窗口等价于隐藏，不启用 `DockWidgetDeleteOnClose`，重开沿用原实例及内容。Ribbon“重建参数”和窗口菜单指向同一个 Dock，重复打开只显示并激活该窗口。“隐藏所有辅助窗口”保留中央视图、Ribbon 和状态栏；“恢复默认布局”恢复初始停靠安排并收起辅助窗口，不清空点云、模型、日志或参数。
+关闭辅助窗口等价于隐藏，不启用 `DockWidgetDeleteOnClose`，重开沿用原实例及内容。Ribbon“重建参数”和窗口菜单指向同一个 Dock，重复打开只显示并激活该窗口。“隐藏所有辅助窗口”保留中央视图、Ribbon 和状态栏；“恢复默认布局”恢复右侧模型树与属性并收起其他辅助窗口，不清空点云、模型、日志或参数。
 
-布局在 `QSettings` 的 `ui/layout/v1` 组保存主窗 `geometry` 和 ADS `docks` 状态，ADS 布局版本为 1。启动顺序为：设置 ADS 全局配置 → 创建中央 Dock 并调用 `setCentralWidget()` → 注册全部工具 Dock → 捕获默认布局 → 恢复用户布局。恢复失败回退默认快照，并检查主窗与浮动窗口标题栏是否仍在可用屏幕范围内。正常关闭流程被接受后才保存布局；有后台任务时先请求取消并等待安全退出。窗口集合或保存格式发生不兼容变化时同步升级配置组与布局版本。
+布局在 `QSettings` 的 `ui/layout/v2` 组保存主窗 `geometry` 和 ADS `docks` 状态，ADS 布局版本为 2；首次使用新布局不读取旧版 v1 的位置。启动顺序为：设置 ADS 全局配置 → 创建中央 Dock 并调用 `setCentralWidget()` → 注册全部工具 Dock → 捕获默认布局 → 恢复用户布局。恢复失败回退默认快照，并检查主窗与浮动窗口标题栏是否仍在可用屏幕范围内。正常关闭流程被接受后才保存布局；有后台任务时先请求取消并等待安全退出。窗口集合或保存格式发生不兼容变化时同步升级配置组与布局版本。
 
 ### 动作、参数与后续接入
 
@@ -120,9 +122,13 @@ flowchart LR
 | 重建 | 参数、开始重建和停止重建连接现有服务；局部重建待接入 |
 | 模型修改 | 选点建模、障碍物、板厚/轮廓调整、槽钢/角钢、贴板/底板、过焊孔/底边孔、圆角/倒角、移动及旋转提供表单；删除模型和钢结构命令待接入 |
 | 工具 | 测量、基准面提供表单；计算偏差使用现有服务 |
-| 视图工具条 | 点云/实体显隐、高度渐变、可见侧板厚、适合视图、底板正视和方向立方体可用；点选择可用；线/面/体过滤、线框、剖切待接入 |
+| 视图工具条 | 点云/实体显隐、高度渐变、可见侧板厚、适合视图、底板正视和方向立方体可用；点云框选和整件选择可用；线/面过滤、线框、剖切待接入 |
 
-点云编辑：左键拖动矩形框选，选择工具条中的“选择 / 新增选择 / 移除选择”切换替换、加选和减选。橙色矩形表示框选范围，蓝色表示选中点；右键单击打开“截取点云 / 删除点云”菜单，右键拖动仍旋转视图。“截取点云”只保留选中点，“删除点云”移除选中点；未选点或点云隐藏时禁用。单击空白（替换模式）或 Esc 清空选区。框选贯穿当前相机视锥深度，包括遮挡点，作用于完整点云，不只处理最多 20 万个显示点。
+模型选择：生成或导入模型后自动切到“可选：体”，左键单击部件以青蓝色高亮，并选中模型树对应节点、显示属性；点击树节点会显示模型并高亮对应部件。空白单击或 Esc 清空选择，隐藏模型或替换资产时清除旧选择。模型树区分点云、重建模型、STEP/CWRM 模型；按稳定部件 ID 关联，不依赖树行号或网格顺序。属性只读，板厚区分识别、估算、手动和未提供；导入模型不推测板厚。包围盒来自该部件显示网格的项目坐标，沿世界坐标轴排列，尺寸不能当作局部板厚。
+
+`ModelInspector` 仅在模型资产变化时重建部件树和属性缓存；选区、导出状态变化不重建树。`OccPartMesh` 扩展 `AIS_Triangulation` 的整件选择实体，按三角面命中而非包围盒；`OccModelPresentation` 显式注册并激活选择模式，标注和引线不参与选择。方向立方体的点击优先处理。选择与高亮只属于 GUI 状态，不改变服务模型或导出几何。
+
+点云编辑：切换到“可选：点”后左键拖动矩形框选，选择工具条中的“选择 / 新增选择 / 移除选择”切换替换、加选和减选。橙色矩形表示框选范围，蓝色表示选中点；右键单击打开“截取点云 / 删除点云”菜单，右键拖动仍旋转视图。“截取点云”只保留选中点，“删除点云”移除选中点；未选点或点云隐藏时禁用。单击空白（替换模式）或 Esc 清空选区。框选贯穿当前相机视锥深度，包括遮挡点，作用于完整点云，不只处理最多 20 万个显示点。
 
 `CloudSelectionRect` 保存局部毫米坐标到相机裁剪空间的矩阵与矩形；`geometry/CloudEditing` 处理投影、增减索引和过滤，不访问 Qt / AIS。过滤保留原始 `sourceIndex`、强度、单位和显示原点，重算当前包围盒；原始文件点数与当前有效点数分开统计。`PointCloudDisplayData::pointIndex` 将显示采样映射到当前完整点云选区，选择本身不改变识别和模型。
 
@@ -145,6 +151,8 @@ flowchart LR
 `PointCloudDisplayData` 在最多 20 万个显示采样点上计算沿 PCA 短轴的高度，使用 2% / 98% 分位数映射紫青色域；退化高度使用中间紫色。`OccViewport` 通过 `Graphic3d_ArrayOfPoints` 的逐点颜色绘制，默认开启“高度渐变”，纯色模式使用青色。只在更新点云、选区或切换模式时重建显示数组，旋转、平移和缩放不重算配色。桌面选择 PCD 后固定按 mm 提交导入，不再显示单位确认或切换弹窗。
 
 主题入口为 [WorkbenchTheme.cpp](workbench/WorkbenchTheme.cpp) 和 [workbench.qss](workbench/resources/workbench.qss)，资源通过 `.qrc` 管理。当前采用深蓝黑背景、青蓝强调色和浅色文字：视口背景 `#081521`、面板背景 `#0B202A`、强调色 `#1EA7D8`、主文字 `#DCE4EA`。图标由 QPainter 绘制多个尺寸及禁用状态，不裁剪参考软件图标，也不额外依赖 QtSvg。主窗口与 ADS 使用统一 QSS，避免库的默认主题覆盖；Ribbon 中文字体、分组标题高度和图标尺寸需协同调整，布局尺寸使用逻辑像素。
+
+应用图标独立于工具栏图标：自有 [ReverseModeler.svg](workbench/resources/app/ReverseModeler.svg) 用紫色采样点过渡到青蓝实体表达点云逆向建模。生成的 ICO 包含 16、20、24、32、40、48、64、128、256 像素九个尺寸，Qt 全局窗口图标与 Windows EXE 的 RC 资源共用此文件；Windows 启动前设置稳定的进程 AppUserModelID，主窗口首次显示前同时指定窗口 AppUserModelID、任务栏图标资源、显示名与重新启动命令，避免只更新标题栏而遗漏任务栏分组图标。路径从当前运行的 EXE 动态取得，不写死开发目录；窗口销毁前清除所设置的 Shell 属性。CMake 编译、安装和打包自动带上嵌入图标，运行时不读取外部图片。修改 SVG 后，在仓库根目录执行 `python pythonProject/generate_app_icon.py --inkscape "D:/app/Inkscape/bin/inkscape.com"` 更新 ICO 和预览 PNG。Inkscape 仅用于维护美术资源，不属于正常构建或运行依赖。
 
 [Dependencies.cmake](../cmake/Dependencies.cmake) 统一查找 `SARibbonBar 2.8.0` 和 `qtadvanceddocking-qt6 4.5.0`。[主程序 CMakeLists.txt](CMakeLists.txt) 仅为 `ReverseModeler` 链接 `SARibbonBar::SARibbonBar` 与 `ads::qtadvanceddocking-qt6`，并启用 `AUTOMOC`/`AUTORCC`；两个 UI 库不加入 `RM_COMMON_LIBRARIES` 或服务测试目标。继续通过安装前缀消费匹配的 SDK，不引入第三方源码构建。运行时 DLL、Qt 插件和 OCCT 资源要求见[根 README](../README.md#构建与运行)，正式分发需保留所用库的许可证文件。
 
@@ -175,7 +183,7 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/Example.h")
 
 ## 当前能力边界
 
-- 桌面 UI 框架及现有业务入口已接入；当前唯一模板为 H 型钢；细粒度对象选择/属性编辑、新几何操作、剖切、线框及其他工件模板算法仍待实现。各入口状态见[桌面工作台](#桌面工作台)。布局记忆不保存点云、模型和参数。
+- 桌面 UI 框架及现有业务入口已接入；当前唯一模板为 H 型钢；整件选择和只读属性已接入，线/面选择、属性编辑、新几何操作、剖切、线框及其他工件模板算法仍待实现。各入口状态见[桌面工作台](#桌面工作台)。布局记忆不保存点云、模型和参数。
 - 支持 PCD 的 ASCII、binary、binary_compressed 格式。内存中保留 XYZ、intensity、源点索引、字段名称和无效点计数，其他字段保留在原文件中。
 - PCA 与底部观测面拟合提供方向；当前从单侧正交板件的连续顶边条带识别各侧板、肋板的厚度和实际站位。沿条带分段计算横向 2%–98% 宽度，以中位数汇总并记录截面四分位差。缺少连续支持或厚度不稳定时不补板件，不把投影包围厚度当成测量结果。底板尚无可靠双面测厚：两侧板均通过识别时，采用未取整厚度的最大值，并记录 `inferred_side_plate_max`，这是建模估算而非底板实测值。观测面作为底板上表面，向背侧加厚；底板横向边界使用两翼板内侧面，翼板下沿贴合底板底面，肋板底面仍接底板上表面。各翼板的纵向端部独立识别；建模时仅在容差内将底板端部突出收齐到翼板共同范围，保留超阈值突出与原始识别记录。镜像时两半翼板在底板中面分界，避免底板厚度范围内出现重复实体。任一侧板证据不足时保留底部观测面。自动双面板厚、任意曲面和局部孔洞识别仍未实现。
 - 默认模型由识别的单侧板件和最大值估算的底板组成，依据不足时底板为观测面；开启镜像才补建另一侧。偏差计算针对有限矩形板件表面，包含端面与边界；任意 CAD 模型的通用距离计算尚未实现。

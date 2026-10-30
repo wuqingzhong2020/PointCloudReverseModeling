@@ -31,7 +31,8 @@ class DockWorkspace final : public QObject
 {
   public:
     DockWorkspace(QMainWindow *window, QWidget *viewport);
-    void addPanel(const QString &id, const QString &title, QWidget *content, DockPosition position);
+    void addPanel(const QString &id, const QString &title, QWidget *content, DockPosition position,
+                  const QString &belowPanel = {});
     void initializeLayout();
     void restoreLayout();
     void saveLayout() const;

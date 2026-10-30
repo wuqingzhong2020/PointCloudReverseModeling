@@ -191,6 +191,17 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
                 {
                     throw std::invalid_argument("显示网格包含非有限坐标。");
                 }
+                if (part.vertices.empty())
+                {
+                    part.boundsMinMm = part.boundsMaxMm = point;
+                }
+                else
+                {
+                    part.boundsMinMm = {std::min(part.boundsMinMm.x, point.x),
+                        std::min(part.boundsMinMm.y, point.y), std::min(part.boundsMinMm.z, point.z)};
+                    part.boundsMaxMm = {std::max(part.boundsMaxMm.x, point.x),
+                        std::max(part.boundsMaxMm.y, point.y), std::max(part.boundsMaxMm.z, point.z)};
+                }
                 part.vertices.push_back(local);
             }
             triangle[corner] = entry->second;

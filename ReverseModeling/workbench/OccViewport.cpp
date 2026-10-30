@@ -30,6 +30,7 @@
 #include <Graphic3d_TransformPers.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <Prs3d_DatumAspect.hxx>
+#include <Prs3d_Drawer.hxx>
 #include <Quantity_Color.hxx>
 #include <Quantity_TypeOfColor.hxx>
 #include <Standard_Failure.hxx>
@@ -62,6 +63,8 @@ struct OccViewport::State {
     std::shared_ptr<const CloudSelection> selection;
     CloudSelectionMode selectionMode{CloudSelectionMode::Replace};
     bool cloudEditingEnabled{};
+    bool modelPickingEnabled{};
+    std::string selectedPart;
     bool selecting{};
     bool rightDragged{};
     QPoint rightPress;
@@ -88,7 +91,7 @@ OccViewport::OccViewport(QWidget* parent) : QWidget(parent), state_(std::make_un
     setAttribute(Qt::WA_NoSystemBackground);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
-    setToolTip(QStringLiteral("左键框选点云（贯穿深度），右键单击编辑菜单；右键拖动旋转，中键平移，Esc 清空选区"));
+    setToolTip(QStringLiteral("可选：体时左键选部件；可选：点时左键框选点云；右键拖动旋转，中键平移，Esc 清空选择"));
     state_->navigationTimer = new QTimer(this);
     state_->navigationTimer->setInterval(16);
     connect(state_->navigationTimer, &QTimer::timeout, this, &OccViewport::advanceNavigationAnimation);
@@ -162,6 +165,10 @@ void OccViewport::initialize() {
         state_->view->SetBackgroundColor(Quantity_Color(0.031, 0.082, 0.129, Quantity_TOC_sRGB));
         state_->view->SetProj(V3d_XposYnegZpos);
         state_->context = new AIS_InteractiveContext(state_->viewer);
+        state_->context->SelectionStyle()->SetColor(Quantity_Color(0.10, 0.66, 0.95, Quantity_TOC_sRGB));
+        state_->context->SelectionStyle()->SetDisplayMode(0);
+        state_->context->HighlightStyle()->SetColor(Quantity_Color(0.30, 0.82, 0.90, Quantity_TOC_sRGB));
+        state_->context->HighlightStyle()->SetDisplayMode(0);
         createViewCube();
         state_->model = std::make_unique<OccModelPresentation>(state_->context, state_->view);
         rebuildCloud();
@@ -275,6 +282,8 @@ void OccViewport::rebuildMesh()
     }
     state_->model->rebuild(state_->parts);
     state_->model->setVisible(state_->modelVisible, state_->thicknessVisible);
+    state_->model->setSelectable(state_->modelPickingEnabled);
+    state_->model->selectPart(state_->selectedPart);
 }
 
 void OccViewport::redraw()
@@ -323,6 +332,7 @@ void OccViewport::setCloudHeightColors(bool enabled)
 
 void OccViewport::setModel(std::vector<ModelDisplayPart> parts)
 {
+    state_->selectedPart.clear();
     state_->parts = std::move(parts);
     try
     {
@@ -337,6 +347,31 @@ void OccViewport::setModel(std::vector<ModelDisplayPart> parts)
     {
         fail(QString::fromUtf8(error.what()));
     }
+}
+
+void OccViewport::setModelPickingEnabled(bool enabled)
+{
+    if (state_->modelPickingEnabled == enabled) return;
+    state_->modelPickingEnabled = enabled;
+    try
+    {
+        if (state_->model) state_->model->setSelectable(enabled);
+        update();
+    }
+    catch (const Standard_Failure &error) { fail(QString::fromUtf8(error.what())); }
+}
+
+void OccViewport::setSelectedPart(const std::string &id)
+{
+    const bool exists = state_->modelVisible && std::any_of(state_->parts.begin(), state_->parts.end(),
+        [&id](const auto &part) { return part.id == id; });
+    state_->selectedPart = exists ? id : std::string{};
+    try
+    {
+        if (state_->model) state_->model->selectPart(state_->selectedPart);
+        update();
+    }
+    catch (const Standard_Failure &error) { fail(QString::fromUtf8(error.what())); }
 }
 
 void OccViewport::setCloudVisible(bool visible) {
@@ -359,6 +394,11 @@ void OccViewport::setCloudVisible(bool visible) {
 void OccViewport::setModelVisible(bool visible)
 {
     state_->modelVisible = visible;
+    if (!visible && !state_->selectedPart.empty())
+    {
+        setSelectedPart({});
+        if (onModelPartSelected) onModelPartSelected({});
+    }
     try
     {
         if (state_->model)
@@ -715,6 +755,14 @@ void OccViewport::mouseReleaseEvent(QMouseEvent *event)
             state_->viewCube->StartAnimation(owner);
             state_->navigationTimer->start();
             event->accept();
+            return;
+        }
+        if (state_->modelPickingEnabled && state_->model)
+        {
+            const auto id = state_->model->detectedPartId(state_->context->DetectedOwner());
+            setSelectedPart(id);
+            if (onModelPartSelected) onModelPartSelected(id);
+            event->accept();
         }
     }
     catch (const Standard_Failure &error)
@@ -728,6 +776,8 @@ void OccViewport::keyPressEvent(QKeyEvent *event)
     if (event->key() == Qt::Key_Escape)
     {
         clearSelectionRectangle();
+        setSelectedPart({});
+        if (onModelPartSelected) onModelPartSelected({});
         if (state_->cloudEditingEnabled && onCloudSelection)
         {
             onCloudSelection({}, CloudSelectionMode::Clear);

@@ -5,6 +5,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <Standard_Handle.hxx>
@@ -12,6 +13,7 @@
 #include "workbench/ModelDisplayData.h"
 
 class AIS_InteractiveContext;
+class SelectMgr_EntityOwner;
 class V3d_View;
 
 namespace reverse::workbench
@@ -23,6 +25,9 @@ public:
     ~OccModelPresentation();
     void rebuild(const std::vector<ModelDisplayPart> &parts);
     void setVisible(bool modelVisible, bool labelsVisible);
+    void setSelectable(bool enabled);
+    void selectPart(const std::string &id);
+    [[nodiscard]] std::string detectedPartId(const Handle(SelectMgr_EntityOwner) &owner) const;
     void updateLabels(int pixelWidth, int pixelHeight, double pixelRatio);
 
 private:

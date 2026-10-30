@@ -1,0 +1,7 @@
+// Native Windows executable icon; configured by CMake with an absolute asset path.
+#pragma code_page(65001)
+101 ICON "@RM_APPLICATION_ICON@"
+STRINGTABLE
+BEGIN
+    102 "ReverseModeler · 点云辅助逆向建模"
+END

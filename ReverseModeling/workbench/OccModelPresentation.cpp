@@ -34,6 +34,8 @@
 
 #include "workbench/OccModelPresentation.h"
 #include "workbench/ModelLabelVisibility.h"
+#include "workbench/OccPartMesh.h"
+#include "workbench/OccPicking.h"
 
 namespace reverse::workbench
 {
@@ -41,7 +43,8 @@ namespace
 {
 struct PartPresentation
 {
-    Handle(AIS_Triangulation) mesh;
+    std::string id;
+    Handle(OccPartMesh) mesh;
     Handle(AIS_TextLabel) label;
     Handle(AIS_Line) leader;
     gp_Pnt anchor;
@@ -51,7 +54,7 @@ struct PartPresentation
     double fontHeight{};
 };
 
-Handle(AIS_Triangulation) makeMesh(const ModelDisplayPart &part)
+Handle(OccPartMesh) makeMesh(const ModelDisplayPart &part)
 {
     const auto limit = static_cast<std::size_t>(std::numeric_limits<int>::max());
     if (part.vertices.size() > limit || part.triangles.size() > limit)
@@ -72,7 +75,7 @@ Handle(AIS_Triangulation) makeMesh(const ModelDisplayPart &part)
             static_cast<int>(triangle[0] + 1), static_cast<int>(triangle[1] + 1), static_cast<int>(triangle[2] + 1)));
     }
     mesh->ComputeNormals();
-    Handle(AIS_Triangulation) result = new AIS_Triangulation(mesh);
+    Handle(OccPartMesh) result = new OccPartMesh(mesh);
     // AIS_Triangulation 只支持模式 0；使用通用哑光材质保留部件自身配色。
     result->SetDisplayMode(0);
     Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_Plastified);
@@ -166,6 +169,7 @@ struct OccModelPresentation::State
     std::unique_ptr<ModelLabelVisibility> visibility;
     bool modelVisible{true};
     bool labelsVisible{true};
+    bool selectable{};
 
     bool updateAnchor(PartPresentation &part) const
     {
@@ -231,6 +235,7 @@ void OccModelPresentation::rebuild(const std::vector<ModelDisplayPart> &parts)
     for (const auto &part : parts)
     {
         PartPresentation presentation;
+        presentation.id = part.id;
         presentation.mesh = makeMesh(part);
         presentation.faces = part.labelFaces;
         const auto &anchor = part.labelFaces.front().position;
@@ -251,12 +256,46 @@ void OccModelPresentation::setVisible(bool modelVisible, bool labelsVisible)
     for (const auto &part : m_state->parts)
     {
         m_state->show(part.mesh, modelVisible);
+        part.mesh->setSelectable(m_state->context, modelVisible && m_state->selectable);
         if (!part.label.IsNull() && (!modelVisible || !labelsVisible))
         {
             m_state->show(part.label, false);
             m_state->show(part.leader, false);
         }
     }
+}
+
+void OccModelPresentation::setSelectable(bool enabled)
+{
+    m_state->selectable = enabled;
+    setVisible(m_state->modelVisible, m_state->labelsVisible);
+    m_state->context->ClearDetected(false);
+}
+
+void OccModelPresentation::selectPart(const std::string &id)
+{
+    m_state->context->ClearSelected(false);
+    if (!m_state->modelVisible || id.empty()) return;
+    for (const auto &part : m_state->parts)
+    {
+        if (part.id == id)
+        {
+            m_state->context->SetSelected(part.mesh, false);
+            break;
+        }
+    }
+}
+
+std::string OccModelPresentation::detectedPartId(const Handle(SelectMgr_EntityOwner) &owner) const
+{
+    if (m_state->modelVisible && m_state->selectable)
+    {
+        for (const auto &part : m_state->parts)
+        {
+            if (isDetectedInteractive(owner, part.mesh)) return part.id;
+        }
+    }
+    return {};
 }
 
 void OccModelPresentation::updateLabels(int pixelWidth, int pixelHeight, double pixelRatio)

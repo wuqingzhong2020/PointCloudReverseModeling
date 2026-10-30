@@ -4,6 +4,7 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_recognition_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/cloud_editing_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/viewport_picking_tests.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccPicking.h")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccPartMesh.h")
 # 仅测试中立显示数据的分组与标注，不引入 Qt / AIS / Dock 依赖。
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelDisplayData.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelDisplayData.h")

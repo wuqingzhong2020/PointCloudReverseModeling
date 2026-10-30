@@ -9,12 +9,6 @@
       "architecture": "x64",
       "toolset": "v143",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {
-        "CMAKE_PREFIX_PATH": {
-          "type": "PATH",
-          "value": "D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20"
-        }
-      },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
@@ -24,9 +18,11 @@
     }
   ],
   "buildPresets": [
-    { "name": "windows-release", "configurePreset": "vc143-cpp20", "configuration": "Release" }
+    { "name": "windows-release", "configurePreset": "vc143-cpp20", "configuration": "Release" },
+    { "name": "windows-debug", "configurePreset": "vc143-cpp20", "configuration": "Debug" }
   ],
   "testPresets": [
-    { "name": "windows-release", "configurePreset": "vc143-cpp20", "configuration": "Release", "output": { "outputOnFailure": true } }
+    { "name": "windows-release", "configurePreset": "vc143-cpp20", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "windows-debug", "configurePreset": "vc143-cpp20", "configuration": "Debug", "output": { "outputOnFailure": true } }
   ]
 }

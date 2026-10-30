@@ -9,4 +9,7 @@ enable_testing()
 add_subdirectory(ReverseModeling)
 add_subdirectory(tests)
 
+include(cmake/Runtime.cmake)
+include(cmake/Packaging.cmake)
+
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT ReverseModeler)

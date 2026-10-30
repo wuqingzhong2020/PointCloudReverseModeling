@@ -36,6 +36,7 @@
 #include "workbench/DockWorkspace.h"
 #include "workbench/MainWindow.h"
 #include "workbench/ModelDisplayData.h"
+#include "workbench/ModelInspector.h"
 #include "workbench/OccViewport.h"
 #include "workbench/PointCloudDisplayData.h"
 #include "workbench/RecentFilesMenu.h"
@@ -106,8 +107,7 @@ struct MainWindow::State
     ReconstructionPanel *parameters{};
     OperationPanel *operation{};
     QPlainTextEdit *log{};
-    QTreeWidget *tree{};
-    QTableWidget *properties{};
+    ModelInspector *inspector{};
     QLabel *taskDetails{};
     QLabel *status{};
     QProgressBar *progress{};
@@ -123,7 +123,6 @@ MainWindow::MainWindow(QWidget *parent)
     setObjectName(QStringLiteral("ReverseModeler.MainWindow"));
     setStyleSheet(qApp->styleSheet());
     setWindowTitle(QStringLiteral("ReverseModeler · 点云辅助逆向建模"));
-    setWindowIcon(WorkbenchTheme::icon(QStringLiteral("cube")));
     resize(1500, 920);
     state_->actions = new WorkbenchActions(this);
     auto &actions = *state_->actions;
@@ -145,25 +144,33 @@ MainWindow::MainWindow(QWidget *parent)
     viewLayout->addWidget(createViewToolbar(viewContainer, actions));
     viewLayout->addWidget(state_->viewport, 1);
     auto *hint =
-        label(QStringLiteral("左键框选 · 右键菜单/拖动旋转 · 中键平移 · 滚轮缩放 · Esc 清空选区"), viewContainer);
+        label(QStringLiteral("左键选部件 / 框选点云 · 右键拖动旋转 · 中键平移 · 滚轮缩放 · Esc 清空选择"), viewContainer);
     hint->setProperty("muted", true);
     hint->setContentsMargins(12, 5, 6, 5);
     viewLayout->addWidget(hint);
-    state_->tree = new QTreeWidget(this);
-    state_->tree->setObjectName(QStringLiteral("panel.modelTree"));
-    state_->tree->setHeaderLabels({QStringLiteral("工程对象"), QStringLiteral("状态")});
-    state_->tree->setMinimumWidth(250);
-    state_->workspace->addPanel(QStringLiteral("dock.modelTree"), QStringLiteral("模型树"), state_->tree,
-                                DockPosition::Left);
-    state_->properties = new QTableWidget(0, 2, this);
-    state_->properties->setObjectName(QStringLiteral("panel.properties"));
-    state_->properties->setHorizontalHeaderLabels({QStringLiteral("属性"), QStringLiteral("值")});
-    state_->properties->horizontalHeader()->setStretchLastSection(true);
-    state_->properties->verticalHeader()->hide();
-    state_->properties->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    state_->properties->setMinimumWidth(250);
-    state_->workspace->addPanel(QStringLiteral("dock.properties"), QStringLiteral("属性"), state_->properties,
+    state_->inspector = new ModelInspector(this);
+    state_->workspace->addPanel(QStringLiteral("dock.modelTree"), QStringLiteral("模型树"), state_->inspector->tree(),
                                 DockPosition::Right);
+    state_->workspace->addPanel(QStringLiteral("dock.properties"), QStringLiteral("属性"), state_->inspector->properties(),
+                                DockPosition::Right, QStringLiteral("dock.modelTree"));
+    state_->inspector->onPartSelected = [this](const std::string &id)
+    {
+        if (!id.empty())
+        {
+            state_->actions->get(ActionId::ShowModel)->setChecked(true);
+            state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        }
+        state_->viewport->setSelectedPart(id);
+    };
+    state_->viewport->onModelPartSelected = [this](const std::string &id)
+    {
+        state_->inspector->selectPart(id);
+        if (!id.empty())
+        {
+            state_->workspace->showPanel(QStringLiteral("dock.modelTree"));
+            state_->workspace->showPanel(QStringLiteral("dock.properties"));
+        }
+    };
     state_->parameters = new ReconstructionPanel(this);
     state_->workspace->addPanel(QStringLiteral("dock.reconstruction"), QStringLiteral("重建参数"), state_->parameters,
                                 DockPosition::Left);
@@ -311,6 +318,19 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(actions.get(CloudHeight), &QAction::toggled, state_->viewport, &OccViewport::setCloudHeightColors);
     connect(actions.get(ShowModel), &QAction::toggled, state_->viewport, &OccViewport::setModelVisible);
+    connect(actions.get(ShowModel), &QAction::toggled, this, [this] { updateActions(); });
+    for (const auto id : {SelectPoint, SelectSolid})
+    {
+        connect(actions.get(id), &QAction::toggled, this, [this, id](bool checked)
+        {
+            if (checked && id == ActionId::SelectPoint)
+            {
+                state_->viewport->setSelectedPart({});
+                state_->inspector->selectPart({});
+            }
+            updateActions();
+        });
+    }
     connect(actions.get(ShowThickness), &QAction::toggled, state_->viewport, &OccViewport::setThicknessVisible);
     connect(actions.get(FitAll), &QAction::triggered, state_->viewport, &OccViewport::fitAll);
     connect(actions.get(BottomView), &QAction::triggered, this,
@@ -405,10 +425,16 @@ void MainWindow::updateActions()
     const auto project = state_->service.project();
     auto &actions = *state_->actions;
     actions.get(ActionId::Open)->setEnabled(idle);
-    const bool cloudEditable =
+    const bool cloudAvailable =
         idle && project.cloud && !project.cloud->points.empty() && actions.get(ActionId::ShowCloud)->isChecked();
+    const bool cloudEditable = cloudAvailable && actions.get(ActionId::SelectPoint)->isChecked();
+    const bool modelAvailable = idle && project.model && actions.get(ActionId::ShowModel)->isChecked();
     state_->viewport->setCloudEditingEnabled(cloudEditable);
-    for (const auto id : {ActionId::Select, ActionId::AddSelection, ActionId::RemoveSelection, ActionId::SelectPoint})
+    state_->viewport->setModelPickingEnabled(modelAvailable && actions.get(ActionId::SelectSolid)->isChecked());
+    actions.get(ActionId::Select)->setEnabled(cloudEditable || modelAvailable);
+    actions.get(ActionId::SelectPoint)->setEnabled(cloudAvailable);
+    actions.get(ActionId::SelectSolid)->setEnabled(modelAvailable);
+    for (const auto id : {ActionId::AddSelection, ActionId::RemoveSelection})
     {
         actions.get(id)->setEnabled(cloudEditable);
     }
@@ -689,10 +715,17 @@ void MainWindow::refreshDisplay(bool fitView)
     if (project.mesh && project.model)
     {
         state_->viewport->setModel(makeModelDisplayParts(*project.mesh, *project.model, origin));
+        state_->actions->get(ActionId::ShowModel)->setChecked(true);
+        state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        state_->actions->get(ActionId::Select)->setChecked(true);
+        state_->viewport->setCloudSelectionMode(CloudSelectionMode::Replace);
+        state_->workspace->showPanel(QStringLiteral("dock.modelTree"));
+        state_->workspace->showPanel(QStringLiteral("dock.properties"));
     }
     else
     {
         state_->viewport->setModel({});
+        state_->actions->get(ActionId::SelectPoint)->setChecked(true);
     }
     if (fitView)
     {
@@ -703,30 +736,7 @@ void MainWindow::refreshDisplay(bool fitView)
 
 void MainWindow::refreshProjectPanels()
 {
-    const auto project = state_->service.project();
-    state_->tree->clear();
-    auto *root = new QTreeWidgetItem(state_->tree, {QStringLiteral("当前工程"), QStringLiteral("内存")});
-    new QTreeWidgetItem(root,
-                        {QStringLiteral("点云"), project.cloud ? QStringLiteral("已导入") : QStringLiteral("无")});
-    new QTreeWidgetItem(
-        root, {QStringLiteral("模型"), project.model ? (project.model->importedFormat.empty() ? QStringLiteral("已生成") : QStringLiteral("已导入")) : QStringLiteral("无")});
-    state_->tree->expandAll();
-    state_->tree->resizeColumnToContents(0);
-    const QList<QPair<QString, QString>> properties = {
-        {QStringLiteral("工程版本"), QString::number(project.revision)},
-        {QStringLiteral("来源"), !project.sourcePathUtf8.empty() ? text(project.sourcePathUtf8) : QStringLiteral("尚未导入")},
-        {QStringLiteral("有效点数"),
-         project.cloud ? QString::number(project.cloud->points.size()) : QStringLiteral("0")},
-        {QStringLiteral("实体数"), project.model ? QString::number(project.model->solidCount) : QStringLiteral("0")},
-        {QStringLiteral("独立曲面数"),
-         project.model ? QString::number(project.model->surfaceCount) : QStringLiteral("0")},
-        {QStringLiteral("选中点数"), QString::number(project.selection ? project.selection->size() : 0)}};
-    state_->properties->setRowCount(static_cast<int>(properties.size()));
-    for (qsizetype i = 0; i < properties.size(); ++i)
-    {
-        state_->properties->setItem(static_cast<int>(i), 0, new QTableWidgetItem(properties[i].first));
-        state_->properties->setItem(static_cast<int>(i), 1, new QTableWidgetItem(properties[i].second));
-    }
+    state_->inspector->setProject(state_->service.project());
 }
 
 void MainWindow::pollTask()

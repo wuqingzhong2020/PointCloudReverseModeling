@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>ReverseModeler — point cloud to solid</title>
+  <desc>Violet sample points become a cyan three-dimensional solid on a dark navy tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#15394e"/>
+      <stop offset="1" stop-color="#071522"/>
+    </linearGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#b2f7fb"/>
+      <stop offset="1" stop-color="#4ed3ed"/>
+    </linearGradient>
+    <linearGradient id="side" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#2bb9ee"/>
+      <stop offset="1" stop-color="#1872ce"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#tile)"/>
+  <rect x="9" y="9" width="238" height="238" rx="51" fill="none" stroke="#417089" stroke-width="2"/>
+  <path d="M91 88 156 50 221 88 156 126Z" fill="url(#top)"/>
+  <path d="M156 126 221 88 221 164 156 202Z" fill="url(#side)"/>
+  <path d="M107 98 156 126 156 202 107 174 107 148 125 158 125 136 107 126Z" fill="#7975e8"/>
+  <path d="M156 126V202" fill="none" stroke="#8ce6ff" stroke-width="3"/>
+  <g fill="#b1a1ff">
+    <circle cx="83" cy="82" r="7"/>
+    <circle cx="83" cy="110" r="8"/>
+    <circle cx="83" cy="140" r="8"/>
+    <circle cx="83" cy="171" r="7"/>
+    <circle cx="60" cy="96" r="6"/>
+    <circle cx="60" cy="126" r="6"/>
+    <circle cx="60" cy="157" r="6"/>
+  </g>
+  <g fill="#8c7cdd">
+    <circle cx="38" cy="112" r="4.5"/>
+    <circle cx="38" cy="142" r="4.5"/>
+  </g>
+</svg>

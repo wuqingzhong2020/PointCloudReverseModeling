@@ -84,7 +84,7 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {SelectPoint, "selectPoint", "点", "", Available},
                                 {SelectEdge, "selectEdge", "线", "", Pending},
                                 {SelectFace, "selectFace", "面", "", Pending},
-                                {SelectSolid, "selectSolid", "体", "cube", Pending},
+                                {SelectSolid, "selectSolid", "体", "cube", Available},
                                 {ShowCloud, "showCloud", "点云", "cloud", Available},
                                 {CloudHeight, "cloudHeight", "高度渐变", "", Available},
                                 {CloudSolid, "cloudSolid", "纯色", "", Available},
@@ -139,7 +139,8 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
     get(Undo)->setToolTip(QStringLiteral("撤销上一次点云截取、删除或重置（最多 10 步）"));
     get(Redo)->setToolTip(QStringLiteral("重做点云编辑"));
     get(Reset)->setToolTip(QStringLiteral("恢复本次导入的完整点云；可撤销"));
-    get(Select)->setToolTip(QStringLiteral("左键框选，替换当前选区；单击或 Esc 清空选区"));
+    get(Select)->setToolTip(QStringLiteral("体模式左键选择部件；点模式左键框选；单击空白或 Esc 清空选择"));
+    get(SelectSolid)->setToolTip(QStringLiteral("选择完整模型部件，同步模型树与只读属性"));
     get(AddSelection)->setToolTip(QStringLiteral("左键框选，将区域内点加入选区"));
     get(RemoveSelection)->setToolTip(QStringLiteral("左键框选，将区域内点移出选区"));
     get(Open)->setShortcut(QKeySequence::Open);

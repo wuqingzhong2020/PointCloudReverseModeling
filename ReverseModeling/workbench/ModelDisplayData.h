@@ -25,6 +25,8 @@ struct ModelDisplayPart
     std::vector<Vec3> vertices; // 已减去显示原点，单位 mm。
     std::vector<std::array<std::uint32_t, 3>> triangles;
     std::array<double, 3> colorSrgb;
+    Vec3 boundsMinMm; // 部件三角网格的项目坐标包围盒，不减显示原点。
+    Vec3 boundsMaxMm;
     std::optional<double> thicknessMm;
     bool thicknessUnresolved{};
     bool thicknessEstimated{}; // 由其他板件推算，标签必须与本板识别厚度区分。

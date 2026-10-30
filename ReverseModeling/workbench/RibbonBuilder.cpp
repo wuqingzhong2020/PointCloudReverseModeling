@@ -137,6 +137,13 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
     }
     auto *filter = new QToolButton(toolbar);
     filter->setText(QStringLiteral("可选：点"));
+    for (const auto id : {SelectPoint, SelectSolid})
+    {
+        QObject::connect(actions.get(id), &QAction::toggled, filter, [filter, &actions, id](bool checked)
+        {
+            if (checked) filter->setText(QStringLiteral("可选：") + actions.get(id)->text());
+        });
+    }
     filter->setPopupMode(QToolButton::InstantPopup);
     filter->setMenu(menu(toolbar, QStringLiteral("选择过滤"), actions,
                          {SelectPoint, SelectEdge, SelectFace, SelectSolid}, QString()));

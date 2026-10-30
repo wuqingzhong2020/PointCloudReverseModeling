@@ -14,6 +14,8 @@
 | [研究与实现参考资料](reference/README.md) | 参考文档目录、实施背景、维护约定与原始材料归档说明 |
 | [C++ 编码规范](docs/cpp编码规范.md) | C++、Qt、CMake 与测试维护约定 |
 | [Python 脚本编码规范](docs/Python脚本编码规范.md) | CPython SDK、脚本写法与未来宿主接口边界 |
+| [envBuild 命令使用指南](docs/envBuild命令使用指南.md) | 完整命令参数、本机配置填写、常用示例与问题处理 |
+| [envBuild 构建运行与打包方案](docs/envBuild构建运行与打包方案.md) | 已实现的命令约定、自动部署、安装及 CPack ZIP |
 
 ## 目录结构
 
@@ -21,6 +23,9 @@
 PointCloudReverseModeling/
 ├── CMakeLists.txt         # 总入口，加载主业务和单元测试两个子项目
 ├── CMakePresets.json      # 全仓库唯一的 CMake 预设
+├── envBuild.py            # 构建、运行、清理和打包命令入口
+├── envBuild.example.ini   # 本机配置的模板，init 生成 envBuild.local.ini
+├── pythonProject/         # Python 命令编排模块（不随产品分发）
 ├── README.md
 ├── .gitignore
 ├── cmake/                # 公共构建设置与全部第三方依赖查找
@@ -68,37 +73,75 @@ PointCloudReverseModeling/
 
 所有第三方包由 [Dependencies.cmake](cmake/Dependencies.cmake) 统一查找，系统线程通过 `Threads::Threads` 接入。库可由 vcpkg 或其他方式预先构建；本工程不负责下载或编译第三方库。
 
-根 [CMakePresets.json](CMakePresets.json) 的 `CMAKE_PREFIX_PATH` 默认指向 `D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20`。其他环境可修改该值，或在配置时通过 `-DCMAKE_PREFIX_PATH="<安装前缀1>;<安装前缀2>"` 覆盖；也可在 Qt Creator 的 CMake 配置中修改。更换工具链或依赖位置后，使用新的构建目录，或运行 `cmake --fresh --preset vc143-cpp20` 重新配置。
+根 [CMakePresets.json](CMakePresets.json) 保留通用工具链设置，不再写死本机 SDK。先执行 `python envBuild.py init`，再在未纳入 Git 的 `envBuild.local.ini` 中填写 `dependencies.prefix_paths`，可每行填写一个前缀。已有构建时 init 会采用缓存中的 SDK；已有本地配置不覆盖。本机示例为 `D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20`。
+
+Python 入口使用 SDK 的 Python 3.15t 和标准库，无需 pip。下文的 `python` 应指向该解释器；也可使用其完整路径。CMake/CPack 从 PATH 或本地配置定位，CDB 仅 `debug` 启动命令需要，填写原生 `cdb.exe` 路径。脚本不下载或编译第三方 SDK。
 
 ### 命令行
 
-在 VS 2022 Developer PowerShell 中从仓库根目录运行。执行 CTest 前，先将对应配置的依赖 DLL 目录加入 `PATH`：
+从仓库根目录运行，无需进入 `pythonProject`。完整参数、配置文件写法和更多示例见 [envBuild 命令使用指南](docs/envBuild命令使用指南.md)：
 
 ```powershell
-cmake --preset vc143-cpp20
-cmake --build --preset windows-release
-ctest --preset windows-release
+python envBuild.py -h
+python envBuild.py init
+python envBuild.py info
+python envBuild.py compile release
+python envBuild.py release
+python envBuild.py packageAll release
 ```
 
-只需编译一个目标时，给构建命令追加 `--target ReverseModeler` 或 `--target ReverseServiceTests`。Google Test 的运行和筛选见 [测试程序说明](tests/README.md)。
+| 命令 | 作用 |
+|---|---|
+| `info` / `init` | 查看环境 / 创建缺失的本地配置 |
+| `compile [模式]` | 配置、编译并自动部署；默认编译主程序与单元测试，不运行测试 |
+| `release` / `debug` | 直接运行 Release / 用 CDB 调试 Debug；均不编译 |
+| `prepareRun [模式]` | 手动补部署 DLL、Qt 插件和 OCCT 资源，不编译 |
+| `package [模式]` | 将已有主程序及依赖通过 CMake 安装规则打成 ZIP，不编译 |
+| `packageAll [模式]` | 编译主程序、自动部署并打包 |
+| `clean [类别] [模式]` | 默认仅清理编译产物；具体删除与保留范围见 `clean -h` |
+
+模式支持 `release`、`debug`、`release_debug`，初始默认 Release。全部命令支持 `-h/--help`；空命令显示总帮助，输错命令或参数显示相关帮助并返回 2。有副作用的命令支持 `--dry-run`。`compile` 支持 `--target ReverseModeler` / `ReverseServiceTests`、`--jobs`、`--rebuild`、`--fresh`；更换 SDK 后需显式 `--fresh` 重建缓存。
 
 中间文件位于 `build/vc143-cpp20/`，当前 Release 可执行文件位于 `output/vc143-cpp20/release/`。一般输出规则为 `output/<编译器>-cpp<标准>/<构建模式>/`，由 [common.cmake](cmake/common.cmake) 设置。
 
-运行或执行 CTest 前，将对应配置的依赖 DLL 目录加入 `PATH`，并按安装布局配置 Qt 插件和 OCCT 资源。`CMAKE_PREFIX_PATH` 只用于配置阶段的依赖查找；Debug 和 Release 需使用各自匹配的运行库。配置好运行环境后：
+构建、测试和手工验证时留存的日志及配套诊断记录统一放在 `output/log/`，不散放在 `output/` 根目录；日志不提交 Git、不进入发布包。命令默认输出到终端，保存示例见 [命令使用指南](docs/envBuild命令使用指南.md#6-产物在哪怎样交付)。
+
+主程序正常构建后自动部署匹配配置的 DLL、Qt 插件、`qt.conf`、OCCT 资源和 SDK 许可材料，可直接双击 EXE。无需注入 SDK PATH，也无需再执行 `deployqt`（该命令已取消）。`prepareRun` 仅用于文件缺失、依赖更新等手动补部署场景；部署失败时编译命令会返回失败。运行中 EXE 被占用时先自行关闭程序，不会自动强杀进程。
 
 ```powershell
 & './output/vc143-cpp20/release/ReverseModeler.exe'
+python envBuild.py prepareRun release
+ctest --preset windows-release
+python -m unittest discover -s tests/python -v
 ```
+
+Google Test 的用例筛选见 [测试程序说明](tests/README.md)。测试目标也会部署自身运行库。
+
+ZIP 和 SHA256 校验文件位于 `output/packages/`。发布包仅收集安装规则指定的主程序和运行环境，不包含测试程序、用户点云/模型和旧 EXE。解压后运行 `ReverseModeler/bin/ReverseModeler.exe`；Debug 包仅用于内部开发，包含主程序 PDB。
+
+不使用 Python 时，同一套 CMake 规则仍可直接使用：
+
+```powershell
+cmake --preset vc143-cpp20 -DCMAKE_PREFIX_PATH="<SDK 安装前缀>"
+cmake --build --preset windows-release
+cmake --build build/vc143-cpp20 --config Release --target prepare_runtime
+cmake --install build/vc143-cpp20 --config Release --prefix output/install/release
+cpack --config build/vc143-cpp20/CPackConfig.cmake -C Release -G ZIP -B output/package-staging/manual-release
+```
+
+`cmake --install` 和直接 `cpack` 均不编译；已有主程序和匹配 SDK 必须可用。完整部署规则见 [Runtime.cmake](cmake/Runtime.cmake)，安装/打包规则见 [Packaging.cmake](cmake/Packaging.cmake)。
 
 ### Qt Creator
 
 打开仓库根目录的 `CMakeLists.txt`，选择 `Windows / Qt desktop + Google Test / MSVC v143 / C++20` 预设，并在运行配置中选择 `ReverseModeler` 或 `ReverseServiceTests`。桌面程序使用默认本机部署配置；若部署步骤选中了 Application Manager，应在 **Deploy Settings** 中切换为默认部署或停用其安装步骤。
 
-`cmake --install` 仅安装主程序；独立运行所需的 DLL、Qt 插件和 OCCT 资源需要按实际发布方式另行准备。
+在 Qt Creator 的 CMake 配置中填写同一 `CMAKE_PREFIX_PATH`。首次链接及默认增量构建均会检查部署；只构建主目标且未重新链接时，可构建 `prepare_runtime` 补齐运行文件。VS 多配置目录共用缓存，`--fresh` 会重新配置 Debug/Release 的共同构建信息。
 
 ## 桌面工作台
 
-顶部 Ribbon 按文件、编辑、点云、重建、模型修改和工具分组，中央为三维视图，底部状态栏显示任务进度并提供取消入口。通过 **窗口** 菜单显示或隐藏模型树、属性、重建参数、操作面板、日志及任务信息；工具窗口可拖动、浮动或合并为标签。首次启动辅助窗口默认收起，后续启动恢复上次布局。关闭工具窗口保留内容，日志隐藏时继续收集最近 2000 个文本块；“恢复默认布局”收起辅助窗口，不清空当前数据。正常退出保存窗口布局，点云、模型和参数仍只保存在本次运行的内存中。
+顶部 Ribbon 按文件、编辑、点云、重建、模型修改和工具分组，中央为三维视图，底部状态栏显示任务进度并提供取消入口。通过 **窗口** 菜单显示或隐藏模型树、属性、重建参数、操作面板、日志及任务信息；工具窗口可拖动、浮动或合并为标签。右侧默认上下显示模型树和属性，其他辅助窗口默认收起，后续启动恢复上次布局。关闭工具窗口保留内容，日志隐藏时继续收集最近 2000 个文本块；“恢复默认布局”恢复右侧模型树和属性、收起其他辅助窗口，不清空当前数据。正常退出保存窗口布局，点云、模型和参数仍只保存在本次运行的内存中。
+
+模型树按实际部件展开，显示名称、颜色和板厚。生成或导入模型后自动切到 **可选：体**：左键点击三维部件会高亮整件、定位对应树节点并显示只读属性；点击树节点也会高亮对应部件。属性包含部件 ID、板厚及依据、网格包围盒和来源等，尺寸统一为 mm；导入 STEP/CWRM 没有板厚信息时显示“未提供”。点击空白或按 Esc 清空部件选择；需要框选点云时切回 **可选：点**。
 
 选择 PCD 文件后直接按 **毫米 mm** 导入，不再弹出单位确认窗口。打开菜单同时接受 STEP/STP、柏楚 CWRM v2 BRep 模型：STEP 自动将声明单位换算为 mm，CWRM 按 mm 读取。模型导入保留实体和曲面几何及位置，按部件配色；不恢复柏楚点云、参数模板或板厚标注。导出菜单提供 PCD、STEP：PCD 保存当前完整点云（含截取/删除结果），不是显示采样；没有点云时禁用 PCD 导出。导入模型可直接另存 STEP，通用 CAD 偏差和底板识别暂不提供。
 

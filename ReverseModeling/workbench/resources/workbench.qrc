@@ -1,5 +1,6 @@
 <RCC>
   <qresource prefix="/workbench">
     <file>workbench.qss</file>
+    <file>app/ReverseModeler.ico</file>
   </qresource>
 </RCC>

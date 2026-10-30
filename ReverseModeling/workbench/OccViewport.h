@@ -27,6 +27,8 @@ public:
     void setCloudSelectionMode(CloudSelectionMode mode);
     void setCloudSelection(std::shared_ptr<const CloudSelection> selection);
     void setModel(std::vector<ModelDisplayPart> parts);
+    void setModelPickingEnabled(bool enabled);
+    void setSelectedPart(const std::string &id);
     void setCloudVisible(bool visible);
     void setModelVisible(bool visible);
     void setThicknessVisible(bool visible);
@@ -35,6 +37,7 @@ public:
     std::function<void(const QString&)> onError;
     std::function<void(const CloudSelectionRect &, CloudSelectionMode)> onCloudSelection;
     std::function<void(const QPoint &)> onCloudContextMenu;
+    std::function<void(const std::string &)> onModelPartSelected;
 
   protected:
     QPaintEngine* paintEngine() const override;

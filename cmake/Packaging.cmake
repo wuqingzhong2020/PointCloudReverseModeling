@@ -1,0 +1,27 @@
+# 文件描述：主程序安装使用统一部署脚本，CPack 仅收集安装规则列出的文件。
+if(NOT WIN32)
+    return()
+endif()
+
+install(CODE "
+set(RM_DEST \"\${CMAKE_INSTALL_PREFIX}/bin\")
+set(RM_FORCE TRUE)
+include(\"${RM_INFO_DIR}/\${CMAKE_INSTALL_CONFIG_NAME}/deploy-ReverseModeler.cmake\")
+file(READ \"\${RM_DEST}/.runtime-ReverseModeler.json\" _manifest)
+string(JSON _manifest SET \"\${_manifest}\" version \"\\\"${RM_VERSION}\\\"\")
+string(JSON _manifest SET \"\${_manifest}\" commit \"\\\"${RM_GIT_COMMIT}\\\"\")
+string(JSON _manifest SET \"\${_manifest}\" dirty ${RM_GIT_DIRTY})
+file(WRITE \"\${CMAKE_INSTALL_PREFIX}/manifest.json\" \"\${_manifest}\\n\")
+file(REMOVE \"\${RM_DEST}/.runtime-ReverseModeler.json\" \"\${RM_DEST}/.runtime-deploy.lock\")
+")
+install(FILES "$<TARGET_PDB_FILE:ReverseModeler>" DESTINATION bin CONFIGURATIONS Debug)
+
+set(CPACK_PACKAGE_NAME ReverseModeler)
+set(CPACK_PACKAGE_VERSION "${RM_VERSION}")
+set(CPACK_PACKAGE_VENDOR ReverseModeling)
+set(CPACK_GENERATOR ZIP)
+set(CPACK_PACKAGE_CHECKSUM SHA256)
+set(CPACK_VERBATIM_VARIABLES TRUE)
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY TRUE)
+set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_CURRENT_LIST_DIR}/CPackProject.cmake")
+include(CPack)

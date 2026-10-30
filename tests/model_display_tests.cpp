@@ -86,6 +86,22 @@ TEST(ModelDisplay, KeepsColorsAndLabelsWhenPartOrderingChanges)
     auto mesh = model->mesh();
     auto summary = model->summary();
     const auto original = makeModelDisplayParts(mesh, summary, {});
+    const Vec3 shiftedOrigin{1e6, -2e6, 3e6};
+    const auto shifted = makeModelDisplayParts(mesh, summary, shiftedOrigin);
+    for (std::size_t index = 0; index < original.size(); ++index)
+    {
+        const auto &part = original[index];
+        EXPECT_DOUBLE_EQ(shifted[index].boundsMinMm.x, part.boundsMinMm.x);
+        EXPECT_DOUBLE_EQ(shifted[index].boundsMinMm.y, part.boundsMinMm.y);
+        EXPECT_DOUBLE_EQ(shifted[index].boundsMinMm.z, part.boundsMinMm.z);
+        EXPECT_DOUBLE_EQ(shifted[index].boundsMaxMm.x, part.boundsMaxMm.x);
+        EXPECT_DOUBLE_EQ(shifted[index].boundsMaxMm.y, part.boundsMaxMm.y);
+        EXPECT_DOUBLE_EQ(shifted[index].boundsMaxMm.z, part.boundsMaxMm.z);
+        EXPECT_DOUBLE_EQ(part.boundsMinMm.x, std::min_element(part.vertices.begin(), part.vertices.end(),
+            [](const auto &a, const auto &b) { return a.x < b.x; })->x);
+        EXPECT_DOUBLE_EQ(part.boundsMaxMm.x, std::max_element(part.vertices.begin(), part.vertices.end(),
+            [](const auto &a, const auto &b) { return a.x < b.x; })->x);
+    }
     std::reverse(mesh.partIds.begin(), mesh.partIds.end());
     std::reverse(summary.partIds.begin(), summary.partIds.end());
     for (auto &owner : mesh.trianglePartIndices)
