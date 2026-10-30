@@ -16,6 +16,7 @@ struct CloudDisplayPoint
 {
     Vec3 position; // 沿用 CloudData 的局部毫米坐标。
     std::array<double, 3> colorSrgb;
+    std::size_t pointIndex{}; // 当前完整点云索引，用于映射选区；不等同于原文件 sourceIndex。
 };
 
 // 沿点云截面短轴分层，使用显示采样的 2% / 98% 分位数压制离群点对色域的影响。

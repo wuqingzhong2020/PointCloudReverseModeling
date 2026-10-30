@@ -53,6 +53,7 @@ void RecentFilesMenu::recordOpened(const QString &path)
     files.prepend(normalized);
     files = files.mid(0, maximumRecentFiles);
     settings.setValue(settingsKey, files);
+    settings.setValue(QStringLiteral("files/lastImportDirectory"), QFileInfo(normalized).absolutePath());
 }
 
 void RecentFilesMenu::rebuild()

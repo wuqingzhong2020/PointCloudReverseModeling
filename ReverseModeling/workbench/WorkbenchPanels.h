@@ -30,6 +30,7 @@ class ReconstructionPanel final : public QWidget
     explicit ReconstructionPanel(QWidget *parent = nullptr);
     BeamParameters values() const;
     void setValues(const BeamParameters &parameters);
+    void setModelValues(const ModelSummary &model);
     void acceptEdits();
     bool hasEdits() const;
     void setEditable(bool editable, bool canRestore);

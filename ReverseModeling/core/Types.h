@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -38,6 +39,36 @@ struct CloudData {
     Vec3 boundsMinMm; // 相对于 originMm。
     Vec3 boundsMaxMm;
 };
+
+enum class CloudSelectionMode
+{
+    Replace,
+    Add,
+    Remove,
+    Clear
+};
+enum class CloudEditMode
+{
+    KeepSelection,
+    DeleteSelection
+};
+enum class CloudHistoryAction
+{
+    Undo,
+    Redo,
+    Reset
+};
+
+// 矩阵作用于 CloudData::position 局部毫米坐标，按行存储；矩形为 NDC 坐标。
+// 框选贯穿视锥深度，不因实体或前层点云遮挡而漏选。
+struct CloudSelectionRect
+{
+    std::array<double, 16> viewProjection{};
+    double minX{-1}, minY{-1}, maxX{1}, maxY{1};
+    bool zeroToOneDepth{};
+};
+
+using CloudSelection = std::vector<std::size_t>;
 
 struct BeamFrame {
     Vec3 originMm; // 梁中心的项目坐标，单位 mm。
@@ -104,8 +135,15 @@ struct ModelSummary {
     std::vector<RecognizedPlate> plates;
     std::uint64_t surfaceCount{};
     bool fromPointCloud{};
+    std::string importedFormat; // 空值为本地生成；step/cwrm 为导入几何，不推测板厚。
     PlateBuildOptions recognitionOptions;
     std::vector<std::string> warnings;
+};
+
+struct CloudExportResult {
+    std::uint64_t pointCount{};
+    std::uint64_t fileBytes{};
+    bool hasIntensity{};
 };
 
 struct StepExportResult {

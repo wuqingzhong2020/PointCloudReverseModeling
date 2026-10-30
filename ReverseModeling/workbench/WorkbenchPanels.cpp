@@ -273,6 +273,20 @@ void ReconstructionPanel::setValues(const BeamParameters &parameters)
     m_hasEdits = false;
 }
 
+void ReconstructionPanel::setModelValues(const ModelSummary &model)
+{
+    setValues(model.parameters);
+    m_settingValues = true;
+    m_mode->setCurrentIndex(model.fromPointCloud ? 0 : 1);
+    if (model.fromPointCloud)
+    {
+        m_mirror->setChecked(model.recognitionOptions.mirrorSymmetry);
+        m_endOverhangTolerance->setValue(model.recognitionOptions.endOverhangToleranceMm);
+    }
+    m_settingValues = false;
+    m_hasEdits = false;
+}
+
 void ReconstructionPanel::acceptEdits()
 {
     m_hasEdits = false;

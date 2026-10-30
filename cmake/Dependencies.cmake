@@ -23,6 +23,7 @@ if(OpenCASCADE_MAJOR_VERSION LESS 8)
     message(FATAL_ERROR "ReverseModeling requires OCCT 8 or newer.")
 endif()
 
+find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 find_package(Threads REQUIRED)
 find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Gui Widgets)
 find_package(SARibbonBar 2.8.0 CONFIG REQUIRED)
@@ -31,6 +32,6 @@ find_package(GTest CONFIG REQUIRED)
 
 # 两个程序共用的第三方库；各程序专用库在自己的 CMakeLists.txt 中链接。
 set(RM_COMMON_LIBRARIES
-    Eigen3::Eigen nlohmann_json::nlohmann_json pcl_common pcl_io Threads::Threads
+    Eigen3::Eigen nlohmann_json::nlohmann_json pcl_common pcl_io Threads::Threads OpenSSL::Crypto
     TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKMesh
     TKDESTEP TKXCAF TKLCAF TKCAF TKXSBase)

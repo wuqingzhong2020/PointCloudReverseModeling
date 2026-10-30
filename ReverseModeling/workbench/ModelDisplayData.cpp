@@ -22,7 +22,13 @@ std::array<double, 3> partColor(std::string_view id)
     constexpr std::array<unsigned int, 9> colors{
         0x80b8dc, 0xb4abc9, 0x8cc2bc, 0x8fc492, 0xd69d94, 0xb9a1d5, 0x92c9da, 0xd2abc5, 0x99b8c4};
     std::size_t index = 0;
-    if (id == "flange-bottom")
+    if (id.starts_with("imported-part-"))
+    {
+        unsigned int part = 1;
+        std::from_chars(id.data() + 14, id.data() + id.size(), part);
+        index = (part - 1) % colors.size();
+    }
+    else if (id == "flange-bottom")
     {
         index = 1;
     }
@@ -140,7 +146,7 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
     {
         parts[index].id = mesh.partIds[index];
         parts[index].colorSrgb = partColor(parts[index].id);
-        parts[index].thicknessMm = partThickness(parts[index].id, model.parameters);
+        parts[index].thicknessMm = model.importedFormat.empty() ? partThickness(parts[index].id, model.parameters) : std::nullopt;
         if (model.fromPointCloud)
         {
             const auto observed = std::find_if(model.plates.begin(), model.plates.end(),

@@ -10,6 +10,8 @@
 
 namespace reverse::workbench {
 
+enum class ActionId;
+
 class MainWindow final : public SARibbonMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
@@ -29,10 +31,12 @@ private:
     void refreshProjectPanels();
     void reconstruct();
     void exportStep();
+    void exportCloud();
     void evaluateDeviation();
     void pollTask();
     void updateActions();
-    void refreshDisplay();
+    void refreshDisplay(bool fitView = true);
+    void editCloud(ActionId action);
     void appendLog(const QString& message);
     void reportError(const QString& message);
 };

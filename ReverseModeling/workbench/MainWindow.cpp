@@ -21,6 +21,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTimer>
@@ -85,11 +86,15 @@ struct MainWindow::State
         Import,
         Reconstruct,
         Export,
-        Deviation
+        ExportCloud,
+        Deviation,
+        SelectCloud,
+        EditCloud
     };
     CommandService service;
     std::string activeTask;
     Operation pending{Operation::None};
+    std::string cloudBeforeEdit;
     bool closing{};
     bool cancellationRequested{};
     bool parametersDirty{true};
@@ -139,7 +144,8 @@ MainWindow::MainWindow(QWidget *parent)
     state_->workspace = new DockWorkspace(this, viewContainer);
     viewLayout->addWidget(createViewToolbar(viewContainer, actions));
     viewLayout->addWidget(state_->viewport, 1);
-    auto *hint = label(QStringLiteral("右键旋转 · 中键平移 · 滚轮缩放 · 双击适合视图"), viewContainer);
+    auto *hint =
+        label(QStringLiteral("左键框选 · 右键菜单/拖动旋转 · 中键平移 · 滚轮缩放 · Esc 清空选区"), viewContainer);
     hint->setProperty("muted", true);
     hint->setContentsMargins(12, 5, 6, 5);
     viewLayout->addWidget(hint);
@@ -217,6 +223,7 @@ MainWindow::MainWindow(QWidget *parent)
             {
                 exportStep();
             });
+    connect(actions.get(ExportCloud), &QAction::triggered, this, [this] { exportCloud(); });
     connect(actions.get(Reconstruct), &QAction::triggered, this,
             [this]
             {
@@ -246,6 +253,62 @@ MainWindow::MainWindow(QWidget *parent)
                 state_->workspace->showPanel(QStringLiteral("dock.reconstruction"));
             });
     connect(actions.get(ShowCloud), &QAction::toggled, state_->viewport, &OccViewport::setCloudVisible);
+    connect(actions.get(ShowCloud), &QAction::toggled, this, [this] { updateActions(); });
+    for (const auto id : {CropCloud, DeleteCloud, Undo, Redo, Reset})
+    {
+        connect(actions.get(id), &QAction::triggered, this, [this, id] { editCloud(id); });
+    }
+    for (const auto id : {Select, AddSelection, RemoveSelection})
+    {
+        connect(actions.get(id), &QAction::triggered, this,
+                [this, id]
+                {
+                    state_->viewport->setCloudSelectionMode(id == AddSelection      ? CloudSelectionMode::Add
+                                                            : id == RemoveSelection ? CloudSelectionMode::Remove
+                                                                                    : CloudSelectionMode::Replace);
+                });
+    }
+    // 删除/历史快捷键仅在视图区有焦点时生效，避免影响参数与日志中的文本编辑。
+    actions.get(DeleteCloud)->setShortcut(QKeySequence::Delete);
+    actions.get(Undo)->setShortcut(QKeySequence::Undo);
+    actions.get(Redo)->setShortcut(QKeySequence::Redo);
+    for (const auto id : {DeleteCloud, Undo, Redo})
+    {
+        actions.get(id)->setShortcutContext(Qt::WidgetShortcut);
+        state_->viewport->addAction(actions.get(id));
+    }
+    state_->viewport->onCloudSelection = [this](const CloudSelectionRect &rectangle, CloudSelectionMode mode)
+    {
+        if (!state_->activeTask.empty() || state_->closing)
+        {
+            return;
+        }
+        const auto project = state_->service.project();
+        if (mode == CloudSelectionMode::Clear && (!project.selection || project.selection->empty()))
+        {
+            return;
+        }
+        try
+        {
+            state_->activeTask = state_->service.submitCloudSelection(rectangle, mode, project.revision);
+            state_->pending = State::Operation::SelectCloud;
+            state_->cancellationRequested = false;
+            state_->progress->setValue(0);
+            updateActions();
+        }
+        catch (const std::exception &error)
+        {
+            reportError(text(error.what()));
+        }
+    };
+    state_->viewport->onCloudContextMenu = [this](const QPoint &position)
+    {
+        QMenu menu(this);
+        menu.addAction(state_->actions->get(ActionId::CropCloud));
+        menu.addAction(state_->actions->get(ActionId::DeleteCloud));
+        menu.exec(position);
+    };
+
     connect(actions.get(CloudHeight), &QAction::toggled, state_->viewport, &OccViewport::setCloudHeightColors);
     connect(actions.get(ShowModel), &QAction::toggled, state_->viewport, &OccViewport::setModelVisible);
     connect(actions.get(ShowThickness), &QAction::toggled, state_->viewport, &OccViewport::setThicknessVisible);
@@ -342,15 +405,31 @@ void MainWindow::updateActions()
     const auto project = state_->service.project();
     auto &actions = *state_->actions;
     actions.get(ActionId::Open)->setEnabled(idle);
+    const bool cloudEditable =
+        idle && project.cloud && !project.cloud->points.empty() && actions.get(ActionId::ShowCloud)->isChecked();
+    state_->viewport->setCloudEditingEnabled(cloudEditable);
+    for (const auto id : {ActionId::Select, ActionId::AddSelection, ActionId::RemoveSelection, ActionId::SelectPoint})
+    {
+        actions.get(id)->setEnabled(cloudEditable);
+    }
+    const bool selected = cloudEditable && project.selection && !project.selection->empty();
+    actions.get(ActionId::CropCloud)->setEnabled(selected);
+    actions.get(ActionId::DeleteCloud)->setEnabled(selected);
+    actions.get(ActionId::Undo)->setEnabled(idle && project.canUndoCloud);
+    actions.get(ActionId::Redo)->setEnabled(idle && project.canRedoCloud);
+    actions.get(ActionId::Reset)->setEnabled(idle && project.canResetCloud);
+
     state_->recentFiles->menuAction()->setEnabled(idle);
-    actions.get(ActionId::BottomView)->setEnabled(idle && (project.model || project.recognition.has_value()));
+    actions.get(ActionId::BottomView)->setEnabled(idle && ((project.model && project.model->importedFormat.empty()) || project.recognition.has_value()));
     actions.get(ActionId::Reconstruct)->setEnabled(idle && project.cloud &&
         (state_->parameters->usePointCloud() ? project.recognition.has_value() : project.estimate.has_value()));
     state_->parameters->setEditable(idle && project.cloud && project.estimate.has_value(),
                                     idle && project.recognition.has_value());
-    const bool currentModel = idle && project.model && !state_->parametersDirty && !state_->parameters->hasEdits();
+    const bool currentModel = idle && project.model && (!project.model->importedFormat.empty() ||
+        (!state_->parametersDirty && !state_->parameters->hasEdits()));
     actions.get(ActionId::ExportStep)->setEnabled(currentModel);
-    actions.get(ActionId::Deviation)->setEnabled(currentModel);
+    actions.get(ActionId::ExportCloud)->setEnabled(idle && project.cloud && !project.cloud->points.empty());
+    actions.get(ActionId::Deviation)->setEnabled(currentModel && project.cloud && project.model->importedFormat.empty());
     const bool cancellable = !state_->activeTask.empty() && !state_->closing && !state_->cancellationRequested;
     actions.get(ActionId::CancelTask)->setEnabled(cancellable);
     actions.get(ActionId::StopReconstruct)->setEnabled(cancellable && state_->pending == State::Operation::Reconstruct);
@@ -359,7 +438,10 @@ void MainWindow::updateActions()
 void MainWindow::importCloud()
 {
     const auto path =
-        QFileDialog::getOpenFileName(this, QStringLiteral("打开已有点云文件"), {}, QStringLiteral("PCD 点云 (*.pcd)"));
+        QFileDialog::getOpenFileName(this, QStringLiteral("打开点云或模型"),
+            QSettings().value(QStringLiteral("files/lastImportDirectory"),
+                QStringLiteral("D:/projectWQZ/other-resource/cloud")).toString(),
+            QStringLiteral("支持的文件 (*.pcd *.step *.stp *.cwrm);;PCD 点云 (*.pcd);;STEP 模型 (*.step *.stp);;柏楚模型 (*.cwrm)"));
     importCloud(path);
 }
 
@@ -375,7 +457,7 @@ void MainWindow::importCloud(const QString &path)
         state_->pending = State::Operation::Import;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("开始导入（单位 mm）：") + path);
+        appendLog(QStringLiteral("开始导入：") + path);
         updateActions();
     }
     catch (const std::exception &error)
@@ -517,6 +599,24 @@ void MainWindow::exportStep()
     }
 }
 
+void MainWindow::exportCloud()
+{
+    auto path = QFileDialog::getSaveFileName(this, QStringLiteral("导出点云（请选择新文件名）"), {},
+        QStringLiteral("PCD 点云 (*.pcd)"));
+    if (path.isEmpty()) return;
+    if (!path.endsWith(QStringLiteral(".pcd"), Qt::CaseInsensitive)) path += QStringLiteral(".pcd");
+    try
+    {
+        state_->activeTask = state_->service.submitExportCloud(nativePath(path), state_->service.project().revision);
+        state_->pending = State::Operation::ExportCloud;
+        state_->cancellationRequested = false;
+        state_->progress->setValue(0);
+        appendLog(QStringLiteral("导出当前完整点云（mm，XYZ/可选强度）：") + path);
+        updateActions();
+    }
+    catch (const std::exception& error) { reportError(text(error.what())); }
+}
+
 void MainWindow::evaluateDeviation()
 {
     try
@@ -534,11 +634,47 @@ void MainWindow::evaluateDeviation()
     }
 }
 
-void MainWindow::refreshDisplay()
+void MainWindow::editCloud(ActionId action)
+{
+    if (!state_->activeTask.empty() || state_->closing)
+    {
+        return;
+    }
+    const auto project = state_->service.project();
+    try
+    {
+        state_->cloudBeforeEdit = project.cloudId;
+        if (action == ActionId::CropCloud || action == ActionId::DeleteCloud)
+        {
+            state_->activeTask = state_->service.submitCloudEdit(
+                action == ActionId::CropCloud ? CloudEditMode::KeepSelection : CloudEditMode::DeleteSelection,
+                project.revision);
+        }
+        else
+        {
+            state_->activeTask =
+                state_->service.submitCloudHistory(action == ActionId::Undo   ? CloudHistoryAction::Undo
+                                                   : action == ActionId::Redo ? CloudHistoryAction::Redo
+                                                                              : CloudHistoryAction::Reset,
+                                                   project.revision);
+        }
+        state_->pending = State::Operation::EditCloud;
+        state_->cancellationRequested = false;
+        state_->progress->setValue(0);
+        appendLog(state_->actions->get(action)->text() + QStringLiteral("：处理内存点云，源文件保持不变。"));
+        updateActions();
+    }
+    catch (const std::exception &error)
+    {
+        reportError(text(error.what()));
+    }
+}
+
+void MainWindow::refreshDisplay(bool fitView)
 {
     const auto project = state_->service.project();
     std::vector<CloudDisplayPoint> points;
-    Vec3 origin;
+    Vec3 origin = project.model ? project.model->frame.originMm : Vec3{};
     if (project.cloud)
     {
         origin = project.cloud->originMm;
@@ -549,7 +685,7 @@ void MainWindow::refreshDisplay()
                       .arg(static_cast<qulonglong>(points.size()))
                       .arg(static_cast<qulonglong>(source.size())));
     }
-    state_->viewport->setPointCloud(std::move(points));
+    state_->viewport->setPointCloud(std::move(points), project.selection);
     if (project.mesh && project.model)
     {
         state_->viewport->setModel(makeModelDisplayParts(*project.mesh, *project.model, origin));
@@ -558,7 +694,10 @@ void MainWindow::refreshDisplay()
     {
         state_->viewport->setModel({});
     }
-    state_->viewport->fitAll();
+    if (fitView)
+    {
+        state_->viewport->fitAll();
+    }
     refreshProjectPanels();
 }
 
@@ -570,17 +709,18 @@ void MainWindow::refreshProjectPanels()
     new QTreeWidgetItem(root,
                         {QStringLiteral("点云"), project.cloud ? QStringLiteral("已导入") : QStringLiteral("无")});
     new QTreeWidgetItem(
-        root, {QStringLiteral("板件模型"), project.model ? QStringLiteral("已生成") : QStringLiteral("无")});
+        root, {QStringLiteral("模型"), project.model ? (project.model->importedFormat.empty() ? QStringLiteral("已生成") : QStringLiteral("已导入")) : QStringLiteral("无")});
     state_->tree->expandAll();
     state_->tree->resizeColumnToContents(0);
     const QList<QPair<QString, QString>> properties = {
         {QStringLiteral("工程版本"), QString::number(project.revision)},
-        {QStringLiteral("来源"), project.cloud ? text(project.sourcePathUtf8) : QStringLiteral("尚未导入")},
+        {QStringLiteral("来源"), !project.sourcePathUtf8.empty() ? text(project.sourcePathUtf8) : QStringLiteral("尚未导入")},
         {QStringLiteral("有效点数"),
          project.cloud ? QString::number(project.cloud->points.size()) : QStringLiteral("0")},
         {QStringLiteral("实体数"), project.model ? QString::number(project.model->solidCount) : QStringLiteral("0")},
-        {QStringLiteral("未定厚观测面"), project.model ? QString::number(project.model->surfaceCount) : QStringLiteral("0")},
-        {QStringLiteral("对象属性"), QStringLiteral("对象选择与编辑待接入")}};
+        {QStringLiteral("独立曲面数"),
+         project.model ? QString::number(project.model->surfaceCount) : QStringLiteral("0")},
+        {QStringLiteral("选中点数"), QString::number(project.selection ? project.selection->size() : 0)}};
     state_->properties->setRowCount(static_cast<int>(properties.size()));
     for (qsizetype i = 0; i < properties.size(); ++i)
     {
@@ -616,10 +756,28 @@ void MainWindow::pollTask()
         if (task.state == TaskState::Succeeded)
         {
             const auto project = state_->service.project();
-            appendLog(QStringLiteral("完成：") + text(task.message));
-            if (operation == State::Operation::Import && project.cloud)
+            if (operation != State::Operation::SelectCloud)
             {
-                state_->recentFiles->recordOpened(text(project.sourcePathUtf8));
+                appendLog(QStringLiteral("完成：") + text(task.message));
+            }
+            if (operation == State::Operation::SelectCloud)
+            {
+                state_->viewport->setCloudSelection(project.selection);
+                const auto count = project.selection ? project.selection->size() : 0;
+                state_->status->setText(QStringLiteral("已选择 %1 个点；右键截取或删除，Esc 清空选区").arg(count));
+                refreshProjectPanels();
+            }
+            else if (operation == State::Operation::EditCloud && project.cloudId == state_->cloudBeforeEdit)
+            {
+                state_->status->setText(QStringLiteral("点云未变化，保留当前模型和选区。"));
+            }
+            else if ((operation == State::Operation::Import || operation == State::Operation::EditCloud) &&
+                     project.cloud)
+            {
+                if (operation == State::Operation::Import)
+                {
+                    state_->recentFiles->recordOpened(text(project.sourcePathUtf8));
+                }
                 const auto &cloud = *project.cloud;
                 state_->appliedParameters.reset();
                 state_->parametersDirty = true;
@@ -630,12 +788,13 @@ void MainWindow::pollTask()
                 state_->parameters->setValues(parameters);
                 state_->parameters->setRecognition(project.recognition);
                 state_->parameters->setSourceText(
-                    QStringLiteral("%1\n原始点 %2；无效点 %3\n1 单位 = %4 mm\n显示原点 %5 mm")
+                    QStringLiteral("%1\n原始点 %2；无效点 %3；当前点 %6\n1 单位 = %4 mm\n显示原点 %5 mm")
                         .arg(text(project.sourcePathUtf8))
                         .arg(static_cast<qulonglong>(cloud.sourcePointCount))
                         .arg(static_cast<qulonglong>(cloud.invalidPointCount))
                         .arg(cloud.sourceScaleToMm)
-                        .arg(vectorText(cloud.originMm)));
+                        .arg(vectorText(cloud.originMm))
+                        .arg(static_cast<qulonglong>(cloud.points.size())));
                 if (project.estimate)
                 {
                     const auto &estimate = *project.estimate;
@@ -656,13 +815,46 @@ void MainWindow::pollTask()
                 }
                 for (const auto &warning : project.warnings)
                 {
-                    appendLog(QStringLiteral("导入提示：") + text(warning));
+                    appendLog(QStringLiteral("点云提示：") + text(warning));
                 }
-                refreshDisplay();
+                if (operation == State::Operation::EditCloud)
+                {
+                    state_->parameters->setModelText(
+                        project.model ? QStringLiteral("已恢复编辑前的模型。")
+                                      : QStringLiteral("点云已更新，旧模型已清除；请检查识别结果后重新建模。"));
+                    if (project.model)
+                    {
+                        state_->parameters->setModelValues(*project.model);
+                        state_->appliedParameters = project.model->parameters;
+                        state_->parametersDirty = false;
+                    }
+                    appendLog(QStringLiteral("当前点数：%1；可使用撤销、重做或重置恢复。").arg(cloud.points.size()));
+                    state_->status->setText(QStringLiteral("当前点数：%1").arg(cloud.points.size()));
+                }
+                refreshDisplay(operation == State::Operation::Import);
                 if (!state_->closing)
                 {
                     state_->workspace->showPanel(QStringLiteral("dock.reconstruction"));
                 }
+            }
+            else if (operation == State::Operation::Import && project.model)
+            {
+                state_->recentFiles->recordOpened(text(project.sourcePathUtf8));
+                state_->appliedParameters.reset();
+                state_->parametersDirty = false;
+                state_->parameters->setValues({});
+                state_->parameters->setRecognition(std::nullopt);
+                state_->parameters->acceptEdits();
+                state_->parameters->setSourceText(text(project.sourcePathUtf8));
+                state_->parameters->setFrameText(QStringLiteral("导入模型；显示及导出单位 mm。"));
+                const auto description = QStringLiteral("已导入 %1 模型：%2 个实体、%3 个独立曲面，可导出 STEP。")
+                    .arg(text(project.model->importedFormat).toUpper())
+                    .arg(project.model->solidCount).arg(project.model->surfaceCount);
+                state_->parameters->setModelText(description);
+                appendLog(description);
+                for (const auto& warning : project.warnings) appendLog(text(warning));
+                state_->actions->get(ActionId::ShowModel)->setChecked(true);
+                refreshDisplay(true);
             }
             else if (operation == State::Operation::Reconstruct && project.model)
             {
@@ -688,6 +880,12 @@ void MainWindow::pollTask()
                               .arg(static_cast<qulonglong>(project.lastExport->fileBytes))
                               .arg(text(project.exportedPathUtf8))
                               .arg(project.lastExport->surfaceCount));
+            }
+            else if (operation == State::Operation::ExportCloud && project.lastCloudExport)
+            {
+                appendLog(QStringLiteral("PCD 已导出：%1 点，%2 字节；文件：%3")
+                    .arg(project.lastCloudExport->pointCount).arg(project.lastCloudExport->fileBytes)
+                    .arg(text(project.exportedCloudPathUtf8)));
             }
             else if (operation == State::Operation::Deviation && project.deviation)
             {

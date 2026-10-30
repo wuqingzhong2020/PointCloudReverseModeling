@@ -65,8 +65,7 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     file->actionToRibbonToolButton(actions.get(Open))->setMenu(openMenu);
     auto *exportMenu = menu(ribbon, QStringLiteral("导出"), actions,
                             {ExportStep, ExportCloud, ExportModel, ExportParameters}, QStringLiteral("export"));
-    file->addLargeAction(actions.get(ExportStep), QToolButton::MenuButtonPopup);
-    file->actionToRibbonToolButton(actions.get(ExportStep))->setMenu(exportMenu);
+    file->addLargeMenu(exportMenu);
 
     auto *edit = category->addPanel(QStringLiteral("编辑"));
     edit->addSmallAction(actions.get(Undo));
@@ -137,9 +136,9 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
         toolbar->addWidget(button);
     }
     auto *filter = new QToolButton(toolbar);
-    filter->setText(QStringLiteral("可选：体"));
+    filter->setText(QStringLiteral("可选：点"));
     filter->setPopupMode(QToolButton::InstantPopup);
-    filter->setMenu(menu(toolbar, QStringLiteral("选择过滤（待接入）"), actions,
+    filter->setMenu(menu(toolbar, QStringLiteral("选择过滤"), actions,
                          {SelectPoint, SelectEdge, SelectFace, SelectSolid}, QString()));
     toolbar->addWidget(filter);
     toolbar->addSeparator();

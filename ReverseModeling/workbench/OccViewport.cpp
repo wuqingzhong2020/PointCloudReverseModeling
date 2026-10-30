@@ -12,6 +12,7 @@
 #include <QApplication>
 #include <QEvent>
 #include <QGuiApplication>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QResizeEvent>
@@ -22,6 +23,7 @@
 #include <AIS_AnimationCamera.hxx>
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_PointCloud.hxx>
+#include <AIS_RubberBand.hxx>
 #include <AIS_ViewCube.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Graphic3d_ArrayOfPoints.hxx>
@@ -31,8 +33,8 @@
 #include <Quantity_Color.hxx>
 #include <Quantity_TypeOfColor.hxx>
 #include <Standard_Failure.hxx>
-#include <V3d_View.hxx>
 #include <V3d_TypeOfOrientation.hxx>
+#include <V3d_View.hxx>
 #include <V3d_Viewer.hxx>
 #include <gp_Dir.hxx>
 
@@ -43,6 +45,7 @@
 #endif
 
 #include "workbench/OccModelPresentation.h"
+#include "workbench/OccPicking.h"
 #include "workbench/OccViewport.h"
 
 namespace reverse::workbench {
@@ -55,6 +58,13 @@ struct OccViewport::State {
     Handle(AIS_InteractiveContext) context;
     Handle(AIS_PointCloud) cloud;
     Handle(AIS_ViewCube) viewCube;
+    Handle(AIS_RubberBand) selectionBand;
+    std::shared_ptr<const CloudSelection> selection;
+    CloudSelectionMode selectionMode{CloudSelectionMode::Replace};
+    bool cloudEditingEnabled{};
+    bool selecting{};
+    bool rightDragged{};
+    QPoint rightPress;
     QTimer *navigationTimer{};
     double cubePixelRatio{};
     std::unique_ptr<OccModelPresentation> model;
@@ -78,7 +88,7 @@ OccViewport::OccViewport(QWidget* parent) : QWidget(parent), state_(std::make_un
     setAttribute(Qt::WA_NoSystemBackground);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
-    setToolTip(QStringLiteral("右键拖动旋转，中键拖动平移，滚轮缩放，双击适合视图"));
+    setToolTip(QStringLiteral("左键框选点云（贯穿深度），右键单击编辑菜单；右键拖动旋转，中键平移，Esc 清空选区"));
     state_->navigationTimer = new QTimer(this);
     state_->navigationTimer->setInterval(16);
     connect(state_->navigationTimer, &QTimer::timeout, this, &OccViewport::advanceNavigationAnimation);
@@ -91,6 +101,7 @@ void OccViewport::release() noexcept {
         stopNavigationAnimation();
         if (!state_->context.IsNull()) state_->context->RemoveAll(false);
         state_->viewCube.Nullify();
+        state_->selectionBand.Nullify();
         state_->cloud.Nullify();
         state_->model.reset();
         state_->context.Nullify();
@@ -211,6 +222,7 @@ void OccViewport::resizeEvent(QResizeEvent* event) {
     if (state_->failureLabel) state_->failureLabel->setGeometry(rect());
     if (!state_->view.IsNull() && isVisible() && event->size().isValid()) {
         try {
+            clearSelectionRectangle();
             state_->view->MustBeResized();
             redraw();
             // 缩小、分隔条拖动以及原生窗口延迟调整后仍需要一次 Qt 绘制事件。
@@ -228,19 +240,24 @@ void OccViewport::rebuildCloud() {
     if (state_->points.empty()) return;
     if (state_->points.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Display point count exceeds the OCCT array limit.");
-    Handle(Graphic3d_ArrayOfPoints) points = new Graphic3d_ArrayOfPoints(
-        static_cast<int>(state_->points.size()), state_->cloudHeightColors);
+    Handle(Graphic3d_ArrayOfPoints) points = new Graphic3d_ArrayOfPoints(static_cast<int>(state_->points.size()), true);
     for (const auto &point : state_->points)
     {
         const gp_Pnt position(point.position.x, point.position.y, point.position.z);
-        if (state_->cloudHeightColors)
+        const bool selected = state_->selection && std::binary_search(state_->selection->begin(),
+                                                                      state_->selection->end(), point.pointIndex);
+        if (selected)
+        {
+            points->AddVertex(position, Quantity_Color(0.04, 0.45, 1.0, Quantity_TOC_sRGB));
+        }
+        else if (state_->cloudHeightColors)
         {
             const auto &rgb = point.colorSrgb;
             points->AddVertex(position, Quantity_Color(rgb[0], rgb[1], rgb[2], Quantity_TOC_sRGB));
         }
         else
         {
-            points->AddVertex(position);
+            points->AddVertex(position, Quantity_Color(0.18, 0.56, 0.61, Quantity_TOC_sRGB));
         }
     }
     state_->cloud = new AIS_PointCloud();
@@ -270,9 +287,13 @@ void OccViewport::redraw()
     state_->view->Redraw();
 }
 
-void OccViewport::setPointCloud(std::vector<CloudDisplayPoint> points) {
+void OccViewport::setPointCloud(std::vector<CloudDisplayPoint> points,
+                                std::shared_ptr<const CloudSelection> selection)
+{
     state_->points = std::move(points);
     try {
+        state_->selection = std::move(selection);
+        clearSelectionRectangle();
         rebuildCloud();
         update();
     } catch (const Standard_Failure& error) {
@@ -320,6 +341,10 @@ void OccViewport::setModel(std::vector<ModelDisplayPart> parts)
 
 void OccViewport::setCloudVisible(bool visible) {
     state_->cloudVisible = visible;
+    if (!visible)
+    {
+        clearSelectionRectangle();
+    }
     if (!state_->context.IsNull() && !state_->cloud.IsNull()) {
         try {
             if (visible) state_->context->Display(state_->cloud, 0, -1, false);
@@ -442,6 +467,7 @@ void OccViewport::advanceNavigationAnimation()
 
 void OccViewport::showBottomView(const Vec3 &normal, const Vec3 &longitudinal)
 {
+    clearSelectionRectangle();
     if (state_->view.IsNull())
     {
         return;
@@ -469,6 +495,7 @@ void OccViewport::fitAll() {
     if (state_->view.IsNull()) return;
     try {
         stopNavigationAnimation();
+        clearSelectionRectangle();
         if (!state_->points.empty() || !state_->parts.empty()) state_->view->FitAll(0.05, false);
         redraw();
     } catch (const Standard_Failure& error) {
@@ -476,38 +503,159 @@ void OccViewport::fitAll() {
     }
 }
 
-void OccViewport::mousePressEvent(QMouseEvent* event) {
-    const auto ratio = devicePixelRatioF();
-    state_->lastMouse = QPoint(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
-    if (state_->view.IsNull()) return;
-    try {
-        stopNavigationAnimation();
-        if (event->button() == Qt::LeftButton)
-        {
-            state_->leftPress = state_->lastMouse;
-        }
-        if (event->button() == Qt::RightButton)
-            state_->view->StartRotation(state_->lastMouse.x(), state_->lastMouse.y());
-    } catch (const Standard_Failure& error) {
+void OccViewport::setCloudEditingEnabled(bool enabled)
+{
+    state_->cloudEditingEnabled = enabled;
+    if (!enabled)
+    {
+        state_->selecting = false;
+    }
+}
+
+void OccViewport::setCloudSelectionMode(CloudSelectionMode mode)
+{
+    state_->selectionMode = mode;
+}
+
+void OccViewport::setCloudSelection(std::shared_ptr<const CloudSelection> selection)
+{
+    state_->selection = std::move(selection);
+    try
+    {
+        rebuildCloud();
+        update();
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+    catch (const std::exception &error)
+    {
         fail(QString::fromUtf8(error.what()));
     }
 }
 
-void OccViewport::mouseMoveEvent(QMouseEvent* event) {
+void OccViewport::clearSelectionRectangle()
+{
+    state_->selecting = false;
+    if (!state_->selectionBand.IsNull() && !state_->context.IsNull())
+    {
+        state_->context->Erase(state_->selectionBand, false);
+    }
+}
+
+void OccViewport::drawSelectionRectangle(const QPoint &current)
+{
+    if (state_->selectionBand.IsNull())
+    {
+        state_->selectionBand = new AIS_RubberBand(Quantity_Color(1.0, 0.72, 0.05, Quantity_TOC_sRGB), Aspect_TOL_SOLID,
+                                                   2.0 * devicePixelRatioF());
+        state_->selectionBand->SetInfiniteState(true);
+    }
+    const int w = qRound(width() * devicePixelRatioF());
+    const int h = qRound(height() * devicePixelRatioF());
+    const auto start = state_->leftPress;
+    state_->selectionBand->SetRectangle(
+        std::clamp(std::min(start.x(), current.x()), 0, w), h - std::clamp(std::max(start.y(), current.y()), 0, h),
+        std::clamp(std::max(start.x(), current.x()), 0, w), h - std::clamp(std::min(start.y(), current.y()), 0, h));
+    state_->context->Display(state_->selectionBand, 0, -1, false);
+    state_->context->Redisplay(state_->selectionBand, false);
+    state_->view->Redraw();
+}
+
+CloudSelectionRect OccViewport::selectionRectangle(const QPoint &current) const
+{
+    const auto &camera = state_->view->Camera();
+    const auto matrix = camera->ProjectionMatrix() * camera->OrientationMatrix();
+    CloudSelectionRect result;
+    for (std::size_t row = 0; row < 4; ++row)
+    {
+        for (std::size_t col = 0; col < 4; ++col)
+        {
+            result.viewProjection[row * 4 + col] = matrix.GetValue(row, col);
+        }
+    }
+    result.zeroToOneDepth = camera->IsZeroToOneDepth();
+    const double w = qRound(width() * devicePixelRatioF());
+    const double h = qRound(height() * devicePixelRatioF());
+    const auto start = state_->leftPress;
+    result.minX = std::clamp(2.0 * std::min(start.x(), current.x()) / w - 1, -1.0, 1.0);
+    result.maxX = std::clamp(2.0 * std::max(start.x(), current.x()) / w - 1, -1.0, 1.0);
+    result.minY = std::clamp(1 - 2.0 * std::max(start.y(), current.y()) / h, -1.0, 1.0);
+    result.maxY = std::clamp(1 - 2.0 * std::min(start.y(), current.y()) / h, -1.0, 1.0);
+    return result;
+}
+
+void OccViewport::mousePressEvent(QMouseEvent *event)
+{
+    setFocus(Qt::MouseFocusReason);
+    const auto ratio = devicePixelRatioF();
+    state_->lastMouse = QPoint(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
+    if (state_->view.IsNull()) return;
+    try
+    {
+        stopNavigationAnimation();
+        if (event->button() == Qt::LeftButton)
+        {
+            clearSelectionRectangle();
+            state_->leftPress = state_->lastMouse;
+            state_->context->MoveTo(state_->lastMouse.x(), state_->lastMouse.y(), state_->view, false);
+            state_->selecting = state_->cloudEditingEnabled && state_->cloudVisible &&
+                !isDetectedInteractive(state_->context->DetectedOwner(), state_->viewCube);
+        }
+        if (event->button() == Qt::RightButton)
+        {
+            state_->rightPress = state_->lastMouse;
+            state_->rightDragged = false;
+            state_->view->StartRotation(state_->lastMouse.x(), state_->lastMouse.y());
+        }
+        update();
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+}
+
+void OccViewport::mouseMoveEvent(QMouseEvent *event)
+{
     if (state_->view.IsNull()) return;
     const auto ratio = devicePixelRatioF();
     const QPoint current(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
-    try {
-        if (event->buttons().testFlag(Qt::RightButton)) state_->view->Rotation(current.x(), current.y());
+    try
+    {
+        if (event->buttons().testFlag(Qt::RightButton))
+        {
+            state_->rightDragged = state_->rightDragged || (current - state_->rightPress).manhattanLength() >
+                                                               QApplication::startDragDistance() * ratio;
+            if (state_->rightDragged)
+            {
+                clearSelectionRectangle();
+                state_->view->Rotation(current.x(), current.y());
+                redraw();
+            }
+        }
         else if (event->buttons().testFlag(Qt::MiddleButton))
+        {
+            clearSelectionRectangle();
             state_->view->Pan(current.x() - state_->lastMouse.x(), state_->lastMouse.y() - current.y());
-        if (event->buttons().testFlag(Qt::RightButton) || event->buttons().testFlag(Qt::MiddleButton)) redraw();
+            redraw();
+        }
+        else if (event->buttons().testFlag(Qt::LeftButton) && state_->selecting)
+        {
+            if ((current - state_->leftPress).manhattanLength() > QApplication::startDragDistance() * ratio)
+            {
+                drawSelectionRectangle(current);
+            }
+        }
         else if (event->buttons() == Qt::NoButton)
         {
             state_->context->MoveTo(current.x(), current.y(), state_->view, false);
             state_->view->Redraw();
         }
-    } catch (const Standard_Failure& error) {
+    }
+    catch (const Standard_Failure &error)
+    {
         fail(QString::fromUtf8(error.what()));
     }
     state_->lastMouse = current;
@@ -515,22 +663,55 @@ void OccViewport::mouseMoveEvent(QMouseEvent* event) {
 
 void OccViewport::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (event->button() != Qt::LeftButton || state_->viewCube.IsNull())
+    if (state_->view.IsNull())
     {
         return;
     }
     const double ratio = devicePixelRatioF();
     const QPoint current(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
-    if ((current - state_->leftPress).manhattanLength() > QApplication::startDragDistance() * ratio)
+    if (event->button() == Qt::RightButton)
+    {
+        if (!state_->rightDragged && state_->cloudEditingEnabled && onCloudContextMenu)
+        {
+            onCloudContextMenu(event->globalPosition().toPoint());
+        }
+        return;
+    }
+    if (event->button() != Qt::LeftButton)
     {
         return;
     }
     try
     {
+        if (state_->selecting)
+        {
+            state_->selecting = false;
+            if ((current - state_->leftPress).manhattanLength() > QApplication::startDragDistance() * ratio)
+            {
+                const auto rectangle = selectionRectangle(current);
+                if (rectangle.minX < rectangle.maxX && rectangle.minY < rectangle.maxY && onCloudSelection)
+                {
+                    drawSelectionRectangle(current);
+                    onCloudSelection(rectangle, state_->selectionMode);
+                }
+                return;
+            }
+            // 单击空白清空当前选区；加选/减选模式的小幅点击不改变已有选区。
+            if (state_->selectionMode == CloudSelectionMode::Replace && onCloudSelection)
+            {
+                onCloudSelection({}, CloudSelectionMode::Clear);
+            }
+            return;
+        }
+        if ((current - state_->leftPress).manhattanLength() > QApplication::startDragDistance() * ratio)
+        {
+            return;
+        }
         state_->context->MoveTo(current.x(), current.y(), state_->view, false);
         const auto owner = Handle(AIS_ViewCubeOwner)::DownCast(state_->context->DetectedOwner());
-        if (!owner.IsNull() && state_->context->DetectedInteractive() == state_->viewCube)
+        if (!owner.IsNull() && isDetectedInteractive(owner, state_->viewCube))
         {
+            clearSelectionRectangle();
             state_->viewCube->StartAnimation(owner);
             state_->navigationTimer->start();
             event->accept();
@@ -540,6 +721,22 @@ void OccViewport::mouseReleaseEvent(QMouseEvent *event)
     {
         fail(QString::fromUtf8(error.what()));
     }
+}
+
+void OccViewport::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Escape)
+    {
+        clearSelectionRectangle();
+        if (state_->cloudEditingEnabled && onCloudSelection)
+        {
+            onCloudSelection({}, CloudSelectionMode::Clear);
+        }
+        update();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void OccViewport::leaveEvent(QEvent *event)
@@ -559,7 +756,7 @@ void OccViewport::mouseDoubleClickEvent(QMouseEvent *event)
         const double ratio = devicePixelRatioF();
         state_->context->MoveTo(qRound(event->position().x() * ratio),
                                qRound(event->position().y() * ratio), state_->view, false);
-        if (state_->context->DetectedInteractive() == state_->viewCube)
+        if (isDetectedInteractive(state_->context->DetectedOwner(), state_->viewCube))
         {
             event->accept();
             return;
@@ -572,6 +769,7 @@ void OccViewport::wheelEvent(QWheelEvent* event) {
     if (state_->view.IsNull()) return;
     try {
         stopNavigationAnimation();
+        clearSelectionRectangle();
         const auto steps = std::clamp(event->angleDelta().y() / 120.0, -5.0, 5.0);
         state_->view->SetZoom(std::pow(1.15, steps));
         redraw();

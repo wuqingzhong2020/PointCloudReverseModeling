@@ -21,8 +21,11 @@ public:
     explicit OccViewport(QWidget* parent = nullptr);
     ~OccViewport() override;
 
-    void setPointCloud(std::vector<CloudDisplayPoint> points);
+    void setPointCloud(std::vector<CloudDisplayPoint> points, std::shared_ptr<const CloudSelection> selection = {});
     void setCloudHeightColors(bool enabled);
+    void setCloudEditingEnabled(bool enabled);
+    void setCloudSelectionMode(CloudSelectionMode mode);
+    void setCloudSelection(std::shared_ptr<const CloudSelection> selection);
     void setModel(std::vector<ModelDisplayPart> parts);
     void setCloudVisible(bool visible);
     void setModelVisible(bool visible);
@@ -30,8 +33,10 @@ public:
     void fitAll();
     void showBottomView(const Vec3 &normal, const Vec3 &longitudinal);
     std::function<void(const QString&)> onError;
+    std::function<void(const CloudSelectionRect &, CloudSelectionMode)> onCloudSelection;
+    std::function<void(const QPoint &)> onCloudContextMenu;
 
-protected:
+  protected:
     QPaintEngine* paintEngine() const override;
     bool event(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
@@ -43,8 +48,9 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void leaveEvent(QEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
-private:
+  private:
     struct State;
     std::unique_ptr<State> state_;
     void initialize();
@@ -57,6 +63,9 @@ private:
     void advanceNavigationAnimation();
     void stopNavigationAnimation();
     void fail(const QString& message);
+    void clearSelectionRectangle();
+    void drawSelectionRectangle(const QPoint &current);
+    CloudSelectionRect selectionRectangle(const QPoint &current) const;
 };
 
 } // namespace reverse::workbench

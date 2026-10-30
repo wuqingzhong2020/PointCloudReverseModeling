@@ -45,6 +45,13 @@ private:
     const std::filesystem::path& path, LengthUnit unit,
     std::stop_token stop = {}, const ProgressCallback& progress = {});
 
+[[nodiscard]] std::shared_ptr<const Model> loadCadModel(
+    const std::filesystem::path& path, std::stop_token stop = {}, const ProgressCallback& progress = {});
+
+[[nodiscard]] CloudExportResult exportPointCloud(
+    const CloudData& cloud, const std::filesystem::path& path,
+    std::stop_token stop = {}, const ProgressCallback& progress = {});
+
 // PCA 只给出框架和包围尺寸初值；不识别板厚、肋板、孔洞或遮挡背面。
 [[nodiscard]] BeamEstimate estimateBeam(
     const CloudData& cloud, std::stop_token stop = {}, const ProgressCallback& progress = {});

@@ -4,11 +4,14 @@
  * 实现 STEP 临时写出、独立回读核验及不覆盖提交，并计算点到有限矩形板件表面的距离。
  */
 #include "geometry/Geometry.h"
+#include "geometry/ModelImport.h"
+#include "geometry/StagedFile.h"
 
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -168,49 +171,6 @@ void appendMesh(const TopoDS_Shape& shape, std::uint32_t partIndex, MeshData& me
     }
 }
 
-struct StagedFile {
-    std::filesystem::path directory;
-    std::filesystem::path file;
-    explicit StagedFile(const std::filesystem::path& parent)
-    {
-        std::random_device random;
-        for (int attempt = 0; attempt < 50; ++attempt) {
-            std::ostringstream name;
-            name << ".reverse-step-" << std::hex << random() << random();
-            directory = parent / name.str();
-            std::error_code error;
-            if (std::filesystem::create_directory(directory, error)) {
-                file = directory / "verified.step";
-                return;
-            }
-            if (error && error != std::errc::file_exists)
-                throw GeometryError("output_not_writable", "无法在输出目录中建立临时 STEP 文件");
-        }
-        throw GeometryError("output_not_writable", "无法分配独立的临时导出目录");
-    }
-    ~StagedFile()
-    {
-        std::error_code ignored;
-        if (!file.empty()) std::filesystem::remove(file, ignored);
-        if (!directory.empty()) std::filesystem::remove(directory, ignored);
-    }
-};
-
-void commitWithoutOverwrite(const std::filesystem::path& temporary,
-                            const std::filesystem::path& target)
-{
-#ifdef _WIN32
-    // 不设置 MOVEFILE_REPLACE_EXISTING；同盘移动在目标已存在时失败。
-    if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
-        throw GeometryError("output_commit_failed", "STEP 提交失败：目标已存在或输出目录不可写");
-#else
-    // 同文件系统硬链接原子创建目标名，已有目标不会被替换。
-    std::error_code error;
-    std::filesystem::create_hard_link(temporary, target, error);
-    if (error) throw GeometryError("output_commit_failed", "STEP 提交失败：目标已存在或文件系统不支持原子提交");
-#endif
-}
-
 double boxSurfaceDistance(Vec3 point, const Plate& plate)
 {
     const double dx = std::max({plate.minimum.x - point.x, 0.0, point.x - plate.maximum.x});
@@ -336,6 +296,48 @@ struct Model::Impl {
     std::vector<Plate> plates;
     TopoDS_Compound compound;
 };
+
+std::shared_ptr<const Model> detail::modelFromShape(const TopoDS_Shape& shape, const std::string& format,
+    std::stop_token stop, const ProgressCallback& progress)
+{
+    if (shape.IsNull() || !BRepCheck_Analyzer(shape).IsValid())
+        throw GeometryError("invalid_model", "导入模型未通过几何有效性检查");
+    auto result = std::make_shared<Model::Impl>();
+    result->summary.importedFormat = format;
+    BRep_Builder builder;
+    builder.MakeCompound(result->compound);
+    std::vector<TopoDS_Shape> parts;
+    for (TopExp_Explorer it(shape, TopAbs_SOLID); it.More(); it.Next())
+        parts.push_back(it.Current());
+    for (TopExp_Explorer it(shape, TopAbs_FACE, TopAbs_SOLID); it.More(); it.Next())
+        parts.push_back(it.Current());
+    if (parts.empty()) throw GeometryError("empty_model", "模型不包含可显示的实体或曲面");
+    for (std::size_t index = 0; index < parts.size(); ++index)
+    {
+        checkpoint(stop, progress, static_cast<double>(index) / parts.size(), "生成导入部件网格");
+        const auto& part = parts[index];
+        const auto box = bounds(part);
+        if (!std::all_of(box.begin(), box.end(), [](double v) { return std::isfinite(v); }))
+            throw GeometryError("invalid_model", "模型包含非有限坐标");
+        const auto id = "imported-part-" + std::to_string(index + 1);
+        result->plates.push_back({id, {box[0], box[1], box[2]}, {box[3], box[4], box[5]}, part});
+        result->summary.partIds.push_back(id);
+        result->mesh.partIds.push_back(id);
+        if (part.ShapeType() == TopAbs_SOLID)
+        {
+            result->summary.volumeMm3 += checkedVolume(part);
+            ++result->summary.solidCount;
+        }
+        else ++result->summary.surfaceCount;
+        builder.Add(result->compound, part);
+        appendMesh(part, static_cast<std::uint32_t>(index), result->mesh);
+    }
+    const auto box = bounds(result->compound);
+    result->summary.frame.originMm = {(box[0] + box[3]) / 2, (box[1] + box[4]) / 2, (box[2] + box[5]) / 2};
+    result->summary.warnings.push_back("导入几何按实体/独立面分组；不包含原始点云、重建参数或板厚识别结果。");
+    checkpoint(stop, progress, 1, "模型导入完成");
+    return std::make_shared<const Model>(std::move(result));
+}
 
 Model::Model(std::shared_ptr<const Impl> implementation)
     : implementation_(std::move(implementation))
@@ -478,7 +480,7 @@ StepExportResult exportStep(const Model& model, const std::filesystem::path& req
         throw GeometryError("output_exists", "输出文件已存在，请选择新文件名");
     if (error || !std::filesystem::is_directory(target.parent_path()))
         throw GeometryError("output_not_writable", "STEP 输出目录不存在或不可访问");
-    StagedFile staged(target.parent_path());
+    detail::StagedFile staged(target.parent_path());
     const auto& source = *model.implementation_;
     StepExportResult result;
     try {
@@ -487,10 +489,14 @@ StepExportResult exportStep(const Model& model, const std::filesystem::path& req
         const auto colorTool = XCAFDoc_DocumentTool::ColorTool(document->Main());
         XCAFDoc_DocumentTool::SetLengthUnit(document, 0.001);
         const auto assembly = shapeTool->NewShape();
-        TDataStd_Name::Set(assembly, source.summary.fromPointCloud ? "RecognizedPlates" : "AssistedBeam");
+        TDataStd_Name::Set(assembly, !source.summary.importedFormat.empty() ? "ImportedModel" :
+            source.summary.fromPointCloud ? "RecognizedPlates" : "AssistedBeam");
         for (std::size_t index = 0; index < source.plates.size(); ++index) {
             const auto& plate = source.plates[index];
-            const auto part = shapeTool->AddShape(plate.shape, false);
+            // 导入装配可能多次引用同一拓扑；独立复制拓扑以保留各部件名称和实例位置。
+            const auto exportedShape = source.summary.importedFormat.empty() ? plate.shape :
+                BRepBuilderAPI_Copy(plate.shape, false, false).Shape();
+            const auto part = shapeTool->AddShape(exportedShape, false);
             TDataStd_Name::Set(part, TCollection_ExtendedString(plate.id.c_str()));
             const auto instance = shapeTool->AddComponent(assembly, part, TopLoc_Location());
             TDataStd_Name::Set(instance, TCollection_ExtendedString(plate.id.c_str()));
@@ -579,19 +585,20 @@ StepExportResult exportStep(const Model& model, const std::filesystem::path& req
         input.close();
         result.fileBytes = std::filesystem::file_size(staged.file);
         checkpoint(stop, progress, 0.95, "提交已验证的 STEP 文件");
-        commitWithoutOverwrite(staged.file, target);
+        detail::commitWithoutOverwrite(staged.file, target);
         result.valid = true;
     } catch (const Standard_Failure& failure) {
         throw GeometryError("step_failed", failure.what());
     }
     // 提交后不再处理取消；文件成功落盘必须返回成功状态。
-    if (progress) progress(1.0, "STEP 写出及回读检查通过");
     return result;
 }
 
 DeviationResult evaluateDeviation(const CloudData& cloud, const Model& model,
     std::stop_token stop, const ProgressCallback& progress)
 {
+    if (!model.summary().importedFormat.empty())
+        throw GeometryError("unsupported_deviation", "导入模型不适用矩形板件偏差算法");
     if (cloud.points.empty()) throw GeometryError("empty_cloud", "没有可比较的有效点");
     const auto& source = *model.implementation_;
     const auto& frame = source.summary.frame;

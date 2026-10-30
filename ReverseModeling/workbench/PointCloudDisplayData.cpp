@@ -61,7 +61,7 @@ std::vector<CloudDisplayPoint> makeCloudDisplayPoints(
         {
             throw std::invalid_argument("点云显示包含非有限坐标。");
         }
-        points.push_back({point, {}});
+        points.push_back({point, {}, index});
         heights.push_back(height);
     }
     if (points.empty())

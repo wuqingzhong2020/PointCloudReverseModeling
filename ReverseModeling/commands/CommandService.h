@@ -43,6 +43,12 @@ struct ProjectSnapshot {
     std::shared_ptr<const MeshData> mesh;
     std::shared_ptr<const DeviationResult> deviation;
     std::optional<StepExportResult> lastExport;
+    std::optional<CloudExportResult> lastCloudExport;
+    std::string exportedCloudPathUtf8;
+    std::shared_ptr<const CloudSelection> selection;
+    bool canUndoCloud{};
+    bool canRedoCloud{};
+    bool canResetCloud{};
 };
 
 class CommandService {
@@ -53,11 +59,16 @@ public:
     CommandService& operator=(const CommandService&) = delete;
 
     [[nodiscard]] std::string submitImport(const std::filesystem::path& path, LengthUnit unit);
+    [[nodiscard]] std::string submitCloudSelection(const CloudSelectionRect &rectangle, CloudSelectionMode mode,
+                                                   std::uint64_t expectedRevision);
+    [[nodiscard]] std::string submitCloudEdit(CloudEditMode mode, std::uint64_t expectedRevision);
+    [[nodiscard]] std::string submitCloudHistory(CloudHistoryAction action, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitReconstruct(const BeamParameters& parameters,
         std::uint64_t expectedRevision, std::optional<BeamFrame> frameOverride = {});
     [[nodiscard]] std::string submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
                                                          double endOverhangToleranceMm = 30.0);
     [[nodiscard]] std::string submitExport(const std::filesystem::path& path, std::uint64_t expectedRevision);
+    [[nodiscard]] std::string submitExportCloud(const std::filesystem::path& path, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitDeviation(std::uint64_t expectedRevision);
     [[nodiscard]] bool cancel(const std::string& taskId);
     [[nodiscard]] TaskSnapshot task(const std::string& taskId) const;

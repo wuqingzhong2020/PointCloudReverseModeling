@@ -41,14 +41,14 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {OpenFolder, "openFolder", "打开文件夹", "folder", Pending},
                                 {ImportParameters, "importParameters", "导入重建参数", "parameters", Pending},
                                 {ExportStep, "exportStep", "导出 STEP", "export", Available},
-                                {ExportCloud, "exportCloud", "导出点云 (*.pcd)", "cloud", Pending},
+                                {ExportCloud, "exportCloud", "导出点云 (*.pcd)", "cloud", Available},
                                 {ExportModel, "exportModel", "导出工程模型", "cube", Pending},
                                 {ExportParameters, "exportParameters", "导出重建参数", "parameters", Pending},
-                                {Undo, "undo", "撤销", "undo", Pending},
-                                {Redo, "redo", "重做", "redo", Pending},
-                                {Reset, "reset", "重置", "reset", Pending},
-                                {CropCloud, "cropCloud", "截取点云", "crop", Pending},
-                                {DeleteCloud, "deleteCloud", "删除点云", "delete", Pending},
+                                {Undo, "undo", "撤销", "undo", Available},
+                                {Redo, "redo", "重做", "redo", Available},
+                                {Reset, "reset", "重置", "reset", Available},
+                                {CropCloud, "cropCloud", "截取点云", "crop", Available},
+                                {DeleteCloud, "deleteCloud", "删除点云", "delete", Available},
                                 {AutoAlign, "autoAlign", "自动对齐", "align", Pending},
                                 {RemoveDuplicates, "removeDuplicates", "拼接时去重", "cloud", Pending},
                                 {PrecisionLow, "precisionLow", "低", "", Pending},
@@ -78,10 +78,10 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {Measure, "measure", "测量", "measure", Preview},
                                 {BasePlane, "basePlane", "基准面", "plane", Preview},
                                 {Deviation, "deviation", "计算偏差", "measure", Available},
-                                {Select, "select", "选择", "cursor", Pending},
-                                {AddSelection, "addSelection", "新增选择", "cursor", Pending},
-                                {RemoveSelection, "removeSelection", "移除选择", "cursor", Pending},
-                                {SelectPoint, "selectPoint", "点", "", Pending},
+                                {Select, "select", "选择", "cursor", Available},
+                                {AddSelection, "addSelection", "新增选择", "cursor-add", Available},
+                                {RemoveSelection, "removeSelection", "移除选择", "cursor-remove", Available},
+                                {SelectPoint, "selectPoint", "点", "", Available},
                                 {SelectEdge, "selectEdge", "线", "", Pending},
                                 {SelectFace, "selectFace", "面", "", Pending},
                                 {SelectSolid, "selectSolid", "体", "cube", Pending},
@@ -124,7 +124,7 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
         get(selected)->setChecked(true);
     };
     exclusive({Select, AddSelection, RemoveSelection}, Select);
-    exclusive({SelectPoint, SelectEdge, SelectFace, SelectSolid}, SelectSolid);
+    exclusive({SelectPoint, SelectEdge, SelectFace, SelectSolid}, SelectPoint);
     exclusive({PrecisionLow, PrecisionMedium, PrecisionHigh}, PrecisionMedium);
     exclusive({CloudHeight, CloudSolid}, CloudHeight);
     exclusive({ModelSolid, ModelWire}, ModelSolid);
@@ -134,6 +134,14 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
         get(id)->setChecked(id == ShowCloud || id == ShowModel || id == ShowThickness);
     }
     get(ShowThickness)->setToolTip(QStringLiteral("显示逐板厚度（mm）；底板最大值标注估算，缺少依据时显示未识别"));
+    get(CropCloud)->setToolTip(QStringLiteral("保留框选点云，移除其余点；选区贯穿深度，作用于完整点云"));
+    get(DeleteCloud)->setToolTip(QStringLiteral("删除框选点云；可撤销，不改写源 PCD 文件"));
+    get(Undo)->setToolTip(QStringLiteral("撤销上一次点云截取、删除或重置（最多 10 步）"));
+    get(Redo)->setToolTip(QStringLiteral("重做点云编辑"));
+    get(Reset)->setToolTip(QStringLiteral("恢复本次导入的完整点云；可撤销"));
+    get(Select)->setToolTip(QStringLiteral("左键框选，替换当前选区；单击或 Esc 清空选区"));
+    get(AddSelection)->setToolTip(QStringLiteral("左键框选，将区域内点加入选区"));
+    get(RemoveSelection)->setToolTip(QStringLiteral("左键框选，将区域内点移出选区"));
     get(Open)->setShortcut(QKeySequence::Open);
     get(ExportStep)->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+E")));
     get(Parameters)->setShortcut(QKeySequence(QStringLiteral("Ctrl+P")));

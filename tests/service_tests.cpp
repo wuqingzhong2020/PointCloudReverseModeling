@@ -163,3 +163,181 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
     ASSERT_TRUE(planarProject.cloud && !planarProject.estimate && !planarProject.recognition && !planarProject.model && !planarProject.warnings.empty()) << "Valid planar cloud must import even without a beam frame";
     expectError([&] { (void)service.submitReconstruct(parameters, planarProject.revision); }, "no_frame");
 }
+
+namespace
+{
+reverse::CloudSelectionRect cloudRectangle(bool half = false)
+{
+    reverse::CloudSelectionRect rectangle;
+    // 导入以首个有效点 (-50,-20,-30) 为原点，视图使用局部坐标。
+    rectangle.viewProjection = {0.02, 0, 0, -1, 0, 0.05, 0, -1, 0, 0, 0.025, -0.75, 0, 0, 0, 1};
+    if (half)
+    {
+        rectangle.maxX = 0;
+    }
+    return rectangle;
+}
+} // namespace
+
+TEST(CloudCommands, CropInvalidatesDerivedResultsAndUndoRestoresExportableModel)
+{
+    using namespace reverse;
+    TemporaryDirectory temp;
+    const auto input = temp.path / "cloud.pcd";
+    writeCloud(input);
+    const auto fileSize = std::filesystem::file_size(input);
+    CommandService service;
+    success(service, service.submitImport(input, LengthUnit::Millimeter));
+    const auto original = service.project();
+    const BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
+    success(service, service.submitReconstruct(parameters, original.revision));
+    success(service, service.submitDeviation(service.project().revision));
+    const auto built = service.project();
+    success(service, service.submitCloudSelection(cloudRectangle(true), CloudSelectionMode::Replace, built.revision));
+    const auto selected = service.project();
+    ASSERT_TRUE(selected.selection);
+    EXPECT_EQ(selected.selection->size(), 60u);
+    EXPECT_EQ(selected.model, built.model);
+    EXPECT_FALSE(selected.canUndoCloud);
+    expectError([&] { (void)service.submitCloudEdit(CloudEditMode::KeepSelection, built.revision); }, "stale_revision");
+    success(service, service.submitCloudEdit(CloudEditMode::KeepSelection, selected.revision));
+    const auto cropped = service.project();
+    ASSERT_TRUE(cropped.cloud);
+    EXPECT_EQ(cropped.cloud->points.size(), 60u);
+    EXPECT_EQ(cropped.cloud->sourcePointCount, 111u);
+    EXPECT_NE(cropped.cloudId, original.cloudId);
+    EXPECT_TRUE(cropped.canUndoCloud);
+    EXPECT_TRUE(cropped.canResetCloud);
+    EXPECT_FALSE(cropped.canRedoCloud);
+    EXPECT_FALSE(cropped.model);
+    EXPECT_FALSE(cropped.mesh);
+    EXPECT_FALSE(cropped.deviation);
+    EXPECT_FALSE(cropped.selection);
+    ASSERT_TRUE(cropped.estimate);
+    EXPECT_NEAR(cropped.estimate->length, 60, 1e-6); // 剩余最长尺寸为 Z=60，不再沿用原梁长 100。
+    expectError([&] { (void)service.submitExport(temp.path / "stale.step", cropped.revision); }, "no_model");
+    success(service, service.submitCloudHistory(CloudHistoryAction::Undo, cropped.revision));
+    const auto undone = service.project();
+    EXPECT_EQ(undone.cloud, built.cloud);
+    EXPECT_EQ(undone.model, built.model);
+    EXPECT_EQ(undone.mesh, built.mesh);
+    EXPECT_EQ(undone.deviation, built.deviation);
+    EXPECT_GT(undone.revision, cropped.revision);
+    EXPECT_TRUE(undone.canRedoCloud);
+    EXPECT_FALSE(undone.canResetCloud);
+    // 证明恢复了几何内核对象，不只是恢复界面摘要。
+    success(service, service.submitExport(temp.path / "restored.step", undone.revision));
+    EXPECT_EQ(service.project().lastExport->solidCount, built.model->solidCount);
+    success(service, service.submitCloudHistory(CloudHistoryAction::Redo, service.project().revision));
+    EXPECT_EQ(service.project().cloud, cropped.cloud);
+    EXPECT_FALSE(service.project().model);
+    EXPECT_EQ(std::filesystem::file_size(input), fileSize);
+    EXPECT_EQ(loadPointCloud(input, LengthUnit::Millimeter)->points.size(), 110u);
+}
+
+TEST(CloudCommands, DeleteAllResetAndNoOpPreserveHistoryCorrectly)
+{
+    using namespace reverse;
+    TemporaryDirectory temp;
+    const auto input = temp.path / "cloud.pcd";
+    writeCloud(input);
+    CommandService service;
+    success(service, service.submitImport(input, LengthUnit::Millimeter));
+    const auto original = service.project();
+    expectError([&] { (void)service.submitCloudEdit(CloudEditMode::DeleteSelection, original.revision); },
+                "empty_selection");
+    success(service, service.submitCloudSelection(cloudRectangle(), CloudSelectionMode::Replace, original.revision));
+    const auto selected = service.project();
+    ASSERT_EQ(selected.selection->size(), 110u);
+    success(service, service.submitCloudEdit(CloudEditMode::KeepSelection, selected.revision));
+    EXPECT_EQ(service.project().revision, selected.revision);
+    EXPECT_FALSE(service.project().canUndoCloud);
+    success(service, service.submitCloudEdit(CloudEditMode::DeleteSelection, selected.revision));
+    const auto empty = service.project();
+    EXPECT_TRUE(empty.cloud->points.empty());
+    EXPECT_FALSE(empty.estimate);
+    EXPECT_FALSE(empty.recognition);
+    EXPECT_FALSE(empty.model);
+    success(service, service.submitCloudHistory(CloudHistoryAction::Undo, empty.revision));
+    success(service, service.submitCloudEdit(CloudEditMode::KeepSelection, service.project().revision));
+    EXPECT_TRUE(service.project().canRedoCloud); // 无变化的截取不清空重做。
+    success(service, service.submitCloudHistory(CloudHistoryAction::Redo, service.project().revision));
+    success(service, service.submitCloudHistory(CloudHistoryAction::Reset, service.project().revision));
+    EXPECT_EQ(service.project().cloud, original.cloud);
+    success(service, service.submitCloudHistory(CloudHistoryAction::Undo, service.project().revision));
+    EXPECT_TRUE(service.project().cloud->points.empty()); // 重置本身可撤销。
+    success(service, service.submitCloudHistory(CloudHistoryAction::Undo, service.project().revision));
+    success(service, service.submitCloudSelection(cloudRectangle(true), CloudSelectionMode::Replace,
+                                                  service.project().revision));
+    success(service, service.submitCloudEdit(CloudEditMode::DeleteSelection, service.project().revision));
+    EXPECT_EQ(service.project().cloud->points.size(), 50u);
+    EXPECT_FALSE(service.project().canRedoCloud); // 新分支丢弃旧重做。
+    const auto edited = service.project();
+    EXPECT_EQ(wait(service, service.submitImport(temp.path / "missing.pcd", LengthUnit::Millimeter)).state,
+              TaskState::Failed);
+    EXPECT_EQ(service.project().cloud, edited.cloud);
+    EXPECT_TRUE(service.project().canUndoCloud);
+    success(service, service.submitImport(input, LengthUnit::Millimeter));
+    EXPECT_FALSE(service.project().canUndoCloud);
+    EXPECT_FALSE(service.project().canRedoCloud);
+    EXPECT_FALSE(service.project().canResetCloud);
+    EXPECT_FALSE(service.project().selection);
+}
+
+TEST(PointCloud, ImportsBinaryFromChineseDirectoryAndFullWidthFilename)
+{
+    using namespace reverse;
+    TemporaryDirectory temp;
+    const auto directory = temp.path / std::filesystem::path(u8"中文目录（点云兼容）") /
+                           std::filesystem::path(u8"普通 H 型钢");
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+    const auto unicodePath = directory / std::filesystem::path(u8"reverse_modeling_result（最普通H型钢）.pcd");
+    const auto asciiPath = temp.path / "same-cloud.pcd";
+    constexpr std::size_t pointCount = 11 * 5 * 2;
+    {
+        std::ofstream output(unicodePath, std::ios::binary);
+        ASSERT_TRUE(output);
+        output << "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH "
+               << pointCount << "\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS " << pointCount << "\nDATA binary\n";
+        for (int x = -50; x <= 50; x += 10)
+        {
+            for (int y = -20; y <= 20; y += 10)
+            {
+                for (int z : {-30, 30})
+                {
+                    const std::array<float, 3> point{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+                    output.write(reinterpret_cast<const char *>(point.data()), sizeof(point));
+                }
+            }
+        }
+        ASSERT_TRUE(output.good());
+    }
+    ASSERT_TRUE(std::filesystem::copy_file(unicodePath, asciiPath));
+    const auto unicodeCloud = loadPointCloud(unicodePath, LengthUnit::Millimeter);
+    const auto asciiCloud = loadPointCloud(asciiPath, LengthUnit::Millimeter);
+    ASSERT_EQ(unicodeCloud->points.size(), pointCount);
+    ASSERT_EQ(asciiCloud->points.size(), pointCount);
+    EXPECT_FALSE(unicodeCloud->hasIntensity);
+    EXPECT_EQ(unicodeCloud->fields, (std::vector<std::string>{"x", "y", "z"}));
+    EXPECT_EQ(unicodeCloud->originMm.x, asciiCloud->originMm.x);
+    EXPECT_EQ(unicodeCloud->originMm.y, asciiCloud->originMm.y);
+    EXPECT_EQ(unicodeCloud->originMm.z, asciiCloud->originMm.z);
+    for (std::size_t i = 0; i < pointCount; ++i)
+    {
+        const auto &a = unicodeCloud->points[i];
+        const auto &b = asciiCloud->points[i];
+        EXPECT_EQ(a.position.x, b.position.x);
+        EXPECT_EQ(a.position.y, b.position.y);
+        EXPECT_EQ(a.position.z, b.position.z);
+        EXPECT_EQ(a.sourceIndex, i);
+    }
+    CommandService service;
+    success(service, service.submitImport(unicodePath, LengthUnit::Millimeter));
+    const auto project = service.project();
+    ASSERT_TRUE(project.cloud);
+    EXPECT_EQ(project.cloud->points.size(), pointCount);
+    const auto utf8Path = unicodePath.u8string();
+    EXPECT_EQ(project.sourcePathUtf8, std::string(utf8Path.begin(), utf8Path.end()));
+    const auto missing = directory / std::filesystem::path(u8"不存在（点云）.pcd");
+    expectError([&] { (void)loadPointCloud(missing, LengthUnit::Millimeter); }, "input_not_readable");
+}

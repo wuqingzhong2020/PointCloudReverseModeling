@@ -75,8 +75,17 @@ json toJson(const TaskSnapshot& task) {
 }
 
 json toJson(const ProjectSnapshot& project) {
-    json result{{"schemaVersion", 1}, {"revision", project.revision}, {"lengthUnit", "mm"},
-                {"cloudId", project.cloudId}, {"modelId", project.modelId}, {"warnings", project.warnings}};
+    json result{{"schemaVersion", 1},
+                {"revision", project.revision},
+                {"lengthUnit", "mm"},
+                {"cloudId", project.cloudId},
+                {"modelId", project.modelId},
+                {"sourcePath", project.sourcePathUtf8},
+                {"warnings", project.warnings},
+                {"selectedPointCount", project.selection ? project.selection->size() : 0},
+                {"canUndoCloud", project.canUndoCloud},
+                {"canRedoCloud", project.canRedoCloud},
+                {"canResetCloud", project.canResetCloud}};
     if (project.cloud) {
         const auto& c = *project.cloud;
         result["cloud"] = {{"sourcePath", project.sourcePathUtf8}, {"sourcePointCount", c.sourcePointCount},
@@ -92,10 +101,11 @@ json toJson(const ProjectSnapshot& project) {
     }
     if (project.model) {
         const auto& m = *project.model;
-        result["model"] = {{"method", m.fromPointCloud ? "observed_plate_edges" : "manual_parametric_plates"}, {"frame", frameJson(m.frame)},
+        result["model"] = {{"method", !m.importedFormat.empty() ? "imported_cad" : m.fromPointCloud ? "observed_plate_edges" : "manual_parametric_plates"}, {"frame", frameJson(m.frame)},
             {"parameters", parametersJson(m.parameters)}, {"solidCount", m.solidCount},
             {"surfaceCount", m.surfaceCount}, {"plates", platesJson(m.plates)},
             {"volumeMm3", m.volumeMm3}, {"partIds", m.partIds}};
+        result["model"]["importedFormat"] = m.importedFormat;
         if (m.fromPointCloud) {
             result["model"]["recognitionOptions"] = {
                 {"mirrorSymmetry", m.recognitionOptions.mirrorSymmetry},
@@ -112,6 +122,11 @@ json toJson(const ProjectSnapshot& project) {
         result["step"] = {{"path", project.exportedPathUtf8}, {"valid", e.valid},
             {"solidCount", e.solidCount}, {"surfaceCount", e.surfaceCount},
             {"volumeMm3", e.volumeMm3}, {"fileBytes", e.fileBytes}};
+    }
+    if (project.lastCloudExport) {
+        const auto& e = *project.lastCloudExport;
+        result["pcd"] = {{"path", project.exportedCloudPathUtf8}, {"pointCount", e.pointCount},
+            {"fileBytes", e.fileBytes}, {"hasIntensity", e.hasIntensity}, {"lengthUnit", "mm"}};
     }
     if (project.deviation) {
         const auto& d = *project.deviation;

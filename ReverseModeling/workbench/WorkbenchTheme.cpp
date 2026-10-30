@@ -124,9 +124,17 @@ QIcon WorkbenchTheme::icon(const QString &name)
                 painter.drawPolygon(QPolygon{{4, 23}, {11, 8}, {29, 8}, {22, 23}});
                 line(16, 3, 16, 28);
             }
-            else if (name == "cursor")
+            else if (name == "cursor" || name == "cursor-add" || name == "cursor-remove")
             {
                 painter.drawPolygon(QPolygon{{7, 3}, {25, 19}, {17, 19}, {20, 28}, {15, 30}, {12, 21}, {7, 26}});
+                if (name != "cursor")
+                {
+                    line(22, 7, 30, 7);
+                    if (name == "cursor-add")
+                    {
+                        line(26, 3, 26, 11);
+                    }
+                }
             }
             else if (name == "measure")
             {

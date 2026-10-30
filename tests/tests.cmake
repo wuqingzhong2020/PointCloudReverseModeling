@@ -1,6 +1,9 @@
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/service_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/model_display_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_recognition_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/cloud_editing_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/viewport_picking_tests.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccPicking.h")
 # 仅测试中立显示数据的分组与标注，不引入 Qt / AIS / Dock 依赖。
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelDisplayData.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelDisplayData.h")
@@ -8,3 +11,4 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/M
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelLabelVisibility.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointCloudDisplayData.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointCloudDisplayData.h")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/file_exchange_tests.cpp")
