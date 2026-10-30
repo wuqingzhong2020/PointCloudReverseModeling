@@ -348,7 +348,7 @@ BeamEstimate estimateBeam(const CloudData& cloud, std::stop_token stop,
     estimate.width = dimensions.y();
     estimate.height = dimensions.z();
     estimate.warnings.emplace_back("PCA 仅提供方向和包围尺寸初值；离群点与遮挡会影响结果，请确认方向和尺寸。");
-    estimate.warnings.emplace_back("腹板/翼板厚度、肋板位置及厚度必须人工确认；未自动识别孔、缺口或任意轮廓。");
+    estimate.warnings.emplace_back("PCA 本步骤只估计方向；逐板厚度与站位见后续识别结果。孔、缺口或任意轮廓尚未恢复。");
     if (solver.eigenvalues()[2] < 1.2 * solver.eigenvalues()[1])
         estimate.warnings.emplace_back("最大两个主方向接近，梁长方向可能不稳定，须人工检查。");
     checkpoint(stop, progress, 1.0, "框架初值已计算，等待人工确认");

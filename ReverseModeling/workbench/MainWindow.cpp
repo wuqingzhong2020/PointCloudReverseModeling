@@ -12,10 +12,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
-#include <QComboBox>
 #include <QDateTime>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QLabel>
@@ -37,7 +34,10 @@
 #include "commands/CommandService.h"
 #include "workbench/DockWorkspace.h"
 #include "workbench/MainWindow.h"
+#include "workbench/ModelDisplayData.h"
 #include "workbench/OccViewport.h"
+#include "workbench/PointCloudDisplayData.h"
+#include "workbench/RecentFilesMenu.h"
 #include "workbench/RibbonBuilder.h"
 #include "workbench/WorkbenchActions.h"
 #include "workbench/WorkbenchPanels.h"
@@ -96,6 +96,7 @@ struct MainWindow::State
     std::optional<BeamParameters> appliedParameters;
     OccViewport *viewport{};
     WorkbenchActions *actions{};
+    RecentFilesMenu *recentFiles{};
     DockWorkspace *workspace{};
     ReconstructionPanel *parameters{};
     OperationPanel *operation{};
@@ -136,7 +137,7 @@ MainWindow::MainWindow(QWidget *parent)
         appendLog(QStringLiteral("视图错误：") + error);
     };
     state_->workspace = new DockWorkspace(this, viewContainer);
-    viewLayout->addWidget(createViewToolbar(viewContainer, actions, state_->workspace->windowMenu()));
+    viewLayout->addWidget(createViewToolbar(viewContainer, actions));
     viewLayout->addWidget(state_->viewport, 1);
     auto *hint = label(QStringLiteral("右键旋转 · 中键平移 · 滚轮缩放 · 双击适合视图"), viewContainer);
     hint->setProperty("muted", true);
@@ -188,7 +189,8 @@ MainWindow::MainWindow(QWidget *parent)
     state_->workspace->addPanel(QStringLiteral("dock.tasks"), QStringLiteral("任务信息"), state_->taskDetails,
                                 DockPosition::Bottom);
     state_->workspace->initializeLayout();
-    buildRibbon(ribbonBar(), actions, state_->workspace->windowMenu());
+    state_->recentFiles = new RecentFilesMenu(this);
+    buildRibbon(ribbonBar(), actions, state_->workspace->windowMenu(), state_->recentFiles);
     state_->status = new QLabel(QStringLiteral("就绪"), this);
     state_->progress = new QProgressBar(this);
     state_->progress->setRange(0, 1000);
@@ -204,6 +206,11 @@ MainWindow::MainWindow(QWidget *parent)
             [this]
             {
                 importCloud();
+            });
+    connect(state_->recentFiles, &QMenu::triggered, this,
+            [this](QAction *action)
+            {
+                importCloud(action->data().toString());
             });
     connect(actions.get(ExportStep), &QAction::triggered, this,
             [this]
@@ -239,8 +246,25 @@ MainWindow::MainWindow(QWidget *parent)
                 state_->workspace->showPanel(QStringLiteral("dock.reconstruction"));
             });
     connect(actions.get(ShowCloud), &QAction::toggled, state_->viewport, &OccViewport::setCloudVisible);
+    connect(actions.get(CloudHeight), &QAction::toggled, state_->viewport, &OccViewport::setCloudHeightColors);
     connect(actions.get(ShowModel), &QAction::toggled, state_->viewport, &OccViewport::setModelVisible);
+    connect(actions.get(ShowThickness), &QAction::toggled, state_->viewport, &OccViewport::setThicknessVisible);
     connect(actions.get(FitAll), &QAction::triggered, state_->viewport, &OccViewport::fitAll);
+    connect(actions.get(BottomView), &QAction::triggered, this,
+            [this]
+            {
+                const auto project = state_->service.project();
+                if (project.model)
+                {
+                    const auto &frame = project.model->frame;
+                    state_->viewport->showBottomView(frame.yAxis, frame.xAxis);
+                }
+                else if (project.recognition)
+                {
+                    const auto &frame = project.recognition->frame;
+                    state_->viewport->showBottomView(frame.yAxis, frame.xAxis);
+                }
+            });
     for (const auto id : {BuildSelection, Obstacle, PlateThickness, ExtendContour, Channel, Angle, OuterPlate,
                           BottomPlate, WeldHole, BottomHole, Fillet, Move, Rotate, Measure, BasePlane})
     {
@@ -264,7 +288,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(state_->parameters, &ReconstructionPanel::restoreRequested, this,
             [this]
             {
-                restoreReferenceParameters();
+                restoreRecognition();
             });
     connect(state_->parameters, &ReconstructionPanel::closeRequested, this,
             [this]
@@ -284,7 +308,7 @@ MainWindow::MainWindow(QWidget *parent)
                 pollTask();
             });
     state_->timer->start();
-    appendLog(QStringLiteral("工作台就绪。打开 PCD 时请选择原始单位；窗口菜单可显示日志和参数面板。"));
+    appendLog(QStringLiteral("工作台就绪。点云直接按 mm 导入；窗口菜单可显示日志和参数面板。"));
     refreshProjectPanels();
     updateActions();
     QTimer::singleShot(0, this,
@@ -318,9 +342,12 @@ void MainWindow::updateActions()
     const auto project = state_->service.project();
     auto &actions = *state_->actions;
     actions.get(ActionId::Open)->setEnabled(idle);
-    actions.get(ActionId::Reconstruct)->setEnabled(idle && project.cloud && project.estimate.has_value());
+    state_->recentFiles->menuAction()->setEnabled(idle);
+    actions.get(ActionId::BottomView)->setEnabled(idle && (project.model || project.recognition.has_value()));
+    actions.get(ActionId::Reconstruct)->setEnabled(idle && project.cloud &&
+        (state_->parameters->usePointCloud() ? project.recognition.has_value() : project.estimate.has_value()));
     state_->parameters->setEditable(idle && project.cloud && project.estimate.has_value(),
-                                    idle && project.suggestedParameters.has_value());
+                                    idle && project.recognition.has_value());
     const bool currentModel = idle && project.model && !state_->parametersDirty && !state_->parameters->hasEdits();
     actions.get(ActionId::ExportStep)->setEnabled(currentModel);
     actions.get(ActionId::Deviation)->setEnabled(currentModel);
@@ -333,46 +360,22 @@ void MainWindow::importCloud()
 {
     const auto path =
         QFileDialog::getOpenFileName(this, QStringLiteral("打开已有点云文件"), {}, QStringLiteral("PCD 点云 (*.pcd)"));
-    if (path.isEmpty())
-    {
-        return;
-    }
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("确认点云单位"));
-    dialog.setMinimumWidth(380);
-    auto *layout = new QVBoxLayout(&dialog);
-    layout->addWidget(label(QStringLiteral("请选择文件坐标的原始单位，内部统一转换为 mm。\n") + path, &dialog));
-    auto *unit = new QComboBox(&dialog);
-    unit->setObjectName(QStringLiteral("import.unit"));
-    unit->addItem(QStringLiteral("请选择原始单位"), -1);
-    unit->addItem(QStringLiteral("毫米 mm"), static_cast<int>(LengthUnit::Millimeter));
-    unit->addItem(QStringLiteral("厘米 cm"), static_cast<int>(LengthUnit::Centimeter));
-    unit->addItem(QStringLiteral("米 m"), static_cast<int>(LengthUnit::Meter));
-    layout->addWidget(unit);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("导入"));
-    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
-    buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
-    connect(unit, &QComboBox::currentIndexChanged, &dialog,
-            [unit, buttons]
-            {
-                buttons->button(QDialogButtonBox::Ok)->setEnabled(unit->currentData().toInt() >= 0);
-            });
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(buttons);
-    if (dialog.exec() != QDialog::Accepted)
+    importCloud(path);
+}
+
+void MainWindow::importCloud(const QString &path)
+{
+    if (path.isEmpty() || !state_->activeTask.empty() || state_->closing)
     {
         return;
     }
     try
     {
-        state_->activeTask =
-            state_->service.submitImport(nativePath(path), static_cast<LengthUnit>(unit->currentData().toInt()));
+        state_->activeTask = state_->service.submitImport(nativePath(path), LengthUnit::Millimeter);
         state_->pending = State::Operation::Import;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("开始导入：") + path);
+        appendLog(QStringLiteral("开始导入（单位 mm）：") + path);
         updateActions();
     }
     catch (const std::exception &error)
@@ -406,32 +409,43 @@ bool MainWindow::applyParameters()
     }
 }
 
-void MainWindow::restoreReferenceParameters()
+void MainWindow::restoreRecognition()
 {
     const auto project = state_->service.project();
-    if (!project.suggestedParameters)
-    {
-        return;
-    }
-    const auto &suggestion = *project.suggestedParameters;
-    state_->parameters->setValues(suggestion.parameters);
-    state_->appliedParameters = suggestion.parameters;
+    state_->parameters->setRecognition(project.recognition);
+    state_->appliedParameters.reset();
     state_->parametersDirty = true;
-    state_->parameters->setHint(QStringLiteral("已填入参考值，可开始重建；参考值不代表测量结果。"));
     if (project.model)
     {
-        state_->parameters->setModelText(QStringLiteral("参考参数已恢复，请重建以更新视图中的模型。"));
+        state_->parameters->setModelText(QStringLiteral("已恢复点云识别结果并关闭镜像，请重新生成模型。"));
     }
-    appendLog(QStringLiteral("已恢复本次点云的参考参数。"));
-    for (const auto &note : suggestion.notes)
-    {
-        appendLog(QStringLiteral("参考说明：") + text(note));
-    }
+    appendLog(QStringLiteral("已恢复本次点云识别结果，未填入经验板厚。"));
     updateActions();
 }
 
 void MainWindow::reconstruct()
 {
+    if (state_->parameters->usePointCloud())
+    {
+        try
+        {
+            state_->activeTask = state_->service.submitRecognizedReconstruct(
+                state_->parameters->mirrorSymmetry(), state_->service.project().revision,
+                state_->parameters->endOverhangToleranceMm());
+            state_->pending = State::Operation::Reconstruct;
+            state_->cancellationRequested = false;
+            state_->progress->setValue(0);
+            appendLog(state_->parameters->mirrorSymmetry()
+                ? QStringLiteral("按点云逐板识别结果建模，并按显式选项镜像补建另一侧。")
+                : QStringLiteral("按点云逐板识别结果建模；不补建不可见的镜像侧。"));
+            updateActions();
+        }
+        catch (const std::exception &error)
+        {
+            reportError(text(error.what()));
+        }
+        return;
+    }
     if (state_->parameters->hasEdits())
     {
         QMessageBox question(QMessageBox::Question, QStringLiteral("应用参数"),
@@ -456,7 +470,7 @@ void MainWindow::reconstruct()
         state_->pending = State::Operation::Reconstruct;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("开始重建：使用已应用参数生成 H 型钢/肋板初始模型。"));
+        appendLog(QStringLiteral("开始手动参数建模；本模式参数不是点云识别结果。"));
         updateActions();
     }
     catch (const std::exception &error)
@@ -523,38 +537,26 @@ void MainWindow::evaluateDeviation()
 void MainWindow::refreshDisplay()
 {
     const auto project = state_->service.project();
-    std::vector<OccViewport::Vertex> points;
+    std::vector<CloudDisplayPoint> points;
     Vec3 origin;
     if (project.cloud)
     {
         origin = project.cloud->originMm;
-        constexpr std::size_t maxDisplayPoints = 200000;
         const auto &source = project.cloud->points;
-        const auto stride = std::max<std::size_t>(1, (source.size() + maxDisplayPoints - 1) / maxDisplayPoints);
-        points.reserve(std::min(source.size(), maxDisplayPoints));
-        for (std::size_t i = 0; i < source.size(); i += stride)
-        {
-            const auto &point = source[i].position;
-            points.push_back({point.x, point.y, point.z});
-        }
+        const Vec3 heightAxis = project.estimate ? project.estimate->frame.zAxis : Vec3{0, 0, 1};
+        points = makeCloudDisplayPoints(*project.cloud, heightAxis);
         appendLog(QStringLiteral("点云显示 %1 / %2 个有效点，显示采样不参与建模精度判断。")
                       .arg(static_cast<qulonglong>(points.size()))
                       .arg(static_cast<qulonglong>(source.size())));
     }
-    state_->viewport->setPointCloud(points);
-    std::vector<OccViewport::Vertex> vertices;
-    if (project.mesh)
+    state_->viewport->setPointCloud(std::move(points));
+    if (project.mesh && project.model)
     {
-        vertices.reserve(project.mesh->vertices.size());
-        for (const auto &point : project.mesh->vertices)
-        {
-            vertices.push_back({point.x - origin.x, point.y - origin.y, point.z - origin.z});
-        }
-        state_->viewport->setMesh(vertices, project.mesh->triangles);
+        state_->viewport->setModel(makeModelDisplayParts(*project.mesh, *project.model, origin));
     }
     else
     {
-        state_->viewport->setMesh({}, {});
+        state_->viewport->setModel({});
     }
     state_->viewport->fitAll();
     refreshProjectPanels();
@@ -568,7 +570,7 @@ void MainWindow::refreshProjectPanels()
     new QTreeWidgetItem(root,
                         {QStringLiteral("点云"), project.cloud ? QStringLiteral("已导入") : QStringLiteral("无")});
     new QTreeWidgetItem(
-        root, {QStringLiteral("H 型钢 / 肋板"), project.model ? QStringLiteral("已生成") : QStringLiteral("无")});
+        root, {QStringLiteral("板件模型"), project.model ? QStringLiteral("已生成") : QStringLiteral("无")});
     state_->tree->expandAll();
     state_->tree->resizeColumnToContents(0);
     const QList<QPair<QString, QString>> properties = {
@@ -577,6 +579,7 @@ void MainWindow::refreshProjectPanels()
         {QStringLiteral("有效点数"),
          project.cloud ? QString::number(project.cloud->points.size()) : QStringLiteral("0")},
         {QStringLiteral("实体数"), project.model ? QString::number(project.model->solidCount) : QStringLiteral("0")},
+        {QStringLiteral("未定厚观测面"), project.model ? QString::number(project.model->surfaceCount) : QStringLiteral("0")},
         {QStringLiteral("对象属性"), QStringLiteral("对象选择与编辑待接入")}};
     state_->properties->setRowCount(static_cast<int>(properties.size()));
     for (qsizetype i = 0; i < properties.size(); ++i)
@@ -616,6 +619,7 @@ void MainWindow::pollTask()
             appendLog(QStringLiteral("完成：") + text(task.message));
             if (operation == State::Operation::Import && project.cloud)
             {
+                state_->recentFiles->recordOpened(text(project.sourcePathUtf8));
                 const auto &cloud = *project.cloud;
                 state_->appliedParameters.reset();
                 state_->parametersDirty = true;
@@ -624,11 +628,7 @@ void MainWindow::pollTask()
                 parameters.width = project.estimate ? project.estimate->width : 0.0;
                 parameters.height = project.estimate ? project.estimate->height : 0.0;
                 state_->parameters->setValues(parameters);
-                state_->parameters->setHint(QStringLiteral("请根据实际情况填写尺寸和板厚。"));
-                if (project.suggestedParameters)
-                {
-                    restoreReferenceParameters();
-                }
+                state_->parameters->setRecognition(project.recognition);
                 state_->parameters->setSourceText(
                     QStringLiteral("%1\n原始点 %2；无效点 %3\n1 单位 = %4 mm\n显示原点 %5 mm")
                         .arg(text(project.sourcePathUtf8))
@@ -643,7 +643,7 @@ void MainWindow::pollTask()
                         QStringLiteral("PCA 原始框架（交换前），须核对：\n中心 %1 mm\n梁长轴 %2\n宽度轴 %3\n高度轴 %4")
                             .arg(vectorText(estimate.frame.originMm), vectorText(estimate.frame.xAxis),
                                  vectorText(estimate.frame.yAxis), vectorText(estimate.frame.zAxis)));
-                    state_->parameters->setModelText(QStringLiteral("点云已导入，可核对参数后开始重建初始模型。"));
+                    state_->parameters->setModelText(QStringLiteral("点云已导入；请核对逐板识别结果，默认仅构建观测侧。"));
                     for (const auto &warning : estimate.warnings)
                     {
                         appendLog(QStringLiteral("初值提示：") + text(warning));
@@ -667,19 +667,27 @@ void MainWindow::pollTask()
             else if (operation == State::Operation::Reconstruct && project.model)
             {
                 state_->parametersDirty = false;
+                state_->parameters->acceptEdits();
                 state_->parameters->setModelText(
-                    QStringLiteral("模型版本 %1\n%2 个板件实体；体积 %3 mm³\n已按当前参数生成，尺寸精度仍需核对。")
+                    QStringLiteral("模型版本 %1\n%2 个板件实体，%3 个未识别厚度的观测面\n%4")
                         .arg(static_cast<qulonglong>(project.revision))
                         .arg(static_cast<qulonglong>(project.model->solidCount))
-                        .arg(project.model->volumeMm3, 0, 'g', 10));
+                        .arg(static_cast<qulonglong>(project.model->surfaceCount))
+                        .arg(project.model->fromPointCloud ? QStringLiteral("标签区分识别厚度与底板最大值估算厚度。")
+                            : QStringLiteral("手动参数模型，标签不是点云识别厚度。")));
+                for (const auto &warning : project.model->warnings)
+                {
+                    appendLog(text(warning));
+                }
                 refreshDisplay();
             }
             else if (operation == State::Operation::Export && project.lastExport)
             {
-                appendLog(QStringLiteral("STEP 回读：%1 个实体，%2 字节；文件：%3")
+                appendLog(QStringLiteral("STEP 回读：%1 个实体，%2 字节；文件：%3；另有 %4 个观测面")
                               .arg(static_cast<qulonglong>(project.lastExport->solidCount))
                               .arg(static_cast<qulonglong>(project.lastExport->fileBytes))
-                              .arg(text(project.exportedPathUtf8)));
+                              .arg(text(project.exportedPathUtf8))
+                              .arg(project.lastExport->surfaceCount));
             }
             else if (operation == State::Operation::Deviation && project.deviation)
             {

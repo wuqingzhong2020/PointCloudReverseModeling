@@ -38,7 +38,7 @@ struct ProjectSnapshot {
     std::vector<std::string> warnings;
     std::shared_ptr<const CloudData> cloud;
     std::optional<BeamEstimate> estimate;
-    std::optional<BeamParameterSuggestion> suggestedParameters;
+    std::optional<PlateRecognition> recognition;
     std::shared_ptr<const ModelSummary> model;
     std::shared_ptr<const MeshData> mesh;
     std::shared_ptr<const DeviationResult> deviation;
@@ -55,6 +55,8 @@ public:
     [[nodiscard]] std::string submitImport(const std::filesystem::path& path, LengthUnit unit);
     [[nodiscard]] std::string submitReconstruct(const BeamParameters& parameters,
         std::uint64_t expectedRevision, std::optional<BeamFrame> frameOverride = {});
+    [[nodiscard]] std::string submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
+                                                         double endOverhangToleranceMm = 30.0);
     [[nodiscard]] std::string submitExport(const std::filesystem::path& path, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitDeviation(std::uint64_t expectedRevision);
     [[nodiscard]] bool cancel(const std::string& taskId);

@@ -19,7 +19,18 @@ json parametersJson(const BeamParameters& p) {
     return {{"length", p.length}, {"width", p.width}, {"height", p.height},
             {"webThickness", p.webThickness}, {"flangeThickness", p.flangeThickness},
             {"ribThickness", p.ribThickness}, {"ribStations", p.ribStations},
-            {"swapCrossSection", p.swapCrossSection}};
+            {"swapCrossSection", p.swapCrossSection}, {"mirrorSymmetry", p.mirrorSymmetry}};
+}
+json platesJson(const std::vector<RecognizedPlate> &plates) {
+    json result = json::array();
+    for (const auto &plate : plates) {
+        result.push_back({{"id", plate.id}, {"minimumMm", vectorJson(plate.minimumMm)},
+            {"maximumMm", vectorJson(plate.maximumMm)}, {"normalAxis", plate.normalAxis},
+            {"thicknessMm", plate.thicknessMm ? json(*plate.thicknessMm) : json(nullptr)},
+            {"thicknessSpreadMm", plate.thicknessSpreadMm}, {"supportPoints", plate.supportPoints},
+            {"method", plate.method}});
+    }
+    return result;
 }
 double number(const json& data, const char* name) {
     if (!data.contains(name) || !data.at(name).is_number())
@@ -81,20 +92,26 @@ json toJson(const ProjectSnapshot& project) {
     }
     if (project.model) {
         const auto& m = *project.model;
-        result["model"] = {{"method", "assisted_parametric_h_beam"}, {"frame", frameJson(m.frame)},
+        result["model"] = {{"method", m.fromPointCloud ? "observed_plate_edges" : "manual_parametric_plates"}, {"frame", frameJson(m.frame)},
             {"parameters", parametersJson(m.parameters)}, {"solidCount", m.solidCount},
+            {"surfaceCount", m.surfaceCount}, {"plates", platesJson(m.plates)},
             {"volumeMm3", m.volumeMm3}, {"partIds", m.partIds}};
+        if (m.fromPointCloud) {
+            result["model"]["recognitionOptions"] = {
+                {"mirrorSymmetry", m.recognitionOptions.mirrorSymmetry},
+                {"endOverhangToleranceMm", m.recognitionOptions.endOverhangToleranceMm}};
+            result["model"]["warnings"] = m.warnings;
+        }
     }
-    if (project.suggestedParameters) {
-        const auto& suggestion = *project.suggestedParameters;
-        result["suggestedParameters"] = {{"profile", suggestion.profile},
-            {"parameters", parametersJson(suggestion.parameters)}, {"notes", suggestion.notes},
-            {"source", "reference_preset_not_measurement"}};
+    if (project.recognition) {
+        result["recognition"] = {{"frame", frameJson(project.recognition->frame)},
+            {"plates", platesJson(project.recognition->plates)}, {"warnings", project.recognition->warnings}};
     }
     if (project.lastExport) {
         const auto& e = *project.lastExport;
         result["step"] = {{"path", project.exportedPathUtf8}, {"valid", e.valid},
-            {"solidCount", e.solidCount}, {"volumeMm3", e.volumeMm3}, {"fileBytes", e.fileBytes}};
+            {"solidCount", e.solidCount}, {"surfaceCount", e.surfaceCount},
+            {"volumeMm3", e.volumeMm3}, {"fileBytes", e.fileBytes}};
     }
     if (project.deviation) {
         const auto& d = *project.deviation;
@@ -121,6 +138,7 @@ BeamParameters parseBeamParameters(const json& value) {
     result.ribThickness = p.contains("ribThickness") ? number(p, "ribThickness") : 0.0;
     result.ribStations = p.value("ribStations", std::vector<double>{});
     result.swapCrossSection = p.value("swapCrossSection", false);
+    result.mirrorSymmetry = p.value("mirrorSymmetry", false);
     for (const auto station : result.ribStations)
         if (!std::isfinite(station)) throw GeometryError("invalid_parameters", "Rib stations must be finite.");
     return result;

@@ -5,7 +5,6 @@
 #include "commands/CommandService.h"
 #include "geometry/Geometry.h"
 #include "commands/Json.h"
-#include "commands/ParameterDefaults.h"
 
 #include <gtest/gtest.h>
 
@@ -81,42 +80,9 @@ TEST(PointCloud, LoadsUnitsAttributesAndEstimates) {
     close(estimate.length, 100, 1e-6, "PCA length initial guess failed");
 }
 
-TEST(ParameterDefaults, SuggestValidReferenceModels) {
-    using namespace reverse;
-    BeamEstimate largeEstimate;
-    largeEstimate.length = 9111.5683;
-    largeEstimate.width = 627.8323;
-    largeEstimate.height = 186.4941;
-    const auto suggested = suggestBeamParameters(largeEstimate);
-    ASSERT_TRUE(suggested && suggested->parameters.swapCrossSection) << "Reference orientation should choose taller section";
-    close(suggested->parameters.width, 186.4941, 1e-8, "Suggested width must match swapped frame");
-    close(suggested->parameters.height, 627.8323, 1e-8, "Suggested height must match swapped frame");
-    close(suggested->parameters.webThickness, 8, 1e-8, "Default web thickness unavailable");
-    close(suggested->parameters.flangeThickness, 12, 1e-8, "Default flange thickness unavailable");
-    close(suggested->parameters.ribThickness, 8, 1e-8, "Default rib thickness unavailable");
-    close(suggested->parameters.ribStations.at(0), 3037.1894, 1e-8, "First reference station is wrong");
-    close(suggested->parameters.ribStations.at(1), 6074.3789, 1e-8, "Second reference station is wrong");
-    ASSERT_TRUE(buildBeam(largeEstimate.frame, suggested->parameters)->summary().solidCount == 7) << "Reference defaults must generate a valid seven-plate initial model";
-    BeamEstimate smallEstimate;
-    smallEstimate.length = 30;
-    smallEstimate.width = 10;
-    smallEstimate.height = 20;
-    const auto smallSuggestion = suggestBeamParameters(smallEstimate);
-    ASSERT_TRUE(smallSuggestion && !smallSuggestion->parameters.swapCrossSection) << "Small cloud reference orientation failed";
-    close(smallSuggestion->parameters.webThickness, 2.5, 1e-8, "Small cloud thickness must scale down");
-    ASSERT_TRUE(buildBeam(smallEstimate.frame, smallSuggestion->parameters)->summary().solidCount == 7) << "Small cloud defaults must not overlap or collapse plates";
-    auto badEstimate = smallEstimate;
-    badEstimate.width = std::numeric_limits<double>::quiet_NaN();
-    ASSERT_TRUE(!suggestBeamParameters(badEstimate)) << "NaN dimensions must not create defaults";
-    badEstimate.width = 0.001;
-    ASSERT_TRUE(!suggestBeamParameters(badEstimate)) << "Sub-resolution dimensions must not create zero-thickness defaults";
-    badEstimate.width = 1e10;
-    ASSERT_TRUE(!suggestBeamParameters(badEstimate)) << "Unsupported dimensions must not be silently clamped";
-}
-
 TEST(Geometry, BuildsFinitePlatesAndEvaluatesDeviation) {
     using namespace reverse;
-    BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false};
+    BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
     const BeamFrame frame;
     auto model = buildBeam(frame, parameters);
     ASSERT_TRUE(model->summary().solidCount == 7) << "Expected three main plates plus four ribs";
@@ -153,15 +119,14 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
     TemporaryDirectory temp;
     const auto input = temp.path / std::filesystem::path(u8"中文点云.pcd");
     writeCloud(input);
-    BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false};
+    BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
     const BeamFrame frame;
     CommandService service;
     success(service, service.submitImport(input, LengthUnit::Millimeter));
     const auto imported = service.project();
     ASSERT_TRUE(imported.revision == 1 && imported.cloud && imported.estimate) << "Import did not commit snapshot";
-    ASSERT_TRUE(imported.suggestedParameters && imported.suggestedParameters->parameters.webThickness > 0) << "Successful import should expose usable shared reference parameters";
     const auto importJson = toJson(imported);
-    ASSERT_TRUE(importJson.at("suggestedParameters").at("source") == "reference_preset_not_measurement") << "Reference parameters must not be serialized as measured geometry";
+    ASSERT_FALSE(importJson.contains("suggestedParameters")) << "No preset thickness should be serialized after import";
     expectError([&] { (void)service.submitReconstruct(parameters, 0); }, "stale_revision");
     success(service, service.submitReconstruct(parameters, imported.revision, frame));
     const auto built = service.project();
@@ -195,6 +160,6 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
     }
     success(service, service.submitImport(planar, LengthUnit::Millimeter));
     const auto planarProject = service.project();
-    ASSERT_TRUE(planarProject.cloud && !planarProject.estimate && !planarProject.suggestedParameters && !planarProject.model && !planarProject.warnings.empty()) << "Valid planar cloud must import even without a beam frame";
+    ASSERT_TRUE(planarProject.cloud && !planarProject.estimate && !planarProject.recognition && !planarProject.model && !planarProject.warnings.empty()) << "Valid planar cloud must import even without a beam frame";
     expectError([&] { (void)service.submitReconstruct(parameters, planarProject.revision); }, "no_frame");
 }

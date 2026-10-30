@@ -9,6 +9,8 @@
 #include <BRep_Tool.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -220,6 +222,112 @@ double boxSurfaceDistance(Vec3 point, const Plate& plate)
                      point.z - plate.minimum.z, plate.maximum.z - point.z});
 }
 
+TopoDS_Shape recognizedShape(const RecognizedPlate &plate)
+{
+    const auto &low = plate.minimumMm;
+    const auto &high = plate.maximumMm;
+    for (const double value : {low.x, low.y, low.z, high.x, high.y, high.z})
+    {
+        if (!std::isfinite(value))
+        {
+            throw GeometryError("invalid_recognition", "识别板件包含非有限坐标。");
+        }
+    }
+    if (plate.normalAxis < 0 || plate.normalAxis > 2 || plate.id.empty())
+    {
+        throw GeometryError("invalid_recognition", "识别板件的方向或标识无效。");
+    }
+    if (plate.thicknessMm)
+    {
+        const std::array sizes{high.x - low.x, high.y - low.y, high.z - low.z};
+        if (!std::isfinite(*plate.thicknessMm) || *plate.thicknessMm <= 0 ||
+            std::abs(sizes[plate.normalAxis] - *plate.thicknessMm) > 1e-6 ||
+            !(high.x > low.x && high.y > low.y && high.z > low.z))
+        {
+            throw GeometryError("invalid_recognition", "识别板件的厚度与尺寸不一致。");
+        }
+        return BRepPrimAPI_MakeBox(gp_Pnt(low.x, low.y, low.z), sizes[0], sizes[1], sizes[2]);
+    }
+    if (plate.normalAxis != 1 || high.y != low.y || high.x <= low.x || high.z <= low.z)
+    {
+        throw GeometryError("invalid_recognition", "未识别板厚的观测面尺寸无效。");
+    }
+    BRepBuilderAPI_MakePolygon boundary;
+    boundary.Add(gp_Pnt(low.x, low.y, low.z));
+    boundary.Add(gp_Pnt(high.x, low.y, low.z));
+    boundary.Add(gp_Pnt(high.x, low.y, high.z));
+    boundary.Add(gp_Pnt(low.x, low.y, high.z));
+    boundary.Close();
+    return BRepBuilderAPI_MakeFace(boundary.Wire());
+}
+
+std::vector<RecognizedPlate> modelPlates(const PlateRecognition &recognition, const PlateBuildOptions &options,
+                                       std::vector<std::string> &warnings)
+{
+    auto plates = recognition.plates;
+    const auto base = std::find_if(plates.begin(), plates.end(),
+        [](const auto &plate) { return plate.id == "web"; });
+    const auto first = std::find_if(plates.begin(), plates.end(),
+        [](const auto &plate) { return plate.id == "flange-bottom"; });
+    const auto second = std::find_if(plates.begin(), plates.end(),
+        [](const auto &plate) { return plate.id == "flange-top"; });
+    if (base != plates.end() && first != plates.end() && second != plates.end() &&
+        options.endOverhangToleranceMm > 0)
+    {
+        const double commonStart = std::max(first->minimumMm.x, second->minimumMm.x);
+        const double commonEnd = std::min(first->maximumMm.x, second->maximumMm.x);
+        if (commonEnd <= commonStart)
+        {
+            throw GeometryError("invalid_recognition", "两侧翼板没有共同纵向范围，无法确定底板端部。");
+        }
+        const double startOverhang = commonStart - base->minimumMm.x;
+        const double endOverhang = base->maximumMm.x - commonEnd;
+        if (startOverhang > 0 && startOverhang <= options.endOverhangToleranceMm && commonStart < base->maximumMm.x)
+        {
+            base->minimumMm.x = commonStart;
+        }
+        if (endOverhang > 0 && endOverhang <= options.endOverhangToleranceMm && commonEnd > base->minimumMm.x)
+        {
+            base->maximumMm.x = commonEnd;
+        }
+        if (startOverhang > options.endOverhangToleranceMm || endOverhang > options.endOverhangToleranceMm)
+        {
+            warnings.emplace_back("底板端部突出超过当前容差，已保留观测长度；请核对点云或调整端部突出容差。");
+        }
+    }
+    if (!options.mirrorSymmetry)
+    {
+        return plates;
+    }
+    if (base == plates.end())
+    {
+        throw GeometryError("no_mirror_plane", "未识别到底板，无法确定镜像基准面。");
+    }
+    const double middle = (base->minimumMm.y + base->maximumMm.y) / 2;
+    const auto original = plates;
+    for (std::size_t index = 0; index < original.size(); ++index)
+    {
+        const auto &plate = original[index];
+        if (plate.id == "web")
+        {
+            continue;
+        }
+        auto mirrored = plate;
+        mirrored.id += "-mirror";
+        mirrored.minimumMm.y = 2 * middle - plate.maximumMm.y;
+        mirrored.maximumMm.y = 2 * middle - plate.minimumMm.y;
+        if (plate.normalAxis == 2)
+        {
+            // 两半翼板在底板中面接合，避免补齐底板厚度后镜像产生重叠实体。
+            plates[index].minimumMm.y = middle;
+            mirrored.maximumMm.y = middle;
+        }
+        mirrored.method = "explicit_mirror_of_" + plate.method;
+        plates.push_back(std::move(mirrored));
+    }
+    return plates;
+}
+
 } // namespace
 
 struct Model::Impl {
@@ -257,15 +365,18 @@ std::shared_ptr<const Model> buildBeam(const BeamFrame& inputFrame, const BeamPa
     const double y0 = -p.width / 2.0, y1 = p.width / 2.0;
     const double z0 = -p.height / 2.0, z1 = p.height / 2.0;
     auto& plates = implementation->plates;
-    plates.push_back({"flange-bottom", {x0, y0, z0}, {x1, y1, z0 + p.flangeThickness}, {}});
-    plates.push_back({"flange-top", {x0, y0, z1 - p.flangeThickness}, {x1, y1, z1}, {}});
+    const double sideMinimum = p.mirrorSymmetry ? y0 : -p.webThickness / 2.0;
+    plates.push_back({"flange-bottom", {x0, sideMinimum, z0}, {x1, y1, z0 + p.flangeThickness}, {}});
+    plates.push_back({"flange-top", {x0, sideMinimum, z1 - p.flangeThickness}, {x1, y1, z1}, {}});
     plates.push_back({"web", {x0, -p.webThickness / 2.0, z0 + p.flangeThickness},
                       {x1, p.webThickness / 2.0, z1 - p.flangeThickness}, {}});
     for (std::size_t index = 0; index < p.ribStations.size(); ++index) {
         const double center = x0 + p.ribStations[index];
         const std::string prefix = "rib-" + std::to_string(index + 1);
-        plates.push_back({prefix + "-left", {center - p.ribThickness / 2.0, y0, z0 + p.flangeThickness},
-                          {center + p.ribThickness / 2.0, -p.webThickness / 2.0, z1 - p.flangeThickness}, {}});
+        if (p.mirrorSymmetry) {
+            plates.push_back({prefix + "-left", {center - p.ribThickness / 2.0, y0, z0 + p.flangeThickness},
+                              {center + p.ribThickness / 2.0, -p.webThickness / 2.0, z1 - p.flangeThickness}, {}});
+        }
         plates.push_back({prefix + "-right", {center - p.ribThickness / 2.0, p.webThickness / 2.0, z0 + p.flangeThickness},
                           {center + p.ribThickness / 2.0, y1, z1 - p.flangeThickness}, {}});
     }
@@ -297,6 +408,65 @@ std::shared_ptr<const Model> buildBeam(const BeamFrame& inputFrame, const BeamPa
     return std::make_shared<Model>(std::move(implementation));
 }
 
+std::shared_ptr<const Model> buildRecognizedPlates(const PlateRecognition &recognition, const PlateBuildOptions &options,
+    std::stop_token stop, const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0.0, "按点云识别结果构建板件");
+    validateFrame(recognition.frame);
+    if (!std::isfinite(options.endOverhangToleranceMm) || options.endOverhangToleranceMm < 0 ||
+        options.endOverhangToleranceMm > 1000)
+    {
+        throw GeometryError("invalid_parameters", "端部突出容差必须在 0–1000 mm 范围内。");
+    }
+    if (recognition.plates.empty())
+    {
+        throw GeometryError("no_recognized_plates", "当前没有可构建的点云识别结果。");
+    }
+    auto implementation = std::make_shared<Model::Impl>();
+    auto &summary = implementation->summary;
+    summary.frame = recognition.frame;
+    summary.fromPointCloud = true;
+    summary.parameters.mirrorSymmetry = options.mirrorSymmetry;
+    summary.recognitionOptions = options;
+    summary.plates = modelPlates(recognition, options, summary.warnings);
+    const auto &frame = summary.frame;
+    gp_Trsf transform;
+    transform.SetValues(frame.xAxis.x, frame.yAxis.x, frame.zAxis.x, frame.originMm.x,
+                        frame.xAxis.y, frame.yAxis.y, frame.zAxis.y, frame.originMm.y,
+                        frame.xAxis.z, frame.yAxis.z, frame.zAxis.z, frame.originMm.z);
+    BRep_Builder builder;
+    builder.MakeCompound(implementation->compound);
+    for (const auto &observed : summary.plates)
+    {
+        checkpoint(stop, progress, static_cast<double>(implementation->plates.size()) / summary.plates.size(),
+                   "生成已识别板件；未识别板厚保留观测面");
+        const auto &low = observed.minimumMm;
+        const auto &high = observed.maximumMm;
+        TopoDS_Shape shape = recognizedShape(observed);
+        if (observed.thicknessMm)
+        {
+            summary.volumeMm3 += checkedVolume(shape);
+            ++summary.solidCount;
+        }
+        else
+        {
+            ++summary.surfaceCount;
+        }
+        shape = BRepBuilderAPI_Transform(shape, transform, true).Shape();
+        if (!BRepCheck_Analyzer(shape).IsValid())
+        {
+            throw GeometryError("invalid_recognition", "识别板件未通过几何有效性检查。");
+        }
+        builder.Add(implementation->compound, shape);
+        appendMesh(shape, static_cast<std::uint32_t>(implementation->plates.size()), implementation->mesh);
+        implementation->plates.push_back({observed.id, low, high, shape});
+        summary.partIds.push_back(observed.id);
+        implementation->mesh.partIds.push_back(observed.id);
+    }
+    checkpoint(stop, progress, 1.0, "点云识别模型构建完成");
+    return std::make_shared<Model>(std::move(implementation));
+}
+
 StepExportResult exportStep(const Model& model, const std::filesystem::path& requestedPath,
     std::stop_token stop, const ProgressCallback& progress)
 {
@@ -317,7 +487,7 @@ StepExportResult exportStep(const Model& model, const std::filesystem::path& req
         const auto colorTool = XCAFDoc_DocumentTool::ColorTool(document->Main());
         XCAFDoc_DocumentTool::SetLengthUnit(document, 0.001);
         const auto assembly = shapeTool->NewShape();
-        TDataStd_Name::Set(assembly, "HBeam");
+        TDataStd_Name::Set(assembly, source.summary.fromPointCloud ? "RecognizedPlates" : "AssistedBeam");
         for (std::size_t index = 0; index < source.plates.size(); ++index) {
             const auto& plate = source.plates[index];
             const auto part = shapeTool->AddShape(plate.shape, false);
@@ -387,6 +557,11 @@ StepExportResult exportStep(const Model& model, const std::filesystem::path& req
             result.volumeMm3 += checkedVolume(solids.Current());
             ++result.solidCount;
         }
+        for (TopExp_Explorer faces(restoredShape, TopAbs_FACE, TopAbs_SOLID); faces.More(); faces.Next()) {
+            ++result.surfaceCount;
+        }
+        if (result.surfaceCount != source.summary.surfaceCount)
+            throw GeometryError("step_validation_failed", "STEP 回读的独立观测面数量不一致");
         if (result.solidCount != source.summary.solidCount ||
             std::abs(result.volumeMm3 - source.summary.volumeMm3) >
                 std::max(1e-4, source.summary.volumeMm3 * 1e-8))

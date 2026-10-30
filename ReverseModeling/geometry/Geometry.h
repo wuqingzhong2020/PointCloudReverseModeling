@@ -49,6 +49,15 @@ private:
 [[nodiscard]] BeamEstimate estimateBeam(
     const CloudData& cloud, std::stop_token stop = {}, const ProgressCallback& progress = {});
 
+// 识别单侧板件；底板取两侧最大板厚并夹在翼板内侧，翼板下沿贴合底板底面。
+[[nodiscard]] PlateRecognition recognizePlates(
+    const CloudData &cloud, const BeamEstimate &estimate,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+
+[[nodiscard]] std::shared_ptr<const Model> buildRecognizedPlates(
+    const PlateRecognition &recognition, const PlateBuildOptions &options = {},
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+
 [[nodiscard]] std::shared_ptr<const Model> buildBeam(
     const BeamFrame& frame, const BeamParameters& parameters,
     std::stop_token stop = {}, const ProgressCallback& progress = {});

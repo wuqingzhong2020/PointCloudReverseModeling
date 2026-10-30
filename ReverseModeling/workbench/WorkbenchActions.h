@@ -67,10 +67,12 @@ enum class ActionId
     CloudHeight,
     CloudSolid,
     ShowModel,
+    ShowThickness,
     ModelSolid,
     ModelWire,
     Section,
     FitAll,
+    BottomView,
     CancelTask,
     Count
 };

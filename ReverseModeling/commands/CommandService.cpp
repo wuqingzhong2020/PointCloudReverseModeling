@@ -4,7 +4,6 @@
  */
 #include "commands/CommandService.h"
 #include "geometry/Geometry.h"
-#include "commands/ParameterDefaults.h"
 
 #include <algorithm>
 #include <functional>
@@ -136,7 +135,7 @@ std::string CommandService::submitImport(const std::filesystem::path& path, Leng
         std::optional<BeamEstimate> estimate;
         std::vector<std::string> warnings;
         try {
-            estimate = estimateBeam(*cloud, stop, [&](double p, auto m) { progress(0.65 + p * 0.35, m); });
+            estimate = estimateBeam(*cloud, stop, [&](double p, auto m) { progress(0.65 + p * 0.15, m); });
         } catch (const GeometryError& error) {
             if (error.code() == "cancelled") throw;
             warnings.emplace_back(std::string("Point cloud imported; beam frame unavailable: ") + error.what());
@@ -147,10 +146,16 @@ std::string CommandService::submitImport(const std::filesystem::path& path, Leng
         next.estimate = std::move(estimate);
         next.warnings = std::move(warnings);
         if (next.estimate) {
-            next.suggestedParameters = suggestBeamParameters(*next.estimate);
-            if (!next.suggestedParameters)
-                next.warnings.emplace_back("尺寸超出参考参数的适用范围，未自动填入板厚和肋板位置；可手动填写建模参数。");
+            try {
+                next.recognition = recognizePlates(*next.cloud, *next.estimate, stop,
+                    [&](double p, auto m) { progress(0.8 + p * 0.2, m); });
+                next.warnings.insert(next.warnings.end(), next.recognition->warnings.begin(), next.recognition->warnings.end());
+            } catch (const GeometryError &error) {
+                if (error.code() == "cancelled") throw;
+                next.warnings.emplace_back(std::string("点云已导入，但板件识别未完成：") + error.what());
+            }
         }
+        checkCancelled(stop);
         next.sourcePathUtf8 = utf8Path(absolutePath);
         std::lock_guard lock(state->stateMutex);
         next.revision = state->project.revision + 1;
@@ -185,6 +190,39 @@ std::string CommandService::submitReconstruct(const BeamParameters& parameters,
         state->project = std::move(next);
         state->model = std::move(model);
     });
+}
+
+std::string CommandService::submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
+                                                       double endOverhangToleranceMm)
+{
+    const auto snapshot = project();
+    if (snapshot.revision != expectedRevision)
+    {
+        throw GeometryError("stale_revision", "工程已变化，请刷新后重建。");
+    }
+    if (!snapshot.recognition)
+    {
+        throw GeometryError("no_recognition", "点云没有可用的板件识别结果，不使用默认板厚补建。");
+    }
+    auto *state = impl_.get();
+    return state->launch("ReconstructRecognized", expectedRevision,
+        [state, recognition = *snapshot.recognition,
+         options = PlateBuildOptions{mirrorSymmetry, endOverhangToleranceMm}](auto stop, const auto &progress)
+        {
+            auto model = buildRecognizedPlates(recognition, options, stop, progress);
+            checkCancelled(stop);
+            std::lock_guard lock(state->stateMutex);
+            auto next = state->project;
+            ++next.revision;
+            next.modelId = state->session + "-model-" + std::to_string(next.revision);
+            next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
+            next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
+            next.deviation.reset();
+            next.lastExport.reset();
+            next.exportedPathUtf8.clear();
+            state->project = std::move(next);
+            state->model = std::move(model);
+        });
 }
 
 std::string CommandService::submitExport(const std::filesystem::path& path, std::uint64_t expectedRevision) {

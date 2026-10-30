@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -60,14 +61,31 @@ struct BeamParameters {
     double webThickness{};
     double flangeThickness{};
     double ribThickness{};
-    std::vector<double> ribStations; // 距梁起点的距离，每站在腹板两侧各生成一块肋板。
+    std::vector<double> ribStations; // 距梁起点的距离；默认仅生成一侧肋板。
     bool swapCrossSection{}; // 交换框架的 y/z 方向；尺寸仍使用用户提交值。
+    bool mirrorSymmetry{}; // 仅显式开启时补建对侧。
 };
 
-struct BeamParameterSuggestion {
-    std::string profile{"reference-h-beam-v1"};
-    BeamParameters parameters;
-    std::vector<std::string> notes; // 参考板厚/站位的假设说明，不代表测量或自动识别结果。
+struct RecognizedPlate {
+    std::string id;
+    Vec3 minimumMm; // 识别框架内的局部坐标。
+    Vec3 maximumMm;
+    int normalAxis{}; // x=0（肋板）、y=1（底板）、z=2（侧板）。
+    std::optional<double> thicknessMm; // 识别或按 method 估算的板厚；无可用依据时为空，仅保留观测面。
+    double thicknessSpreadMm{}; // 不同截面厚度估计的四分位差。
+    std::uint64_t supportPoints{};
+    std::string method;
+};
+
+struct PlateRecognition {
+    BeamFrame frame;
+    std::vector<RecognizedPlate> plates;
+    std::vector<std::string> warnings;
+};
+
+struct PlateBuildOptions {
+    bool mirrorSymmetry{};
+    double endOverhangToleranceMm{30.0}; // 只收齐底板沿梁长方向的小突出；0 表示保留观测端部。
 };
 
 struct MeshData {
@@ -83,6 +101,11 @@ struct ModelSummary {
     std::uint64_t solidCount{};
     double volumeMm3{};
     std::vector<std::string> partIds;
+    std::vector<RecognizedPlate> plates;
+    std::uint64_t surfaceCount{};
+    bool fromPointCloud{};
+    PlateBuildOptions recognitionOptions;
+    std::vector<std::string> warnings;
 };
 
 struct StepExportResult {
@@ -90,6 +113,7 @@ struct StepExportResult {
     double volumeMm3{};
     std::uint64_t fileBytes{};
     bool valid{};
+    std::uint64_t surfaceCount{};
 };
 
 struct DeviationResult {

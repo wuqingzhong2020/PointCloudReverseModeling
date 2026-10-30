@@ -1,7 +1,7 @@
 ﻿/*
  * 文件描述：
  * 创建文件、编辑、点云、重建、模型修改和工具分组，以及视图显示模式工具条。
- * 下拉菜单复用 QAction，窗口菜单在常驻工具条提供入口以适应窄窗口。
+ * 下拉菜单复用 QAction，窗口菜单由顶部功能区提供入口。
  */
 #include <initializer_list>
 
@@ -43,7 +43,7 @@ QMenu *menu(QWidget *parent, const QString &title, WorkbenchActions &actions, st
 }
 } // namespace
 
-void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows)
+void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows, QMenu *recentFiles)
 {
     using enum ActionId;
     ribbon->setApplicationButton(nullptr);
@@ -59,6 +59,8 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows)
     auto *file = category->addPanel(QStringLiteral("文件"));
     auto *openMenu =
         menu(ribbon, QStringLiteral("打开"), actions, {Open, OpenFolder, ImportParameters}, QStringLiteral("folder"));
+    openMenu->addSeparator();
+    openMenu->addMenu(recentFiles);
     file->addLargeAction(actions.get(Open), QToolButton::MenuButtonPopup);
     file->actionToRibbonToolButton(actions.get(Open))->setMenu(openMenu);
     auto *exportMenu = menu(ribbon, QStringLiteral("导出"), actions,
@@ -115,7 +117,7 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows)
     windowPanel->addLargeMenu(windows);
 }
 
-QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions, QMenu *windows)
+QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
 {
     using enum ActionId;
     auto *container = new QWidget(parent);
@@ -152,6 +154,7 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions, QMenu *wi
     };
     split(ShowCloud, {CloudHeight, CloudSolid});
     split(ShowModel, {ModelSolid, ModelWire});
+    toolbar->addAction(actions.get(ShowThickness));
     auto *section = new QToolButton(toolbar);
     section->setText(QStringLiteral("剖视"));
     section->setIcon(WorkbenchTheme::icon(QStringLiteral("plane")));
@@ -176,16 +179,13 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions, QMenu *wi
     toolbar->addWidget(section);
     toolbar->addSeparator();
     toolbar->addAction(actions.get(FitAll));
-    // 窗口入口独立于工具条溢出区域，窄视图区仍可找回隐藏的 Dock。
     layout->addWidget(toolbar, 1);
-    auto *windowButton = new QToolButton(container);
-    windowButton->setObjectName(QStringLiteral("button.windows"));
-    windowButton->setText(QStringLiteral("窗口"));
-    windowButton->setIcon(windows->icon());
-    windowButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    windowButton->setPopupMode(QToolButton::InstantPopup);
-    windowButton->setMenu(windows);
-    layout->addWidget(windowButton);
+    auto *bottomView = new QToolButton(container);
+    bottomView->setObjectName(QStringLiteral("button.bottomView"));
+    bottomView->setDefaultAction(actions.get(BottomView));
+    bottomView->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    bottomView->setIconSize(QSize(18, 18));
+    layout->addWidget(bottomView);
     return container;
 }
 } // namespace reverse::workbench

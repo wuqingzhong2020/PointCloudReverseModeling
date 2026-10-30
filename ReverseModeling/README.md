@@ -1,6 +1,6 @@
 # ReverseModeling 开发指南
 
-本项目是基于 C++20、Qt Widgets 和 OCCT 的点云辅助逆向建模桌面应用。主要流程是：导入 PCD 点云，计算梁框架与尺寸初值，编辑 H 型钢及肋板参数，生成模型，再进行偏差计算和 STEP 导出。
+本项目是基于 C++20、Qt Widgets 和 OCCT 的点云辅助逆向建模桌面应用。主要流程是：导入 PCD 点云，识别可观测板件的位置和厚度，生成单侧模型，再进行偏差计算和 STEP 导出。底板按两侧板识别厚度的最大值估算，缺少侧板依据时保留底部观测面，手动参数建模作为独立模式。
 
 工程包含两个可执行程序：
 
@@ -26,7 +26,7 @@ PointCloudReverseModeling/
 │   ├── main.cpp                # QApplication 与 MainWindow 入口
 │   ├── core/                   # 点云、参数、网格和结果的数据类型
 │   ├── geometry/               # 点云读取、PCA、建模、STEP 与偏差算法
-│   ├── commands/               # 异步命令、工程状态、参考参数与 JSON
+│   ├── commands/               # 异步命令、工程状态与 JSON
 │   ├── workbench/              # Qt 窗口与 OCCT 视口
 │   └── examples/               # 参数格式示例
 └── tests/
@@ -43,14 +43,18 @@ PointCloudReverseModeling/
 | [MainWindow.cpp](workbench/MainWindow.cpp) | 用户操作、参数面板、任务轮询和界面刷新 |
 | [WorkbenchActions.cpp](workbench/WorkbenchActions.cpp) / [RibbonBuilder.cpp](workbench/RibbonBuilder.cpp) | 共用动作、能力标记、Ribbon 与视图工具条 |
 | [DockWorkspace.cpp](workbench/DockWorkspace.cpp) | ADS 工具窗口、窗口菜单、布局保存与恢复 |
-| [WorkbenchPanels.cpp](workbench/WorkbenchPanels.cpp) | 参数编辑/应用、参考值恢复和后续操作表单 |
+| [RecentFilesMenu.cpp](workbench/RecentFilesMenu.cpp) | 最近成功导入的点云路径、排序去重、持久保存与清空记录 |
+| [WorkbenchPanels.cpp](workbench/WorkbenchPanels.cpp) / [HBeamTemplateFields.cpp](workbench/HBeamTemplateFields.cpp) | H 型钢模板入口、逐板识别结果、镜像选项、手动参数、待接入参数说明和后续操作表单 |
 | [WorkbenchTheme.cpp](workbench/WorkbenchTheme.cpp) | 深色主题、自有图标与高 DPI 图标尺寸 |
 | [CommandService.h](commands/CommandService.h) / [CommandService.cpp](commands/CommandService.cpp) | 命令入口、任务状态、工程快照和版本控制 |
 | [Types.h](core/Types.h) | `CloudData`、`BeamParameters`、`MeshData` 等公共数据契约 |
 | [PointCloud.cpp](geometry/PointCloud.cpp) | PCD 读取、单位转换、有效点过滤和 PCA 初值 |
 | [BeamModel.cpp](geometry/BeamModel.cpp) | 板件建模、网格生成、STEP 导出与回读、偏差计算 |
-| [ParameterDefaults.cpp](commands/ParameterDefaults.cpp) | 可编辑的板厚、肋板位置和截面方向参考值 |
+| [PlateRecognition.cpp](geometry/PlateRecognition.cpp) | 从点云顶边条带识别厚度和站位，按两侧板最大值估算底板，保留缺测观测面 |
 | [OccViewport.cpp](workbench/OccViewport.cpp) | 点云与三角网格的 OCCT 显示适配 |
+| [ModelDisplayData.cpp](workbench/ModelDisplayData.cpp) / [OccModelPresentation.cpp](workbench/OccModelPresentation.cpp) | 按部件归属拆分网格、稳定配色、模型板厚标注及屏幕避让 |
+| [ModelLabelVisibility.cpp](workbench/ModelLabelVisibility.cpp) | 板件主表面朝向及模型网格遮挡判断，避免显示背侧板厚 |
+| [PointCloudDisplayData.cpp](workbench/PointCloudDisplayData.cpp) | 中立点云显示采样与紫青高度渐变 |
 
 ## 业务调用流程
 
@@ -58,13 +62,13 @@ PointCloudReverseModeling/
 flowchart LR
     A[main.cpp] --> B[MainWindow]
     B -->|提交命令、查询状态| C[CommandService]
-    C --> D[PointCloud / BeamModel]
+    C --> D[PointCloud / PlateRecognition / BeamModel]
     C -->|任务与工程快照| B
     B --> E[OccViewport]
 ```
 
-1. **导入点云**：`MainWindow` 调用 `submitImport()`，后台依次执行 `loadPointCloud()`、`estimateBeam()` 和 `suggestBeamParameters()`，得到点云、梁框架、尺寸初值及参考参数。
-2. **生成模型**：参数面板区分编辑草稿与已应用参数；应用时检查基础尺寸和肋板输入。开始重建时提示处理尚未应用的编辑，再将已应用参数和工程版本传给 `submitReconstruct()`，服务调用 `buildBeam()`，成功后提交模型摘要与显示网格。
+1. **导入点云**：`MainWindow` 调用 `submitImport()`，后台依次执行 `loadPointCloud()`、`estimateBeam()` 和 `recognizePlates()`，得到点云、初始方向及逐板识别结果；识别失败保留点云与原因，不填经验板厚。
+2. **生成模型**：默认通过 `submitRecognizedReconstruct()` 调用 `buildRecognizedPlates()`，构建各板件的识别尺寸，底板按两侧板厚最大值向观测面背侧生成实体，宽度夹在翼板内侧面之间，翼板下沿延伸到其底面；缺少任一侧板可靠识别值时保留底部观测面。镜像默认关闭，开启后明确记录镜像部件的来源。显式手动模式继续通过 `submitReconstruct()` / `buildBeam()` 建模。
 3. **更新显示**：界面通过定时器轮询 `task()`，读取 `project()` 返回的工程快照，再更新参数、日志和 `OccViewport`。
 4. **导出与偏差**：`submitExport()` 执行 STEP 写出及独立回读检查；`submitDeviation()` 计算点到当前模型板件表面的距离。
 
@@ -88,9 +92,9 @@ flowchart LR
 
 | 窗口 | 稳定 `objectName` | 初始停靠位置 | 当前内容 |
 |---|---|---|---|
-| 模型树 | `dock.modelTree` | 左侧 | 当前工程、点云及 H 型钢/肋板状态摘要 |
+| 模型树 | `dock.modelTree` | 左侧 | 当前工程、点云及板件模型状态摘要 |
 | 属性 | `dock.properties` | 右侧 | 工程版本、来源、有效点数和实体数；对象选择与编辑待接入 |
-| 重建参数 | `dock.reconstruction` | 左侧 | 有效 H 型钢/肋板参数及禁用的后续参数区域 |
+| 重建参数 | `dock.reconstruction` | 左侧 | 逐板识别结果、默认关闭的镜像选项及独立手动参数模式 |
 | 操作面板 | `dock.operation` | 左侧 | 移动、旋转、基准面、孔洞等操作表单 |
 | 日志窗口 | `dock.log` | 底部 | 日志、复制所选和清空；隐藏时继续收集 |
 | 任务信息 | `dock.tasks` | 底部 | 当前任务名称、状态、阶段和进度，不维护历史任务列表 |
@@ -103,6 +107,8 @@ flowchart LR
 
 ### 动作、参数与后续接入
 
+“打开 → 最近打开文件”由 `RecentFilesMenu` 管理，最近 10 条路径保存在 `QSettings` 的 `files/recentPointClouds` 中。仅在导入任务成功后加入或前移记录；菜单重开与普通打开共用 `MainWindow::importCloud(path)`，均按 mm 导入，忙时不可提交。完整路径用于区分同名文件，Windows 路径去重忽略大小写；失效文件保留记录但禁用，清空不触及源文件。
+
 `WorkbenchActions` 统一创建 QAction、稳定名称、快捷键和能力标记，供 Ribbon、菜单及快捷键共用。`MainWindow` 根据项目快照、任务和参数修改状态更新可用性：已有业务正常提交服务；表单预览动作只打开输入界面，执行按钮禁用；尚未接入的命令整体禁用并说明原因。忙时仍可查看日志和切换工具窗口。
 
 | 功能区域 | 已有能力与预留入口 |
@@ -112,17 +118,21 @@ flowchart LR
 | 重建 | 参数、开始重建和停止重建连接现有服务；局部重建待接入 |
 | 模型修改 | 选点建模、障碍物、板厚/轮廓调整、槽钢/角钢、贴板/底板、过焊孔/底边孔、圆角/倒角、移动及旋转提供表单；删除模型和钢结构命令待接入 |
 | 工具 | 测量、基准面提供表单；计算偏差使用现有服务 |
-| 视图工具条 | 点云/实体显隐和适合视图可用；选择及点/线/面/体过滤、渐变着色、线框、剖切与方向立方体待接入 |
+| 视图工具条 | 点云/实体显隐、高度渐变、可见侧板厚、适合视图、底板正视和方向立方体可用；选择及点/线/面/体过滤、线框、剖切待接入 |
 
 “停止重建”仅取消重建任务；其他任务使用状态栏的“取消任务”。新增 UI 命令继续通过 `CommandService` 提交，沿用 `expectedRevision` 和单任务规则；Qt、SARibbon、ADS 类型不进入 `core`、`geometry` 或业务服务契约。
 
-重建参数采用模板入口、滚动内容和固定底部按钮。当前有效模板为 H 型钢/肋板，保留来源点云、PCA 框架、尺寸、板厚、肋板位置、截面方向交换及参考值说明。“应用参数”通过校验后保存有效参数并标记需要重建；存在编辑草稿或参数已应用但未重建时，STEP 导出和偏差计算禁用。直接开始重建会先提示应用尚未提交的编辑。油箱模板及高级识别选项保持禁用，其字段不写入当前 `BeamParameters`。
+重建面板默认展示逐板厚度和依据：侧板、肋板提示支持点数及截面离散度，底板显示“侧板最大值（估算）”并说明公式；不加载经验板厚和固定肋板站位。独立的“端部突出容差”已接入 `PlateBuildOptions`，默认 30 mm，0 关闭；只收齐沿梁长方向的小突出，超过阈值的长度保留并告警。修改后需重建，模型 JSON 保存本次容差。镜像默认关闭，只在显式开启时沿底板中面（未定厚时为观测面）补建并标识为镜像来源。未识别板厚显示“未识别”，仅构建观测面。手动模式单独提供尺寸、板厚和站位输入，不自动填参考板厚；编辑/选项变化后需重建，完成前禁用 STEP 导出及偏差计算。模板选择器仅列出 H 型钢默认模板，建模方式使用独立控件。`HBeamTemplateFields` 集中组织 7 项基础参数、19 项高级参数和文本帮助，替换原油箱占位表单。所有参考算法项禁用，不接入命令服务、不保存为识别配置；展开高级参数、查看帮助不将模型标为过期，也不产生几何变更。密度等口径未明确的参数在帮助中标明，不能猜测为点数或面积密度。
 
 操作面板共用一个 Dock，在内部切换表单：移动为 X/Y/Z，旋转含轴、角度及中心，基准面提供三点/特征面卡片，孔洞、倒角和测量提供类型及必要数值控件。当前支持编辑、复位、取消和切换，几何执行禁用；关闭仅隐藏，取消或切换操作会清理对应草稿。后续接入采用“确定提交、取消放弃”，不让输入变化直接修改正式模型。
 
 ### 原生视口、主题与依赖
 
-`OccViewport` 通过 `ForceNoScrollArea` 放入固定中央 Dock，普通 QWidget 工具条与原生视口上下布局；下拉菜单使用独立弹窗，不在原生绘制区上叠加透明输入层。保留已有 `WinIdChange` 和 resize 处理。参数表单内部可使用 `QScrollArea`，工具 Dock 从内容最小尺寸获取约束；修改布局时关注分隔条、浮动面板及窄窗口下的内容裁切和鼠标坐标，不无差别设置 `WA_NativeWindow`。
+`OccViewport` 通过 `ForceNoScrollArea` 放入固定中央 Dock，普通 QWidget 工具条与原生视口上下布局；下拉菜单使用独立弹窗，不在原生绘制区上叠加透明输入层。保留已有 `WinIdChange` 和 resize 处理。视图导航参考 CamAssemblyWelding 的 `AIS_ViewCube`：右上角固定锚点随设备像素比缩放，不计入工件包围盒，独立检测立方体面/棱/角；Qt 定时器驱动相机动画并同步板厚标签遮挡，手动导航会中断动画。`BottomView` 动作取当前模型（无模型时取识别结果）的底板法线与长轴，设置正交相机和屏幕向上方向后适合视图，不变换点云或模型坐标。参数表单内部可使用 `QScrollArea`，工具 Dock 从内容最小尺寸获取约束；修改布局时关注分隔条、浮动面板及窄窗口下的内容裁切和鼠标坐标，不无差别设置 `WA_NativeWindow`。
+
+模型显示使用 `MeshData::trianglePartIndices` 和 `partIds` 拆分部件，不依赖三角形连续排列。`ModelDisplayData` 将网格与同次建模的 `ModelSummary` 转成中立显示数据，板厚只读取模型快照中的逐板识别记录；手动模型读取手动参数，不能覆盖识别模型的未识别状态；底板的 `inferred_side_plate_max` 来源传递为 `thicknessEstimated`，标签追加“（估算）”，JSON 保留该来源和未取整的厚度；部件颜色按稳定 ID 分配，未知角色不猜测板厚。`OccModelPresentation` 为各部件创建独立 AIS 网格，通过自有 `Prs3d_ShadingAspect` 设置不透明配色。每块板件取两个主表面候选锚点，`ModelLabelVisibility` 按相机方向及视线与模型网格的交点筛选可见侧；背面、掠视或被遮挡的标签不参与屏幕避让。标签和引线在 OCCT 内绘制，保持屏幕字号且不参与 FitAll 包围盒。重建或重新导入时替换原呈现，隐藏实体同步隐藏其标注。配色及标签属于显示层，不改变业务几何、STEP 数据或用户参数。
+
+`PointCloudDisplayData` 在最多 20 万个显示采样点上计算沿 PCA 短轴的高度，使用 2% / 98% 分位数映射紫青色域；退化高度使用中间紫色。`OccViewport` 通过 `Graphic3d_ArrayOfPoints` 的逐点颜色绘制，默认开启“高度渐变”，纯色模式使用青色。只在更新点云或切换模式时重建显示数组，旋转、平移和缩放不重算配色。桌面选择 PCD 后固定按 mm 提交导入，不再显示单位确认或切换弹窗。
 
 主题入口为 [WorkbenchTheme.cpp](workbench/WorkbenchTheme.cpp) 和 [workbench.qss](workbench/resources/workbench.qss)，资源通过 `.qrc` 管理。当前采用深蓝黑背景、青蓝强调色和浅色文字：视口背景 `#081521`、面板背景 `#0B202A`、强调色 `#1EA7D8`、主文字 `#DCE4EA`。图标由 QPainter 绘制多个尺寸及禁用状态，不裁剪参考软件图标，也不额外依赖 QtSvg。主窗口与 ADS 使用统一 QSS，避免库的默认主题覆盖；Ribbon 中文字体、分组标题高度和图标尺寸需协同调整，布局尺寸使用逻辑像素。
 
@@ -143,7 +153,7 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/Example.h")
 |---|---|
 | 点云或几何算法 | `geometry/` 及 `geometry.cmake` |
 | 命令、任务或工程状态 | `commands/CommandService.*`；公共数据类型放在 `core/Types.h` |
-| 默认参数策略 | `commands/ParameterDefaults.cpp` |
+| 板件厚度及站位识别 | `geometry/PlateRecognition.cpp` |
 | 界面与显示 | `workbench/` 及 `workbench.cmake` |
 | 新增公共模块 | 新建同名 `.cmake`，由 `ReverseModeling.cmake` 包含 |
 | 新增第三方依赖 | 在 `Dependencies.cmake` 查找；公共链接库加入 `RM_COMMON_LIBRARIES`，程序专用库在对应 `CMakeLists.txt` 链接 |
@@ -151,15 +161,15 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/Example.h")
 
 ## 单元测试
 
-测试程序位于独立的 [tests/](../tests/) 目录，直接编译公共服务实现。现有用例覆盖单位、点云属性、参考参数、几何与偏差、取消及异常输入，以及服务版本控制、失败保留和 STEP/JSON 往返。配置、构建与运行方式见 [测试程序说明](../tests/README.md)；工程整体环境与运行说明见 [根 README](../README.md)。
+测试程序位于独立的 [tests/](../tests/) 目录，直接编译公共服务实现。现有用例覆盖单位、点云属性、逐板识别、缺测厚度、镜像、几何与偏差、取消及异常输入，以及服务版本控制、失败保留和 STEP/JSON 往返。配置、构建与运行方式见 [测试程序说明](../tests/README.md)；工程整体环境与运行说明见 [根 README](../README.md)。
 
 ## 当前能力边界
 
-- 桌面 UI 框架及现有业务入口已接入；细粒度对象选择/属性编辑、新几何操作、剖切、线框/渐变着色、方向立方体和油箱模板算法仍待实现。各入口状态见[桌面工作台](#桌面工作台)。布局记忆不保存点云、模型和参数。
+- 桌面 UI 框架及现有业务入口已接入；当前唯一模板为 H 型钢；细粒度对象选择/属性编辑、新几何操作、剖切、线框及其他工件模板算法仍待实现。各入口状态见[桌面工作台](#桌面工作台)。布局记忆不保存点云、模型和参数。
 - 支持 PCD 的 ASCII、binary、binary_compressed 格式。内存中保留 XYZ、intensity、源点索引、字段名称和无效点计数，其他字段保留在原文件中。
-- PCA 提供梁框架和包围尺寸初值；板厚、肋板位置等由参考策略提供，用户可编辑。默认板厚通常为 8/12/8 mm，肋板位于梁长的三分点，小尺寸数据按比例缩小。这些值用于辅助建模，结果需要结合实物核对。
-- 当前模型由 H 型钢主板及成对肋板组成。偏差计算针对有限矩形板件表面，包含端面与边界；任意 CAD 模型的通用距离计算尚未实现。
-- STEP 导出检查实体有效性，并独立回读核对实体数、体积等结果；目标文件已存在时拒绝覆盖。
+- PCA 与底部观测面拟合提供方向；当前从单侧正交板件的连续顶边条带识别各侧板、肋板的厚度和实际站位。沿条带分段计算横向 2%–98% 宽度，以中位数汇总并记录截面四分位差。缺少连续支持或厚度不稳定时不补板件，不把投影包围厚度当成测量结果。底板尚无可靠双面测厚：两侧板均通过识别时，采用未取整厚度的最大值，并记录 `inferred_side_plate_max`，这是建模估算而非底板实测值。观测面作为底板上表面，向背侧加厚；底板横向边界使用两翼板内侧面，翼板下沿贴合底板底面，肋板底面仍接底板上表面。各翼板的纵向端部独立识别；建模时仅在容差内将底板端部突出收齐到翼板共同范围，保留超阈值突出与原始识别记录。镜像时两半翼板在底板中面分界，避免底板厚度范围内出现重复实体。任一侧板证据不足时保留底部观测面。自动双面板厚、任意曲面和局部孔洞识别仍未实现。
+- 默认模型由识别的单侧板件和最大值估算的底板组成，依据不足时底板为观测面；开启镜像才补建另一侧。偏差计算针对有限矩形板件表面，包含端面与边界；任意 CAD 模型的通用距离计算尚未实现。
+- STEP 导出检查实体有效性，并独立回读核对实体数、独立观测面数、体积和包围尺寸等结果；目标文件已存在时拒绝覆盖。
 - 尚未提供工程持久化、撤销重做、自动轮廓与孔洞恢复、Python 绑定或 Web 服务。
 
-参数格式示例见 [beam-parameters.json](examples/beam-parameters.json)，桌面参数通过界面编辑，当前未提供该 JSON 文件的导入入口。研究背景与后续方案见 [参考资料入口](../reference/README.md)，Python 扩展约定见 [Python 脚本编码规范](../docs/Python脚本编码规范.md)。
+手动参数格式示例见 [beam-parameters.json](examples/beam-parameters.json)，其中数字仅演示格式，不作为识别默认值。桌面参数通过界面编辑，当前未提供该 JSON 文件的导入入口。研究背景与后续方案见 [参考资料入口](../reference/README.md)，Python 扩展约定见 [Python 脚本编码规范](../docs/Python脚本编码规范.md)。

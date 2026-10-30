@@ -1,33 +1,17 @@
 /*
  * 文件描述：
  * 使用原生 QWidget 窗口承载 OCCT/AIS，显示点云采样和模型三角化结果，
- * 实现缩放、平移、旋转及窗口释放；不保存模型业务状态或执行建模算法。
+ * 实现缩放、平移、旋转、可点击视图立方体和底板正视；不执行建模算法。
  */
-#include "workbench/OccViewport.h"
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <utility>
 
-#include <AIS_InteractiveContext.hxx>
-#include <AIS_PointCloud.hxx>
-#include <AIS_Triangulation.hxx>
-#include <Aspect_DisplayConnection.hxx>
-#include <Graphic3d_ArrayOfPoints.hxx>
-#include <OpenGl_GraphicDriver.hxx>
-#include <Poly_Triangle.hxx>
-#include <Poly_Triangulation.hxx>
-#include <Quantity_Color.hxx>
-#include <Quantity_TypeOfColor.hxx>
-#include <Standard_Failure.hxx>
-#include <V3d_View.hxx>
-#include <V3d_TypeOfOrientation.hxx>
-#include <V3d_Viewer.hxx>
-
-#if defined(_WIN32)
-#include <WNT_Window.hxx>
-#elif defined(__linux__)
-#include <Xw_Window.hxx>
-#endif
-
-#include <QGuiApplication>
+#include <QApplication>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QResizeEvent>
@@ -35,10 +19,31 @@
 #include <QTimer>
 #include <QWheelEvent>
 
-#include <algorithm>
-#include <cmath>
-#include <limits>
-#include <stdexcept>
+#include <AIS_AnimationCamera.hxx>
+#include <AIS_InteractiveContext.hxx>
+#include <AIS_PointCloud.hxx>
+#include <AIS_ViewCube.hxx>
+#include <Aspect_DisplayConnection.hxx>
+#include <Graphic3d_ArrayOfPoints.hxx>
+#include <Graphic3d_TransformPers.hxx>
+#include <OpenGl_GraphicDriver.hxx>
+#include <Prs3d_DatumAspect.hxx>
+#include <Quantity_Color.hxx>
+#include <Quantity_TypeOfColor.hxx>
+#include <Standard_Failure.hxx>
+#include <V3d_View.hxx>
+#include <V3d_TypeOfOrientation.hxx>
+#include <V3d_Viewer.hxx>
+#include <gp_Dir.hxx>
+
+#if defined(_WIN32)
+#include <WNT_Window.hxx>
+#elif defined(__linux__)
+#include <Xw_Window.hxx>
+#endif
+
+#include "workbench/OccModelPresentation.h"
+#include "workbench/OccViewport.h"
 
 namespace reverse::workbench {
 
@@ -49,13 +54,18 @@ struct OccViewport::State {
     Handle(V3d_View) view;
     Handle(AIS_InteractiveContext) context;
     Handle(AIS_PointCloud) cloud;
-    Handle(AIS_Triangulation) model;
-    std::vector<Vertex> points;
-    std::vector<Vertex> vertices;
-    std::vector<Triangle> triangles;
+    Handle(AIS_ViewCube) viewCube;
+    QTimer *navigationTimer{};
+    double cubePixelRatio{};
+    std::unique_ptr<OccModelPresentation> model;
+    std::vector<CloudDisplayPoint> points;
+    std::vector<ModelDisplayPart> parts;
     QPoint lastMouse;
+    QPoint leftPress;
     bool cloudVisible = true;
+    bool cloudHeightColors = true;
     bool modelVisible = true;
+    bool thicknessVisible = true;
     bool initializing = false;
     bool failed = false;
     QLabel* failureLabel = nullptr;
@@ -69,15 +79,20 @@ OccViewport::OccViewport(QWidget* parent) : QWidget(parent), state_(std::make_un
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setToolTip(QStringLiteral("右键拖动旋转，中键拖动平移，滚轮缩放，双击适合视图"));
+    state_->navigationTimer = new QTimer(this);
+    state_->navigationTimer->setInterval(16);
+    connect(state_->navigationTimer, &QTimer::timeout, this, &OccViewport::advanceNavigationAnimation);
 }
 
 OccViewport::~OccViewport() { release(); }
 
 void OccViewport::release() noexcept {
     try {
+        stopNavigationAnimation();
         if (!state_->context.IsNull()) state_->context->RemoveAll(false);
+        state_->viewCube.Nullify();
         state_->cloud.Nullify();
-        state_->model.Nullify();
+        state_->model.reset();
         state_->context.Nullify();
         if (!state_->view.IsNull()) state_->view->Remove();
     } catch (...) {
@@ -136,6 +151,8 @@ void OccViewport::initialize() {
         state_->view->SetBackgroundColor(Quantity_Color(0.031, 0.082, 0.129, Quantity_TOC_sRGB));
         state_->view->SetProj(V3d_XposYnegZpos);
         state_->context = new AIS_InteractiveContext(state_->viewer);
+        createViewCube();
+        state_->model = std::make_unique<OccModelPresentation>(state_->context, state_->view);
         rebuildCloud();
         rebuildMesh();
         state_->view->MustBeResized();
@@ -182,7 +199,8 @@ void OccViewport::paintEvent(QPaintEvent*) {
         // 原生 OCCT 绘制不经过 Qt backing store；每次绘制都读取 HWND 当前客户区
         // 同步 OpenGL viewport 和相机纵横比，不能只依赖可能提前到达的 resizeEvent。
         state_->view->MustBeResized();
-        state_->view->Redraw();
+        updateViewCubeScale();
+        redraw();
     } catch (const Standard_Failure& error) {
         fail(QString::fromUtf8(error.what()));
     }
@@ -194,7 +212,7 @@ void OccViewport::resizeEvent(QResizeEvent* event) {
     if (!state_->view.IsNull() && isVisible() && event->size().isValid()) {
         try {
             state_->view->MustBeResized();
-            state_->view->Redraw();
+            redraw();
             // 缩小、分隔条拖动以及原生窗口延迟调整后仍需要一次 Qt 绘制事件。
             update();
         } catch (const Standard_Failure& error) {
@@ -210,48 +228,50 @@ void OccViewport::rebuildCloud() {
     if (state_->points.empty()) return;
     if (state_->points.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Display point count exceeds the OCCT array limit.");
-    Handle(Graphic3d_ArrayOfPoints) points = new Graphic3d_ArrayOfPoints(static_cast<int>(state_->points.size()));
-    for (const auto& point : state_->points) points->AddVertex(gp_Pnt(point[0], point[1], point[2]));
+    Handle(Graphic3d_ArrayOfPoints) points = new Graphic3d_ArrayOfPoints(
+        static_cast<int>(state_->points.size()), state_->cloudHeightColors);
+    for (const auto &point : state_->points)
+    {
+        const gp_Pnt position(point.position.x, point.position.y, point.position.z);
+        if (state_->cloudHeightColors)
+        {
+            const auto &rgb = point.colorSrgb;
+            points->AddVertex(position, Quantity_Color(rgb[0], rgb[1], rgb[2], Quantity_TOC_sRGB));
+        }
+        else
+        {
+            points->AddVertex(position);
+        }
+    }
     state_->cloud = new AIS_PointCloud();
     state_->cloud->SetDisplayMode(AIS_PointCloud::DM_Points);
     state_->cloud->SetPoints(points);
-    state_->cloud->SetColor(Quantity_Color(0.55, 0.78, 0.94, Quantity_TOC_RGB));
-    if (state_->cloudVisible) state_->context->Display(state_->cloud, false);
+    state_->cloud->SetColor(Quantity_Color(0.18, 0.56, 0.61, Quantity_TOC_sRGB));
+    if (state_->cloudVisible) state_->context->Display(state_->cloud, 0, -1, false);
 }
 
-void OccViewport::rebuildMesh() {
-    if (state_->context.IsNull()) return;
-    if (!state_->model.IsNull()) state_->context->Remove(state_->model, false);
-    state_->model.Nullify();
-    if (state_->vertices.empty() || state_->triangles.empty()) return;
-    const auto maxIndex = static_cast<std::size_t>(std::numeric_limits<int>::max());
-    if (state_->vertices.size() > maxIndex || state_->triangles.size() > maxIndex)
-        throw std::runtime_error("Display mesh exceeds the OCCT array limit.");
-    Handle(Poly_Triangulation) mesh = new Poly_Triangulation(
-        static_cast<int>(state_->vertices.size()), static_cast<int>(state_->triangles.size()), false);
-    for (std::size_t i = 0; i < state_->vertices.size(); ++i) {
-        const auto& p = state_->vertices[i];
-        mesh->SetNode(static_cast<int>(i + 1), gp_Pnt(p[0], p[1], p[2]));
+void OccViewport::rebuildMesh()
+{
+    if (!state_->model)
+    {
+        return;
     }
-    for (std::size_t i = 0; i < state_->triangles.size(); ++i) {
-        const auto& t = state_->triangles[i];
-        if (t[0] >= state_->vertices.size() || t[1] >= state_->vertices.size() || t[2] >= state_->vertices.size())
-            throw std::runtime_error("Display mesh contains an invalid triangle index.");
-        mesh->SetTriangle(static_cast<int>(i + 1), Poly_Triangle(
-            static_cast<int>(t[0] + 1), static_cast<int>(t[1] + 1), static_cast<int>(t[2] + 1)));
-    }
-    mesh->ComputeNormals();
-    state_->model = new AIS_Triangulation(mesh);
-    // AIS_Triangulation 的实体三角网格只在模式 0 绘制；AIS_Shape 的着色模式 1
-    // 不适用于它。将模式绑定到对象，确保隐藏后再次显示仍使用同一呈现。
-    state_->model->SetDisplayMode(0);
-    state_->model->SetColor(Quantity_Color(0.95, 0.66, 0.25, Quantity_TOC_RGB));
-    state_->model->SetTransparency(0.25);
-    if (state_->modelVisible) state_->context->Display(state_->model, false);
+    state_->model->rebuild(state_->parts);
+    state_->model->setVisible(state_->modelVisible, state_->thicknessVisible);
 }
 
-void OccViewport::setPointCloud(const std::vector<Vertex>& points) {
-    state_->points = points;
+void OccViewport::redraw()
+{
+    if (state_->model)
+    {
+        const double ratio = devicePixelRatioF();
+        state_->model->updateLabels(qRound(width() * ratio), qRound(height() * ratio), ratio);
+    }
+    state_->view->Redraw();
+}
+
+void OccViewport::setPointCloud(std::vector<CloudDisplayPoint> points) {
+    state_->points = std::move(points);
     try {
         rebuildCloud();
         update();
@@ -262,15 +282,38 @@ void OccViewport::setPointCloud(const std::vector<Vertex>& points) {
     }
 }
 
-void OccViewport::setMesh(const std::vector<Vertex>& vertices, const std::vector<Triangle>& triangles) {
-    state_->vertices = vertices;
-    state_->triangles = triangles;
-    try {
+void OccViewport::setCloudHeightColors(bool enabled)
+{
+    state_->cloudHeightColors = enabled;
+    try
+    {
+        rebuildCloud();
+        update();
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+    catch (const std::exception &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+}
+
+void OccViewport::setModel(std::vector<ModelDisplayPart> parts)
+{
+    state_->parts = std::move(parts);
+    try
+    {
         rebuildMesh();
         update();
-    } catch (const Standard_Failure& error) {
+    }
+    catch (const Standard_Failure &error)
+    {
         fail(QString::fromUtf8(error.what()));
-    } catch (const std::exception& error) {
+    }
+    catch (const std::exception &error)
+    {
         fail(QString::fromUtf8(error.what()));
     }
 }
@@ -279,7 +322,7 @@ void OccViewport::setCloudVisible(bool visible) {
     state_->cloudVisible = visible;
     if (!state_->context.IsNull() && !state_->cloud.IsNull()) {
         try {
-            if (visible) state_->context->Display(state_->cloud, false);
+            if (visible) state_->context->Display(state_->cloud, 0, -1, false);
             else state_->context->Erase(state_->cloud, false);
             update();
         } catch (const Standard_Failure& error) {
@@ -288,24 +331,146 @@ void OccViewport::setCloudVisible(bool visible) {
     }
 }
 
-void OccViewport::setModelVisible(bool visible) {
+void OccViewport::setModelVisible(bool visible)
+{
     state_->modelVisible = visible;
-    if (!state_->context.IsNull() && !state_->model.IsNull()) {
-        try {
-            if (visible) state_->context->Display(state_->model, false);
-            else state_->context->Erase(state_->model, false);
-            update();
-        } catch (const Standard_Failure& error) {
-            fail(QString::fromUtf8(error.what()));
+    try
+    {
+        if (state_->model)
+        {
+            state_->model->setVisible(visible, state_->thicknessVisible);
         }
+        update();
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+}
+
+void OccViewport::setThicknessVisible(bool visible)
+{
+    state_->thicknessVisible = visible;
+    setModelVisible(state_->modelVisible);
+}
+
+void OccViewport::createViewCube()
+{
+    // 参考 CamAssemblyWelding 的原生 AIS 导航，始终位于右上角且不计入工件包围盒。
+    state_->viewCube = new AIS_ViewCube();
+    auto &cube = state_->viewCube;
+    cube->SetInfiniteState(true);
+    cube->SetBoxColor(Quantity_Color(0.57, 0.61, 0.66, Quantity_TOC_sRGB));
+    cube->SetTextColor(Quantity_Color(0.15, 0.18, 0.21, Quantity_TOC_sRGB));
+    cube->SetFont("Microsoft YaHei");
+    cube->SetBoxSideLabel(V3d_Xpos, QStringLiteral("右").toUtf8().constData());
+    cube->SetBoxSideLabel(V3d_Xneg, QStringLiteral("左").toUtf8().constData());
+    cube->SetBoxSideLabel(V3d_Ypos, QStringLiteral("前").toUtf8().constData());
+    cube->SetBoxSideLabel(V3d_Yneg, QStringLiteral("后").toUtf8().constData());
+    cube->SetBoxSideLabel(V3d_Zpos, QStringLiteral("上").toUtf8().constData());
+    cube->SetBoxSideLabel(V3d_Zneg, QStringLiteral("下").toUtf8().constData());
+    cube->Attributes()->SetDatumAspect(new Prs3d_DatumAspect());
+    const auto &datum = cube->Attributes()->DatumAspect();
+    const std::array axes{Prs3d_DatumParts_XAxis, Prs3d_DatumParts_YAxis, Prs3d_DatumParts_ZAxis};
+    const std::array colors{Quantity_NOC_RED, Quantity_NOC_GREEN, Quantity_NOC_BLUE};
+    for (std::size_t index = 0; index < axes.size(); ++index)
+    {
+        datum->ShadingAspect(axes[index])->SetColor(colors[index]);
+        datum->TextAspect(axes[index])->SetColor(colors[index]);
+    }
+    cube->SetAutoStartAnimation(false);
+    cube->SetFixedAnimationLoop(false);
+    cube->SetResetCamera(true);
+    cube->SetFitSelected(false);
+    cube->SetDuration(0.25);
+    cube->ViewAnimation()->SetView(state_->view);
+    state_->cubePixelRatio = 0;
+    updateViewCubeScale();
+    state_->context->Display(cube, 0, 0, false);
+}
+
+void OccViewport::updateViewCubeScale()
+{
+    const double ratio = devicePixelRatioF();
+    if (state_->viewCube.IsNull() || state_->cubePixelRatio == ratio)
+    {
+        return;
+    }
+    state_->cubePixelRatio = ratio;
+    state_->viewCube->SetSize(60 * ratio);
+    state_->viewCube->SetAxesPadding(4 * ratio);
+    state_->viewCube->SetFontHeight(18 * ratio);
+    state_->viewCube->SetTransformPersistence(new Graphic3d_TransformPers(
+        Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER,
+        NCollection_Vec2<int>(qRound(90 * ratio), qRound(90 * ratio))));
+    if (state_->context->IsDisplayed(state_->viewCube))
+    {
+        state_->context->Redisplay(state_->viewCube, false);
+    }
+}
+
+void OccViewport::stopNavigationAnimation()
+{
+    state_->navigationTimer->stop();
+    if (!state_->viewCube.IsNull())
+    {
+        state_->viewCube->ViewAnimation()->Stop();
+    }
+}
+
+void OccViewport::advanceNavigationAnimation()
+{
+    if (state_->viewCube.IsNull() || state_->view.IsNull())
+    {
+        state_->navigationTimer->stop();
+        return;
+    }
+    try
+    {
+        state_->viewCube->UpdateAnimation(false);
+        redraw(); // 每一帧同步板厚遮挡与标签位置。
+        if (!state_->viewCube->HasAnimation())
+        {
+            state_->navigationTimer->stop();
+        }
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+}
+
+void OccViewport::showBottomView(const Vec3 &normal, const Vec3 &longitudinal)
+{
+    if (state_->view.IsNull())
+    {
+        return;
+    }
+    try
+    {
+        stopNavigationAnimation();
+        const gp_Dir towardEye(normal.x, normal.y, normal.z);
+        const gp_Dir along(longitudinal.x, longitudinal.y, longitudinal.z);
+        // Up = 法线 × 长轴，使相机的屏幕右方向沿工件长轴，而不是按世界 XY 猜测。
+        const gp_Dir up = towardEye.Crossed(along);
+        state_->view->Camera()->SetProjectionType(Graphic3d_Camera::Projection_Orthographic);
+        state_->view->SetProj(towardEye.X(), towardEye.Y(), towardEye.Z());
+        state_->view->SetUp(up.X(), up.Y(), up.Z());
+        state_->context->ClearDetected(false);
+        fitAll();
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
     }
 }
 
 void OccViewport::fitAll() {
     if (state_->view.IsNull()) return;
     try {
-        if (!state_->points.empty() || !state_->vertices.empty()) state_->view->FitAll(0.05, false);
-        state_->view->Redraw();
+        stopNavigationAnimation();
+        if (!state_->points.empty() || !state_->parts.empty()) state_->view->FitAll(0.05, false);
+        redraw();
     } catch (const Standard_Failure& error) {
         fail(QString::fromUtf8(error.what()));
     }
@@ -316,6 +481,11 @@ void OccViewport::mousePressEvent(QMouseEvent* event) {
     state_->lastMouse = QPoint(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
     if (state_->view.IsNull()) return;
     try {
+        stopNavigationAnimation();
+        if (event->button() == Qt::LeftButton)
+        {
+            state_->leftPress = state_->lastMouse;
+        }
         if (event->button() == Qt::RightButton)
             state_->view->StartRotation(state_->lastMouse.x(), state_->lastMouse.y());
     } catch (const Standard_Failure& error) {
@@ -331,20 +501,80 @@ void OccViewport::mouseMoveEvent(QMouseEvent* event) {
         if (event->buttons().testFlag(Qt::RightButton)) state_->view->Rotation(current.x(), current.y());
         else if (event->buttons().testFlag(Qt::MiddleButton))
             state_->view->Pan(current.x() - state_->lastMouse.x(), state_->lastMouse.y() - current.y());
+        if (event->buttons().testFlag(Qt::RightButton) || event->buttons().testFlag(Qt::MiddleButton)) redraw();
+        else if (event->buttons() == Qt::NoButton)
+        {
+            state_->context->MoveTo(current.x(), current.y(), state_->view, false);
+            state_->view->Redraw();
+        }
     } catch (const Standard_Failure& error) {
         fail(QString::fromUtf8(error.what()));
     }
     state_->lastMouse = current;
 }
 
-void OccViewport::mouseDoubleClickEvent(QMouseEvent*) { fitAll(); }
+void OccViewport::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || state_->viewCube.IsNull())
+    {
+        return;
+    }
+    const double ratio = devicePixelRatioF();
+    const QPoint current(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
+    if ((current - state_->leftPress).manhattanLength() > QApplication::startDragDistance() * ratio)
+    {
+        return;
+    }
+    try
+    {
+        state_->context->MoveTo(current.x(), current.y(), state_->view, false);
+        const auto owner = Handle(AIS_ViewCubeOwner)::DownCast(state_->context->DetectedOwner());
+        if (!owner.IsNull() && state_->context->DetectedInteractive() == state_->viewCube)
+        {
+            state_->viewCube->StartAnimation(owner);
+            state_->navigationTimer->start();
+            event->accept();
+        }
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+}
+
+void OccViewport::leaveEvent(QEvent *event)
+{
+    QWidget::leaveEvent(event);
+    if (!state_->context.IsNull())
+    {
+        state_->context->ClearDetected(false);
+        update();
+    }
+}
+
+void OccViewport::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (!state_->context.IsNull())
+    {
+        const double ratio = devicePixelRatioF();
+        state_->context->MoveTo(qRound(event->position().x() * ratio),
+                               qRound(event->position().y() * ratio), state_->view, false);
+        if (state_->context->DetectedInteractive() == state_->viewCube)
+        {
+            event->accept();
+            return;
+        }
+    }
+    fitAll();
+}
 
 void OccViewport::wheelEvent(QWheelEvent* event) {
     if (state_->view.IsNull()) return;
     try {
+        stopNavigationAnimation();
         const auto steps = std::clamp(event->angleDelta().y() / 120.0, -5.0, 5.0);
         state_->view->SetZoom(std::pow(1.15, steps));
-        state_->view->Redraw();
+        redraw();
         event->accept();
     } catch (const Standard_Failure& error) {
         fail(QString::fromUtf8(error.what()));

@@ -66,6 +66,12 @@ QIcon WorkbenchTheme::icon(const QString &name)
                 painter.drawPolyline(QPolygon{{3, 25}, {3, 7}, {12, 7}, {15, 11}, {28, 11}});
                 painter.drawPolygon(QPolygon{{3, 25}, {7, 14}, {30, 14}, {25, 25}});
             }
+            else if (name == "home")
+            {
+                painter.drawPolyline(QPolygon{{3, 15}, {16, 4}, {29, 15}});
+                painter.drawPolyline(QPolygon{{7, 12}, {7, 28}, {13, 28}, {13, 19}, {19, 19},
+                                             {19, 28}, {25, 28}, {25, 12}});
+            }
             else if (name == "play" || name == "stop")
             {
                 painter.setPen(Qt::NoPen);

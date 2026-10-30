@@ -1,6 +1,6 @@
 ﻿/*
  * 文件描述：
- * 将 H 型钢/肋板有效参数与后续算法占位分离，管理参数编辑、应用和参考值恢复。
+ * 管理 H 型钢模板入口、逐板识别结果、手动参数与重建选项。
  * 构建移动、旋转、孔洞、基准面等共用操作表单，提供局部复位与取消但不提交几何命令。
  */
 #include <cmath>
@@ -13,6 +13,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -20,9 +21,11 @@
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QStandardItemModel>
+#include <QTableWidget>
 #include <QVBoxLayout>
 
 #include "workbench/WorkbenchPanels.h"
+#include "workbench/HBeamTemplateFields.h"
 #include "workbench/WorkbenchTheme.h"
 
 namespace reverse::workbench
@@ -67,21 +70,58 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     setMinimumWidth(300);
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    auto *templates = new QComboBox(this);
-    templates->setObjectName(QStringLiteral("parameters.template"));
-    templates->addItems({QStringLiteral("H 型钢 / 肋板（当前支持）"), QStringLiteral("油箱（待接入）"),
-                         QStringLiteral("油箱 / 宽扣槽片体（待接入）")});
-    auto *templateModel = qobject_cast<QStandardItemModel *>(templates->model());
-    templateModel->item(1)->setEnabled(false);
-    templateModel->item(2)->setEnabled(false);
-    layout->addWidget(templates);
+    auto *templateChoice = new QComboBox(this);
+    templateChoice->setObjectName(QStringLiteral("parameters.template"));
+    templateChoice->addItem(QStringLiteral("H型钢 / H型钢（默认）"), QStringLiteral("h-beam"));
+    templateChoice->setToolTip(QStringLiteral("当前仅支持 H 型钢模板（含肋板）。"));
+    layout->addWidget(templateChoice);
+    auto *modeRow = new QWidget(this);
+    auto *modeLayout = new QHBoxLayout(modeRow);
+    modeLayout->setContentsMargins(10, 0, 0, 0);
+    modeLayout->addWidget(new QLabel(QStringLiteral("建模方式"), modeRow));
+    m_mode = new QComboBox(modeRow);
+    m_mode->setObjectName(QStringLiteral("parameters.mode"));
+    m_mode->addItems({QStringLiteral("点云板件识别（默认）"), QStringLiteral("手动参数建模")});
+    modeLayout->addWidget(m_mode, 1);
+    layout->addWidget(modeRow);
     auto *scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     auto *content = new QWidget(scroll);
     auto *body = new QVBoxLayout(content);
     m_source = paragraph(QStringLiteral("尚未导入点云。"), content);
     body->addWidget(m_source);
-    m_basic = new QGroupBox(QStringLiteral("基础参数 · mm"), content);
+    m_mirror = new QCheckBox(QStringLiteral("镜像对称（补建另一侧）"), content);
+    m_mirror->setObjectName(QStringLiteral("parameters.mirrorSymmetry"));
+    m_mirror->setToolTip(QStringLiteral("默认关闭。开启后沿底板中面（未定厚时为观测面）镜像侧板和肋板；镜像部分不是点云实测。"));
+    body->addWidget(m_mirror);
+    connect(m_mirror, &QCheckBox::toggled, this, &ReconstructionPanel::markEdited);
+    auto *endToleranceRow = new QWidget(content);
+    auto *endToleranceLayout = new QFormLayout(endToleranceRow);
+    endToleranceLayout->setContentsMargins(0, 0, 0, 0);
+    m_endOverhangTolerance = new QDoubleSpinBox(endToleranceRow);
+    m_endOverhangTolerance->setObjectName(QStringLiteral("parameters.endOverhangToleranceMm"));
+    m_endOverhangTolerance->setRange(0, 1000);
+    m_endOverhangTolerance->setDecimals(1);
+    m_endOverhangTolerance->setSuffix(QStringLiteral(" mm"));
+    m_endOverhangTolerance->setValue(PlateBuildOptions{}.endOverhangToleranceMm);
+    m_endOverhangTolerance->setToolTip(QStringLiteral(
+        "只处理底板沿梁长方向超出两翼板共同端部的突出。\n"
+        "不超过容差时收齐，超过时保留并提示；0 表示不收齐端部。\n"
+        "底板宽度始终按 H 型钢连接关系夹在两翼板内侧，不改动原始点云。"));
+    endToleranceLayout->addRow(QStringLiteral("端部突出容差"), m_endOverhangTolerance);
+    body->addWidget(endToleranceRow);
+    connect(m_endOverhangTolerance, &QDoubleSpinBox::valueChanged, this, &ReconstructionPanel::markEdited);
+    m_recognition = new QTableWidget(0, 3, content);
+    m_recognition->setObjectName(QStringLiteral("parameters.recognizedPlates"));
+    m_recognition->setHorizontalHeaderLabels({QStringLiteral("板件"), QStringLiteral("板厚 mm"), QStringLiteral("依据")});
+    m_recognition->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_recognition->verticalHeader()->hide();
+    m_recognition->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_recognition->horizontalHeader()->setStretchLastSection(true);
+    m_recognition->setMinimumHeight(240);
+    m_recognition->hide();
+    body->addWidget(m_recognition);
+    m_basic = new QGroupBox(QStringLiteral("手动模型尺寸 · mm"), content);
     auto *form = new QFormLayout(m_basic);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
@@ -129,49 +169,25 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     m_frame = paragraph(QStringLiteral("导入后显示 PCA 估计框架。"), m_basic);
     form->addRow(m_frame);
     body->addWidget(m_basic);
-    m_hint = paragraph(QStringLiteral("板厚与肋板位置为可编辑的参考值，不代表点云测量结果。"), content);
+    m_basic->hide();
+    m_hint = paragraph(QStringLiteral("导入后逐板识别板厚和位置；底板按两侧板厚最大值估算，侧板证据不足时保留观测面。"), content);
     body->addWidget(m_hint);
     m_model = paragraph(QStringLiteral("尚无模型。"), content);
     body->addWidget(m_model);
 
-    auto *advancedToggle = new QCheckBox(QStringLiteral("高级参数（待接入）"), content);
-    body->addWidget(advancedToggle);
-    auto *advanced = new QGroupBox(QStringLiteral("油箱与板件识别"), content);
-    auto *advancedForm = new QFormLayout(advanced);
-    advancedForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    const QStringList switches = {
-        QStringLiteral("使用优化竖直板算法"),     QStringLiteral("启用多工件建模"), QStringLiteral("地面点云过滤"),
-        QStringLiteral("禁用非圆弧曲面"),         QStringLiteral("厚板建模优化"),   QStringLiteral("启用遮挡检测"),
-        QStringLiteral("图像轮廓辅助搭接板识别"), QStringLiteral("识别折弯箱沿"),   QStringLiteral("小型油箱专用分类")};
-    for (const auto &name : switches)
-    {
-        auto *toggle = new QCheckBox(name, advanced);
-        toggle->setEnabled(false);
-        advancedForm->addRow(toggle);
-    }
-    const QStringList fields = {QStringLiteral("平板投影距离阈值"),   QStringLiteral("直板拟合误差阈值"),
-                                QStringLiteral("小体过滤阈值"),       QStringLiteral("腹板合并高度阈值"),
-                                QStringLiteral("腹板块最大合并距离"), QStringLiteral("最小立板长度"),
-                                QStringLiteral("最小立板高度"),       QStringLiteral("遮挡检测容错距离")};
-    for (const auto &name : fields)
-    {
-        auto *spin = number(advanced);
-        spin->setEnabled(false);
-        advancedForm->addRow(name, spin);
-    }
-    advanced->hide();
-    connect(advancedToggle, &QCheckBox::toggled, advanced, &QWidget::setVisible);
-    body->addWidget(advanced);
+    auto *templateFields = createHBeamTemplateFields(content);
+    body->addWidget(templateFields);
     body->addStretch();
     scroll->setWidget(content);
     layout->addWidget(scroll, 1);
     auto *footer = new QWidget(this);
     footer->setProperty("panelFooter", true);
     auto *buttons = new QHBoxLayout(footer);
-    m_restore = new QPushButton(QStringLiteral("恢复参考值"), footer);
+    m_restore = new QPushButton(QStringLiteral("恢复识别结果"), footer);
     m_apply = new QPushButton(QStringLiteral("应用参数"), footer);
     m_apply->setObjectName(QStringLiteral("parameters.apply"));
     m_apply->setProperty("primary", true);
+    m_apply->hide();
     auto *close = new QPushButton(QStringLiteral("关闭"), footer);
     buttons->addWidget(m_restore);
     buttons->addStretch();
@@ -181,6 +197,15 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     connect(m_apply, &QPushButton::clicked, this, &ReconstructionPanel::applyRequested);
     connect(close, &QPushButton::clicked, this, &ReconstructionPanel::closeRequested);
     layout->addWidget(footer);
+    connect(m_mode, &QComboBox::currentIndexChanged, this, [this, templateFields, endToleranceRow]
+    {
+        m_basic->setVisible(!usePointCloud());
+        m_recognition->setVisible(usePointCloud() && m_recognition->rowCount() > 0);
+        m_apply->setVisible(!usePointCloud());
+        templateFields->setVisible(usePointCloud());
+        endToleranceRow->setVisible(usePointCloud());
+        markEdited();
+    });
 }
 
 void ReconstructionPanel::markEdited()
@@ -190,7 +215,8 @@ void ReconstructionPanel::markEdited()
         return;
     }
     m_hasEdits = true;
-    m_hint->setText(QStringLiteral("参数尚未应用；应用后再重建模型。"));
+    m_hint->setText(usePointCloud() ? QStringLiteral("重建选项已改变，请重新生成模型。")
+        : QStringLiteral("手动参数尚未应用；这些参数不代表点云识别结果。"));
     emit edited();
 }
 
@@ -204,6 +230,7 @@ BeamParameters ReconstructionPanel::values() const
     result.flangeThickness = m_dimensions[4]->value();
     result.ribThickness = m_dimensions[5]->value();
     result.swapCrossSection = m_swap->isChecked();
+    result.mirrorSymmetry = m_mirror->isChecked();
     for (const auto &token :
          m_stations->text().split(QRegularExpression(QStringLiteral("[,，;；\\s]+")), Qt::SkipEmptyParts))
     {
@@ -235,6 +262,7 @@ void ReconstructionPanel::setValues(const BeamParameters &parameters)
         m_dimensions[i]->setValue(values[i]);
     }
     m_swap->setChecked(parameters.swapCrossSection);
+    m_mirror->setChecked(parameters.mirrorSymmetry);
     QStringList stations;
     for (const auto value : parameters.ribStations)
     {
@@ -256,6 +284,9 @@ bool ReconstructionPanel::hasEdits() const
 void ReconstructionPanel::setEditable(bool editable, bool canRestore)
 {
     m_basic->setEnabled(editable);
+    m_mirror->setEnabled(editable);
+    m_endOverhangTolerance->setEnabled(editable);
+    m_mode->setEnabled(editable);
     m_apply->setEnabled(editable);
     m_restore->setEnabled(canRestore);
 }
@@ -274,6 +305,77 @@ void ReconstructionPanel::setHint(const QString &text)
 void ReconstructionPanel::setModelText(const QString &text)
 {
     m_model->setText(text);
+}
+
+bool ReconstructionPanel::usePointCloud() const
+{
+    return m_mode->currentIndex() == 0;
+}
+
+bool ReconstructionPanel::mirrorSymmetry() const
+{
+    return m_mirror->isChecked();
+}
+
+double ReconstructionPanel::endOverhangToleranceMm() const
+{
+    return m_endOverhangTolerance->value();
+}
+
+void ReconstructionPanel::setRecognition(const std::optional<PlateRecognition> &recognition)
+{
+    m_settingValues = true;
+    m_mode->setCurrentIndex(0);
+    m_mirror->setChecked(false);
+    m_endOverhangTolerance->setValue(PlateBuildOptions{}.endOverhangToleranceMm);
+    m_recognition->setRowCount(recognition ? static_cast<int>(recognition->plates.size()) : 0);
+    m_recognition->setVisible(m_recognition->rowCount() > 0);
+    if (recognition)
+    {
+        for (std::size_t index = 0; index < recognition->plates.size(); ++index)
+        {
+            const auto &plate = recognition->plates[index];
+            QString name = QString::fromStdString(plate.id);
+            if (plate.id == "web")
+            {
+                name = QStringLiteral("底板");
+            }
+            else if (plate.id == "flange-bottom")
+            {
+                name = QStringLiteral("侧板 1");
+            }
+            else if (plate.id == "flange-top")
+            {
+                name = QStringLiteral("侧板 2");
+            }
+            else if (plate.id.starts_with("rib-"))
+            {
+                name = QStringLiteral("肋板 %1").arg(index - 2);
+            }
+            const QString thickness = plate.thicknessMm ? QString::number(*plate.thicknessMm, 'f', 1)
+                : QStringLiteral("未识别");
+            const bool estimated = plate.method == "inferred_side_plate_max";
+            const QString method = estimated ? QStringLiteral("侧板最大值（估算）")
+                : plate.thicknessMm ? QStringLiteral("顶边宽度") : QStringLiteral("仅观测面");
+            const QString tooltip = estimated
+                ? QStringLiteral("底板厚度 = max（侧板 1 识别厚度，侧板 2 识别厚度）。\n"
+                                 "使用未取整的识别值取较大者；属于估算，不是底板实测厚度。\n"
+                                 "底板夹在两翼板内侧，翼板下沿贴合底板底面；保留底板上表面和肋板位置。")
+                : QStringLiteral("支持点：%1；截面板厚四分位差：%2 mm")
+                    .arg(plate.supportPoints).arg(plate.thicknessSpreadMm, 0, 'f', 2);
+            const QStringList values{name, thickness, method};
+            for (int column = 0; column < values.size(); ++column)
+            {
+                auto *item = new QTableWidgetItem(values[column]);
+                item->setToolTip(tooltip);
+                m_recognition->setItem(static_cast<int>(index), column, item);
+            }
+        }
+    }
+    m_hint->setText(recognition ? QStringLiteral("侧板、肋板按顶边宽度识别；底板取两侧板厚最大值（估算），依据不足时保留观测面。")
+        : QStringLiteral("当前没有可用的板件识别结果；不会使用经验板厚自动建模。"));
+    m_settingValues = false;
+    m_hasEdits = false;
 }
 
 OperationPanel::OperationPanel(QWidget *parent)

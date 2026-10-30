@@ -54,7 +54,7 @@
   - 验证：修改范围内人工核对源码前 12 行中的「文件描述：」。
 
 - **FILE-03 文件名按主要类型或职责命名**
-  - 主要类型优先使用同名 `PascalCase` 文件；公共值类型集合和自由函数按职责命名，如 `Types.h`、`Geometry.h`、`ParameterDefaults.cpp`。
+  - 主要类型优先使用同名 `PascalCase` 文件；公共值类型集合和自由函数按职责命名，如 `Types.h`、`Geometry.h`、`PlateRecognition.cpp`。
   - `main.cpp` 与现有测试文件沿用当前名字，不新增 `Common2.h`、`test1.cpp` 等无职责名称。
 
 - **FILE-04 按现有职责划分文件**
@@ -197,7 +197,7 @@
   - 禁止：新增 `#define MAX_NUM 10` 这类宏常量。
 
 - **MOD-08 复用现有业务与序列化设施**
-  - JSON 使用 nlohmann_json 与 `commands/Json.*`，任务和工程状态通过 `CommandService` 维护，参考参数通过 `ParameterDefaults` 提供。
+  - JSON 使用 nlohmann_json 与 `commands/Json.*`，任务和工程状态通过 `CommandService` 维护，逐板识别结果由 `PlateRecognition` 提供；不得用经验板厚替代缺测结果。
   - 不手写字符串拼接 JSON，不在窗口里复制一套模型状态或默认参数算法；当前没有通用日志框架或主题服务，不编造已经存在的设施。
 
 - **MOD-09 优先使用无额外拷贝、语义清晰的写法**

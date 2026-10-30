@@ -9,6 +9,7 @@
     "flangeThickness": 12.0,
     "ribThickness": 8.0,
     "ribStations": [333.3333, 666.6667],
-    "swapCrossSection": false
+    "swapCrossSection": false,
+    "mirrorSymmetry": false
   }
 }

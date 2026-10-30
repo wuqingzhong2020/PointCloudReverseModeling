@@ -1,6 +1,6 @@
 # ReverseServiceTests
 
-C++20 / Google Test 单元测试程序，包含点云、参数默认值、几何和异步服务检查。`tests` 与 `ReverseModeling` 是由仓库根 CMake 入口加载的两个子项目；测试直接编译 `ReverseModeling` 中的服务和几何源码，与桌面程序共享同一份实现。
+C++20 / Google Test 单元测试程序，包含点云、逐板识别与镜像、几何和异步服务检查。`tests` 与 `ReverseModeling` 是由仓库根 CMake 入口加载的两个子项目；测试直接编译 `ReverseModeling` 中的服务和几何源码，与桌面程序共享同一份实现。
 
 ## Qt Creator
 
@@ -21,7 +21,7 @@ cmake --build --preset windows-release --target ReverseServiceTests
 ctest --preset windows-release
 ```
 
-运行 CTest 前需准备好依赖 DLL 的 `PATH`。也可直接运行 `./output/vc143-cpp20/release/ReverseServiceTests.exe`，使用 `--gtest_filter=测试套件.用例名` 选择测试。当前有 5 个用例。
+运行 CTest 前需准备好依赖 DLL 的 `PATH`。也可直接运行 `./output/vc143-cpp20/release/ReverseServiceTests.exe`，使用 `--gtest_filter=测试套件.用例名` 选择测试，或使用 `--gtest_list_tests` 查看当前用例。显示数据测试仅检查中立数据的部件归属、板厚、配色稳定性和坐标转换，不依赖 Qt 或 OCCT 视图。
 
 根工程的构建目录为 `build/vc143-cpp20/`，测试子项目的中间文件位于其 `tests/` 下，可执行程序输出到 `output/<编译器>-cpp<标准>/<构建模式>/`。
 

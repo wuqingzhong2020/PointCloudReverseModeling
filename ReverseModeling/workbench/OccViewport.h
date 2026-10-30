@@ -4,29 +4,31 @@
  */
 #pragma once
 
-#include <QWidget>
-
 #include <array>
-#include <cstdint>
 #include <functional>
 #include <memory>
 #include <vector>
+
+#include <QWidget>
+
+#include "workbench/ModelDisplayData.h"
+#include "workbench/PointCloudDisplayData.h"
 
 namespace reverse::workbench {
 
 class OccViewport final : public QWidget {
 public:
-    using Vertex = std::array<double, 3>;
-    using Triangle = std::array<std::uint32_t, 3>;
-
     explicit OccViewport(QWidget* parent = nullptr);
     ~OccViewport() override;
 
-    void setPointCloud(const std::vector<Vertex>& points);
-    void setMesh(const std::vector<Vertex>& vertices, const std::vector<Triangle>& triangles);
+    void setPointCloud(std::vector<CloudDisplayPoint> points);
+    void setCloudHeightColors(bool enabled);
+    void setModel(std::vector<ModelDisplayPart> parts);
     void setCloudVisible(bool visible);
     void setModelVisible(bool visible);
+    void setThicknessVisible(bool visible);
     void fitAll();
+    void showBottomView(const Vec3 &normal, const Vec3 &longitudinal);
     std::function<void(const QString&)> onError;
 
 protected:
@@ -36,9 +38,11 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
+    void leaveEvent(QEvent *event) override;
 
 private:
     struct State;
@@ -47,6 +51,11 @@ private:
     void release() noexcept;
     void rebuildCloud();
     void rebuildMesh();
+    void redraw();
+    void createViewCube();
+    void updateViewCubeScale();
+    void advanceNavigationAnimation();
+    void stopNavigationAnimation();
     void fail(const QString& message);
 };
 

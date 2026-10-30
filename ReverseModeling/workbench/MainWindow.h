@@ -22,7 +22,8 @@ private:
     struct State;
     std::unique_ptr<State> state_;
     void importCloud();
-    void restoreReferenceParameters();
+    void importCloud(const QString& path);
+    void restoreRecognition();
     bool applyParameters();
     void cancelTask();
     void refreshProjectPanels();

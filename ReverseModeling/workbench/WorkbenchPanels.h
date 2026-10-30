@@ -12,12 +12,14 @@
 #include "workbench/WorkbenchActions.h"
 
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QStackedWidget;
+class QTableWidget;
 
 namespace reverse::workbench
 {
@@ -35,6 +37,10 @@ class ReconstructionPanel final : public QWidget
     void setFrameText(const QString &text);
     void setHint(const QString &text);
     void setModelText(const QString &text);
+    void setRecognition(const std::optional<PlateRecognition> &recognition);
+    bool usePointCloud() const;
+    bool mirrorSymmetry() const;
+    double endOverhangToleranceMm() const;
 
   signals:
     void edited();
@@ -46,6 +52,10 @@ class ReconstructionPanel final : public QWidget
     std::array<QDoubleSpinBox *, 6> m_dimensions{};
     QLineEdit *m_stations;
     QCheckBox *m_swap;
+    QCheckBox *m_mirror;
+    QDoubleSpinBox *m_endOverhangTolerance;
+    QComboBox *m_mode;
+    QTableWidget *m_recognition;
     QGroupBox *m_basic;
     QLabel *m_source;
     QLabel *m_frame;

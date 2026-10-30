@@ -86,13 +86,15 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {SelectFace, "selectFace", "面", "", Pending},
                                 {SelectSolid, "selectSolid", "体", "cube", Pending},
                                 {ShowCloud, "showCloud", "点云", "cloud", Available},
-                                {CloudHeight, "cloudHeight", "高度渐变（待接入）", "", Pending},
+                                {CloudHeight, "cloudHeight", "高度渐变", "", Available},
                                 {CloudSolid, "cloudSolid", "纯色", "", Available},
                                 {ShowModel, "showModel", "实体", "cube", Available},
+                                {ShowThickness, "showThickness", "板厚", "parameters", Available},
                                 {ModelSolid, "modelSolid", "实体", "", Available},
                                 {ModelWire, "modelWire", "线框（待接入）", "", Pending},
                                 {Section, "section", "剖视", "plane", Preview},
                                 {FitAll, "fitAll", "适合视图", "fit", Available},
+                                {BottomView, "bottomView", "底板面", "home", Available},
                                 {CancelTask, "cancelTask", "取消任务", "stop", Available}};
     for (const auto &spec : specs)
     {
@@ -124,17 +126,19 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
     exclusive({Select, AddSelection, RemoveSelection}, Select);
     exclusive({SelectPoint, SelectEdge, SelectFace, SelectSolid}, SelectSolid);
     exclusive({PrecisionLow, PrecisionMedium, PrecisionHigh}, PrecisionMedium);
-    exclusive({CloudHeight, CloudSolid}, CloudSolid);
+    exclusive({CloudHeight, CloudSolid}, CloudHeight);
     exclusive({ModelSolid, ModelWire}, ModelSolid);
-    for (const auto id : {ShowCloud, ShowModel, AutoAlign, RemoveDuplicates})
+    for (const auto id : {ShowCloud, ShowModel, ShowThickness, AutoAlign, RemoveDuplicates})
     {
         get(id)->setCheckable(true);
-        get(id)->setChecked(id == ShowCloud || id == ShowModel);
+        get(id)->setChecked(id == ShowCloud || id == ShowModel || id == ShowThickness);
     }
+    get(ShowThickness)->setToolTip(QStringLiteral("显示逐板厚度（mm）；底板最大值标注估算，缺少依据时显示未识别"));
     get(Open)->setShortcut(QKeySequence::Open);
     get(ExportStep)->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+E")));
     get(Parameters)->setShortcut(QKeySequence(QStringLiteral("Ctrl+P")));
     get(FitAll)->setShortcut(QKeySequence(QStringLiteral("F")));
+    get(BottomView)->setToolTip(QStringLiteral("正对底板观测面，长边横向放置并适合视图"));
 }
 
 QAction *WorkbenchActions::get(ActionId id) const
