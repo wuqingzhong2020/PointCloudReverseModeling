@@ -1,36 +1,46 @@
 # envBuild 命令使用指南
 
-`envBuild.py` 是仓库根目录的构建工具入口，调用 `pythonProject/` 中的功能。**在工程根目录执行即可，不需要进入 `pythonProject`。** 本文介绍当前已实现的九个命令、参数、配置和常用操作；设计说明见 [构建运行与打包方案](envBuild构建运行与打包方案.md)。
+`envBuild.py` 用于配置、编译、运行、补齐运行依赖、清理和打包 ReverseModeler。**在工程根目录执行即可，不需要进入 `pythonProject`。** 本文统一说明各命令的用途、前提、参数、操作示例和输出位置。
+
+第一次使用，按 [首次配置与运行](#3-第一次使用) 操作；日常查阅见 [命令速查](#2-命令速查与帮助) 和 [各命令示例](#5-各命令的用法和示例)；交付程序见 [产物与发布包](#6-产物在哪怎样交付)。
 
 ## 1. 从哪里运行
+
+**工程根目录**是同时包含 `envBuild.py`、`CMakeLists.txt` 和 `CMakePresets.json` 的目录，即你克隆或解压工程的位置。工程可以放在任意盘符和目录下。
+
+在工程根目录打开终端（PowerShell 或 Git Bash），即可执行后续命令：
+
+```powershell
+python envBuild.py --help
+```
+
+如果终端当前位于其他目录，先切换到工程根目录。**本文所有 `<...>` 都是占位符，使用前须连同尖括号替换为本机实际路径或参数值；它们不是环境变量，也不会自动展开。**
 
 PowerShell：
 
 ```powershell
-cd D:/projectWQZ/PointCloudReverseModeling
-python envBuild.py --help
+Set-Location -LiteralPath '<工程根目录>'
 ```
 
-Git Bash：
+Git Bash（路径使用 `/`，Windows 盘符可写成 `/c/`、`/d/` 等形式）：
 
 ```bash
-cd /d/projectWQZ/PointCloudReverseModeling
-python envBuild.py --help
+cd "<工程根目录>"
 ```
 
 也可以在其他目录传入入口脚本的完整路径；工具按脚本位置定位工程：
 
 ```powershell
-python "D:/projectWQZ/PointCloudReverseModeling/envBuild.py" info
+python "<工程根目录>/envBuild.py" info
 ```
 
-本文的 `python` 指所选 SDK 的 **Python 3.15t**，只使用标准库，不需要安装 pip 包。当前机器也可用完整解释器路径，例如：
+本文的 `python` 指所选 SDK 的 **Python 3.15t**，只使用标准库，不需要安装 pip 包。若终端中的 `python` 未指向该解释器，可在工程根目录使用其完整路径；PowerShell 写法如下，`<Python解释器完整路径>` 应替换为实际的 `python.exe` 路径：
 
 ```powershell
-& 'D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20/tools/python3/python.exe' envBuild.py info
+& '<Python解释器完整路径>' envBuild.py info
 ```
 
-构建环境为 Windows、Visual Studio 2022 / MSVC v143、x64、C++20、CMake 3.25+ 和匹配的 Qt6 / PCL / OCCT 等 SDK。依赖清单见 [根 README](../README.md#环境与依赖)。CDB 仅启动 Debug 调试时需要。
+本文命令面向 Windows、Visual Studio 2022 / MSVC v143、x64、C++20、CMake 3.25+ 和匹配的 Qt6 / PCL / OCCT 等 SDK。请先安装这些工具和依赖，`init` 不负责下载或安装。完整依赖清单见 [根 README](../README.md#环境与依赖)。CDB 仅启动 Debug 调试时需要。
 
 ## 2. 命令速查与帮助
 
@@ -86,12 +96,12 @@ python envBuild.py clean --help
 python envBuild.py init
 ```
 
-然后编辑根目录生成的 `envBuild.local.ini`，至少确认 SDK 安装前缀。例如本机路径：
+然后编辑根目录生成的 `envBuild.local.ini`，将 `<SDK安装前缀>` 替换为本机依赖库的实际安装根目录。这里填写安装前缀，不是工程目录，也不是 SDK 的 `bin` 子目录：
 
 ```ini
 [dependencies]
 prefix_paths =
-    D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20
+    <SDK安装前缀>
 ```
 
 保存后检查环境、编译并运行：
@@ -107,6 +117,8 @@ python envBuild.py release
 ```powershell
 python envBuild.py packageAll release
 ```
+
+后续修改源码后，重新执行 `compile release --target ReverseModeler`，再执行 `release`。正常编译已包含运行依赖部署，无需额外执行 `prepareRun` 或手工配置 SDK PATH。
 
 ## 4. 配置文件怎么填写
 
@@ -131,7 +143,7 @@ python envBuild.py packageAll release
 
 ### 4.2 一份通常够用的完整配置
 
-以下内容可以作为 `envBuild.local.ini` 的起点，修改 SDK 路径为本机实际路径：
+以下内容可以作为 `envBuild.local.ini` 的起点，使用前将 `<SDK安装前缀>` 替换为本机实际路径。工程目录和 SDK 目录不必位于同一盘符或具有固定的相对位置：
 
 ```ini
 [build]
@@ -141,7 +153,7 @@ parallel_jobs = 8
 
 [dependencies]
 prefix_paths =
-    D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20
+    <SDK安装前缀>
 
 [tools]
 cmake =
@@ -169,27 +181,27 @@ occt_resource_dir =
 
 ### 4.3 多个 SDK 前缀、自定义工具和资源
 
-依赖分散安装或自动发现不足时，可参考下面的配置。路径只是写法示例，请替换成真实存在的目录和文件：
+依赖分散安装或自动发现不足时，可参考下面的配置。将各占位符替换为真实存在的目录或文件；不需要的工具和运行资源覆盖项保持留空：
 
 ```ini
 [dependencies]
 prefix_paths =
-    D:/SDK/基础库/x64-windows-v143-cpp20
-    D:/SDK/Qt 6/msvc2022_64
-    D:/SDK/OCCT
+    <基础库安装前缀>
+    <Qt安装前缀>
+    <OCCT安装前缀>
 
 [tools]
-cmake = C:/Program Files/CMake/bin/cmake.exe
-cdb = C:/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe
+cmake = <cmake.exe完整路径>
+cdb = <cdb.exe完整路径>
 
 [runtime]
 release_dll_dirs =
-    D:/SDK/额外运行库/bin
-    D:/Vendor SDK/bin
+    <Release额外DLL目录1>
+    <Release额外DLL目录2>
 debug_dll_dirs =
-    D:/SDK/额外运行库/debug/bin
-    D:/Vendor SDK/debug/bin
-occt_resource_dir = D:/SDK/OCCT/share/opencascade/resources
+    <Debug额外DLL目录1>
+    <Debug额外DLL目录2>
+occt_resource_dir = <OCCT资源根目录>
 ```
 
 路径书写规则：
@@ -244,6 +256,15 @@ python envBuild.py init
 
 先运行 CMake 配置，再编译所选模式。默认编译主程序 `ReverseModeler` 和单元测试程序 `ReverseServiceTests`，**不会运行单元测试**。编译主程序后会自动部署其 DLL、Qt 插件、OCCT 资源等；部署失败时整个命令返回失败。
 
+| 参数 | 什么时候用 | 效果 |
+|---|---|---|
+| `--target ReverseModeler` | 只需要桌面主程序 | 仅编译主程序并部署其运行环境 |
+| `--target ReverseServiceTests` | 只需要单元测试程序 | 仅编译测试程序并部署其运行依赖，不构建或启动 GUI |
+| `--jobs 8` | 希望指定并行任务数 | 本次使用 8 个并行任务，覆盖配置文件；必须是正整数 |
+| `--rebuild` | 希望清理旧编译产物后重新编译 | 清理所选模式后编译，保留 SDK 和已完成的发布 ZIP |
+| `--fresh` | 更换 SDK，或需要重建 CMake 配置缓存 | 更新 Debug/Release 共用的配置缓存，不等于清理全部编译产物 |
+| `--dry-run` | 先确认本次操作 | 仅预览，不配置、编译、部署或清理 |
+
 ```powershell
 # 默认模式、默认目标、默认并行数
 python envBuild.py compile
@@ -269,6 +290,8 @@ python envBuild.py compile release --fresh --dry-run
 
 `--target` 一次选择一个目标；省略时编译默认全部目标。`--jobs`、`--rebuild`、`--fresh` 可组合。单元测试目标会部署自身所需运行依赖，具体测试运行方法见 [测试程序说明](../tests/README.md)。
 
+即使只编译主程序，当前工程在 CMake 配置阶段仍会查找 Google Test，因此 SDK 也需要包含它。
+
 ### 5.4 release：运行 Release 程序
 
 先确保 Release 已编译、部署完成，再启动。该命令不编译、不补 DLL，也不接受程序文件名或模式参数。
@@ -278,6 +301,8 @@ python envBuild.py compile release --target ReverseModeler
 python envBuild.py release --dry-run
 python envBuild.py release
 ```
+
+程序以 EXE 所在目录为工作目录启动。终端输出 PID 表示启动请求已提交，不代表程序后续运行一定正常；也可直接双击同一 EXE。
 
 ### 5.5 debug：通过 CDB 调试 Debug 程序
 
@@ -291,6 +316,8 @@ python envBuild.py debug
 
 `debug` 不是“编译 Debug”的缩写。启动前会核对程序及部署清单；缺少运行文件时，先执行 `prepareRun debug`。
 
+命令会打开可交互的 CDB 控制台，符号路径使用 Debug 产物目录，源码路径使用当前仓库。请保留 EXE 旁的 `ReverseModeler.pdb`，缺失时源码调试信息可能受限。
+
 ### 5.6 prepareRun：补齐已有程序的完整运行环境
 
 正常编译已自动执行运行部署。误删 DLL、Qt 插件，或需要刷新运行依赖时使用此命令：
@@ -301,7 +328,7 @@ python envBuild.py prepareRun debug
 python envBuild.py prepareRun release_debug --dry-run
 ```
 
-它调用 CMake 已生成的部署脚本，处理 Qt 和其他 DLL、平台插件、`qt.conf`、OCCT 资源及相关许可材料，不编译也不启动程序。需要对应模式的 EXE 和 CMake 生成信息；缺少时先 `compile`。独立的 `deployqt` 已合并到此完整部署流程，不再作为命令提供。
+它补齐 Qt 和其他 DLL、平台插件、`qt.conf`、OCCT 资源及相关许可材料，不编译也不启动程序。需要对应模式的 EXE、CMake 生成信息和可访问的 SDK 运行文件；缺少程序或构建信息时先 `compile`。独立的 `deployqt` 和 `--with-qt` 均不再提供，Qt 已包含在完整部署流程中。
 
 ### 5.7 package：打包已有程序
 
@@ -397,9 +424,32 @@ python envBuild.py compile release 2>&1 | Tee-Object -FilePath output/log/envbui
 
 该示例会覆盖同名日志；需要保留多次记录时，在文件名中增加日期或本次操作名称。
 
-包名包含版本、平台、工具链、模式、Git 提交标识和时间等信息；工作区有未提交修改时包含 `dirty`。`package` 使用最近一次 CMake 配置生成的版本信息；发布最新源码使用 `packageAll`。
+包名包含版本、平台、工具链、模式、Git 提交标识和时间等信息；最近一次 CMake 配置时工作区有未提交修改，包名会包含 `dirty`。`package` 使用最近一次 CMake 配置生成的版本信息；发布最新源码使用 `packageAll`。每次成功打包生成新的 ZIP 和 `.zip.sha256`，保留之前的成品包。
 
-将 ZIP 完整解压，再运行其中的 **`ReverseModeler/bin/ReverseModeler.exe`**。需要保留整个解压目录，不要只复制 EXE。发布包包含运行依赖，不包含测试程序、用户点云/模型或 SDK 的开发头文件。Release 用于常规交付；Debug 包带主程序 PDB 和调试运行库，用于内部调试。
+将 ZIP 完整解压，再运行其中的 **`ReverseModeler/bin/ReverseModeler.exe`**。需要保留整个解压目录，不要只复制 EXE：
+
+```text
+ReverseModeler/
+├── bin/
+│   ├── ReverseModeler.exe
+│   ├── *.dll
+│   ├── platforms/                 # Qt 平台插件，以及其他实际需要的插件目录
+│   ├── qt.conf
+│   ├── resources/opencascade/     # OCCT 运行资源
+│   └── licenses/                  # 随包许可材料
+└── manifest.json                 # 版本、构建模式、Git 信息及运行文件校验信息
+```
+
+发布包包含运行依赖，不包含测试程序、用户点云/模型、日志、本地配置或 SDK 的开发头文件、静态库与导入库。Release 用于常规交付，默认不带 PDB；Debug 包带主程序 PDB 和调试运行库，用于内部调试。
+
+传输后如需校验 ZIP，在 PowerShell 中将下列文件名替换为实际包名，比较输出的 SHA256 与对应校验文件的第一项：
+
+```powershell
+Get-FileHash -Algorithm SHA256 -LiteralPath 'output/packages/实际包名.zip'
+Get-Content -LiteralPath 'output/packages/实际包名.zip.sha256'
+```
+
+需要直接调用 CMake 安装、CPack 打包或使用 Qt Creator 时，见 [根 README 的构建与运行](../README.md#构建与运行)。
 
 ## 7. 常见问题
 
@@ -415,10 +465,11 @@ python envBuild.py compile release 2>&1 | Tee-Object -FilePath output/log/envbui
 | `debug` 找不到 CDB | 安装 Windows 调试工具，或在 `[tools]` 中填写本机原生 `cdb.exe` 路径；编译和 Release 启动不依赖 CDB |
 | 缺少构建信息或主程序 | 先执行相应模式的 `compile`；`clean build` 后即使 EXE 还在，也要重新生成构建信息 |
 | 程序或 `qwindows.dll` 等文件缺失 | EXE 缺失执行 `compile`；运行依赖缺失执行 `prepareRun`。修改过 SDK 配置则先 compile 更新部署脚本 |
+| 编译链接成功，但运行部署失败 | 根据终端错误检查匹配的 Qt 部署工具、DLL 和 OCCT 资源；修正后重新 `compile` 或 `prepareRun`，部署成功后再运行 |
 | 配置里的路径含中文或空格 | INI 直接填写、不加引号；终端参数中的带空格路径加引号；PowerShell 调用带引号的 EXE 路径时前加 `&` |
 | `LNK1104` / `LNK1168`，提示无法写入 ReverseModeler.exe | 关闭正在运行的程序或占用它的调试会话后重试；脚本不自动结束进程 |
 | `package` 后发现程序还是旧版本 | `package` 不编译，请使用 `packageAll release` |
 | 修改了 `[runtime]`，`prepareRun` 仍用旧路径 | 先 `compile` 更新生成脚本；清空旧覆盖值时加 `--fresh` |
-| 想使用 ProjectManager 的 `deployqt` / qmake / Git 批量命令 | 本工程仅提供本文九个命令；Qt 部署已并入 compile / prepareRun / package |
+| 输入 `deployqt` 或 `--with-qt` 报错 | Qt 已并入自动部署；需要手动补齐时使用 `prepareRun release` 或 `prepareRun debug` |
 
 退出码为 `0`（成功或显示帮助）、`1`（执行失败或中止）、`2`（输入用法错误）。遇到问题可先运行 `info`，再查看对应命令的 `--help`；无需修改 `pythonProject/` 源码来配置本机路径。

@@ -5,6 +5,8 @@
 #pragma once
 
 #include "core/Types.h"
+#include "commands/RecordingState.h"
+#include "commandManager/CommandManager.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -24,6 +26,12 @@ struct TaskSnapshot {
     std::string message;
     std::string errorCode;
     bool cancellationRequested{};
+    bool waitingForInput{};
+    std::uint64_t inputRequest{};
+    rm::CommandResult result;
+    std::string output;
+    std::string workerThread;
+    double elapsedMs{};
     [[nodiscard]] bool finished() const noexcept {
         return state == TaskState::Succeeded || state == TaskState::Failed || state == TaskState::Cancelled;
     }
@@ -46,15 +54,35 @@ struct ProjectSnapshot {
     std::optional<CloudExportResult> lastCloudExport;
     std::string exportedCloudPathUtf8;
     std::shared_ptr<const CloudSelection> selection;
+    std::shared_ptr<const CloudSelectionRecipe> selectionRecipe;
     bool canUndoCloud{};
     bool canRedoCloud{};
     bool canResetCloud{};
 };
 
+struct CommandEnvironment
+{
+    std::filesystem::path runtimeDirectory;
+    std::filesystem::path logDirectory;
+};
+
+// Completed UI operations only; the console polls these without calling the GUI from the worker.
+struct UiCommandEvent
+{
+    std::string taskId;
+    std::string commandLine;
+    std::string pythonLine;
+    std::string message;
+    bool succeeded{};
+};
+
 class CommandService {
 public:
-    CommandService();
+    explicit CommandService(CommandEnvironment environment = {});
     ~CommandService(); // 请求取消并等待工作线程结束；工作线程不访问 UI。
+    // GUI 关闭时先请求退出，再异步查询；完成后析构不会等待正在执行的 Python。
+    void requestShutdown();
+    [[nodiscard]] bool shutdownComplete() const;
     CommandService(const CommandService&) = delete;
     CommandService& operator=(const CommandService&) = delete;
 
@@ -73,8 +101,26 @@ public:
     [[nodiscard]] bool cancel(const std::string& taskId);
     [[nodiscard]] TaskSnapshot task(const std::string& taskId) const;
     [[nodiscard]] ProjectSnapshot project() const;
+    [[nodiscard]] std::string submitCommand(std::string name, rm::Array positional = {}, rm::Arguments options = {},
+                                           std::optional<std::uint64_t> expectedRevision = {});
+    [[nodiscard]] std::string submitLine(std::string line);
+    [[nodiscard]] std::string submitPython(std::string code);
+    [[nodiscard]] std::string submitPythonLine(std::string line);
+    [[nodiscard]] std::string resetPythonConsole();
+    // Reply to the current stdin request, without putting another job behind the waiting script.
+    [[nodiscard]] bool provideInput(const std::string &taskId, std::uint64_t request,
+                                    std::optional<std::string> line);
+    // Recording and native command scripts (.py) share the FIFO; file I/O and parsing stay on the worker.
+    [[nodiscard]] std::string submitStartRecording(const std::filesystem::path &path, bool overwrite = false);
+    [[nodiscard]] std::string submitStopRecording();
+    [[nodiscard]] std::string submitScriptFile(const std::filesystem::path &path);
+    [[nodiscard]] RecordingState recordingState() const;
+    [[nodiscard]] std::vector<std::string> completions() const;
+    [[nodiscard]] std::vector<UiCommandEvent> takeUiCommandEvents();
 
 private:
+    [[nodiscard]] std::string submitUiCommand(std::string name, rm::Array positional, rm::Arguments options,
+                                             std::optional<std::uint64_t> expectedRevision);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

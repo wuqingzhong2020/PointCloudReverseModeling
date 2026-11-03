@@ -23,6 +23,7 @@ namespace reverse::workbench
 namespace
 {
 constexpr int layoutVersion = 2;
+constexpr int commandDockPlacementVersion = 1;
 
 void recoverWindow(QWidget *window)
 {
@@ -80,7 +81,8 @@ void DockWorkspace::addPanel(const QString &id, const QString &title, QWidget *c
 {
     auto *dock = new ads::CDockWidget(m_manager, title);
     dock->setObjectName(id);
-    content->setMinimumSize(position == DockPosition::Bottom ? 180 : 340, position == DockPosition::Bottom ? 150 : 200);
+    content->setMinimumSize(content->minimumSize().expandedTo(
+        QSize(position == DockPosition::Bottom ? 180 : 340, position == DockPosition::Bottom ? 150 : 200)));
     dock->setWidget(content, ads::CDockWidget::ForceNoScrollArea);
     dock->setMinimumSizeHintMode(ads::CDockWidget::MinimumSizeHintFromContentMinimumSize);
     dock->setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, false);
@@ -146,9 +148,42 @@ void DockWorkspace::restoreLayout()
         m_window->restoreGeometry(geometry);
     }
     const auto state = settings.value(QStringLiteral("docks")).toByteArray();
-    if (!state.isEmpty() && !m_manager->restoreState(state, layoutVersion))
+    const bool restored = !state.isEmpty() && m_manager->restoreState(state, layoutVersion);
+    if (!state.isEmpty() && !restored)
     {
         resetLayout();
+    }
+    // 旧布局只迁移命令窗口一次，保留其他窗口以及命令窗口的显隐状态。
+    // 更早的布局没有命令窗口，ADS 恢复后可能把新增窗口留在浮动状态。
+    const bool missingCommands = !state.contains("dock.commands");
+    const bool migrateCommands = settings.value(QStringLiteral("commandDockPlacementVersion"), 0).toInt() <
+                                 commandDockPlacementVersion;
+    if (restored && (missingCommands || migrateCommands) && m_panels.contains(QStringLiteral("dock.commands")))
+    {
+        auto *commands = m_panels.value(QStringLiteral("dock.commands"));
+        auto *modelTree = m_panels.value(QStringLiteral("dock.modelTree"), nullptr);
+        const bool open = !missingCommands && !commands->isClosed();
+        if (modelTree && modelTree->dockAreaWidget())
+        {
+            if (commands->dockAreaWidget() != modelTree->dockAreaWidget())
+            {
+                m_manager->addDockWidgetTabToArea(commands, modelTree->dockAreaWidget());
+                commands->toggleView(open);
+                if (open)
+                {
+                    commands->setAsCurrentTab();
+                }
+            }
+        }
+        else
+        {
+            m_manager->addDockWidget(ads::RightDockWidgetArea, commands);
+            commands->toggleView(open);
+        }
+        if (missingCommands)
+        {
+            commands->toggleView(false);
+        }
     }
     recoverWindow(m_window);
     for (auto *floating : m_manager->floatingWidgets())
@@ -163,6 +198,7 @@ void DockWorkspace::saveLayout() const
     settings.beginGroup(QStringLiteral("ui/layout/v2"));
     settings.setValue(QStringLiteral("geometry"), m_window->saveGeometry());
     settings.setValue(QStringLiteral("docks"), m_manager->saveState(layoutVersion));
+    settings.setValue(QStringLiteral("commandDockPlacementVersion"), commandDockPlacementVersion);
 }
 
 void DockWorkspace::resetLayout()

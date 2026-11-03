@@ -1,0 +1,36 @@
+# {{ module.name }} — {{ module.summary }}
+
+由 `.rmdef` 生成，请修改声明后重新生成。
+
+参数对可混排且顺序可调；位置参数必须保持相对顺序。`--` 之后均为位置值。
+运行时输入 `help {{ module.name }}` 可查询本模块，是否绑定业务以运行时帮助为准。
+
+{% for command in module.commands %}
+## {{ module.name }}.{{ command.name }}
+
+{{ command.summary }}
+
+```text
+{{ command.usage }}
+{{ module.name }}.{{ command.name }} --help
+```
+
+{{ command.description }}
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for p in command.params %}
+| {{ p.name }} | {{ p.option if p.binding == 'option' else '位置 ' ~ p.position }} | {{ p.type }} | {{ p.get('values', p.get('ranges', '')) }}{% if p.type in ['object','array'] %} {{ p.get('properties', p.get('items', '')) }}{% endif %} | {{ '必填' if p.get('required', False) else '默认 ' ~ p.default if 'default' in p else '可选' }} | {{ p.get('unit','') }} | {{ p.get('description','') }} |
+{% endfor %}
+
+返回：{{ command.returns.type }} — {{ command.returns.get('description','') }}。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
+{% for example in command.examples %}
+```
+{{ example }}
+```
+
+{% endfor %}
+{% endfor %}

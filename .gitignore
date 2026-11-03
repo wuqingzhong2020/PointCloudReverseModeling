@@ -73,3 +73,6 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+envBuild.local.ini
+__pycache__/
+*.pyc

@@ -11,11 +11,11 @@
 | [主业务开发指南](ReverseModeling/README.md) | 代码结构、调用流程、数据约定与能力边界 |
 | [桌面工作台开发约定](ReverseModeling/README.md#桌面工作台) | SARibbon + ADS、窗口标识、布局恢复与 UI 接入边界 |
 | [单元测试程序](tests/README.md) | Google Test 构建、运行与用例选择 |
+| [命令框架与 Python 使用指南](docs/命令框架与Python使用指南.md) | 命令窗口、help、Python、宏录制、rm_define 和代码生成 |
 | [研究与实现参考资料](reference/README.md) | 参考文档目录、实施背景、维护约定与原始材料归档说明 |
 | [C++ 编码规范](docs/cpp编码规范.md) | C++、Qt、CMake 与测试维护约定 |
-| [Python 脚本编码规范](docs/Python脚本编码规范.md) | CPython SDK、脚本写法与未来宿主接口边界 |
-| [envBuild 命令使用指南](docs/envBuild命令使用指南.md) | 完整命令参数、本机配置填写、常用示例与问题处理 |
-| [envBuild 构建运行与打包方案](docs/envBuild构建运行与打包方案.md) | 已实现的命令约定、自动部署、安装及 CPack ZIP |
+| [Python 脚本编码规范](docs/Python脚本编码规范.md) | CPython SDK、脚本写法与宿主接口边界 |
+| [envBuild 命令使用指南](docs/envBuild命令使用指南.md) | 首次配置、编译与运行、补部署、清理、打包交付及常见问题 |
 
 ## 目录结构
 
@@ -70,16 +70,18 @@ PointCloudReverseModeling/
 | Qt Advanced Docking System 4.5.0+（Qt6） | 工具窗口停靠、浮动、显隐与布局恢复 |
 | nlohmann_json 3.11+ | JSON 数据契约 |
 | Google Test | `ReverseServiceTests` 测试程序 |
+| CPython / pybind11 | 产品内建 Python；采用 SDK 的 `CPython::Python` 和匹配的自由线程 ABI |
+| Python / Jinja2（仅构建机） | `RmCommandGen` 生成参数描述类与文档，安装方法见命令框架指南 |
 
 所有第三方包由 [Dependencies.cmake](cmake/Dependencies.cmake) 统一查找，系统线程通过 `Threads::Threads` 接入。库可由 vcpkg 或其他方式预先构建；本工程不负责下载或编译第三方库。
 
-根 [CMakePresets.json](CMakePresets.json) 保留通用工具链设置，不再写死本机 SDK。先执行 `python envBuild.py init`，再在未纳入 Git 的 `envBuild.local.ini` 中填写 `dependencies.prefix_paths`，可每行填写一个前缀。已有构建时 init 会采用缓存中的 SDK；已有本地配置不覆盖。本机示例为 `D:/projectWQZ/LibPackByVcpkgWindows/install_vc143_cpp20/x64-windows-v143-cpp20`。
+根 [CMakePresets.json](CMakePresets.json) 保留通用工具链设置。先执行 `python envBuild.py init`，再在未纳入 Git 的 `envBuild.local.ini` 中填写本机 SDK 的实际安装前缀 `dependencies.prefix_paths`，可每行填写一个前缀；填写安装根目录，而非 `bin` 子目录。工程和 SDK 可以放在各自选择的位置，无需采用固定盘符或目录结构。已有构建时 init 会采用缓存中的 SDK；已有本地配置不覆盖。
 
-Python 入口使用 SDK 的 Python 3.15t 和标准库，无需 pip。下文的 `python` 应指向该解释器；也可使用其完整路径。CMake/CPack 从 PATH 或本地配置定位，CDB 仅 `debug` 启动命令需要，填写原生 `cdb.exe` 路径。脚本不下载或编译第三方 SDK。
+`envBuild.py` 入口使用 SDK 的 Python 3.15t 和标准库，无需 pip。下文的 `python` 应指向该解释器；也可使用其完整路径。命令代码生成器另需构建机 Jinja2 环境，见[命令框架指南](docs/命令框架与Python使用指南.md#4-构建依赖和生成)。CMake/CPack 从 PATH 或本地配置定位，CDB 仅 `debug` 启动命令需要，填写原生 `cdb.exe` 路径。脚本不下载或编译第三方 SDK。
 
 ### 命令行
 
-从仓库根目录运行，无需进入 `pythonProject`。完整参数、配置文件写法和更多示例见 [envBuild 命令使用指南](docs/envBuild命令使用指南.md)：
+在你克隆或解压工程的根目录（包含 `envBuild.py` 和 `CMakeLists.txt`）打开终端，无需进入 `pythonProject`。完整参数、配置文件写法和更多示例见 [envBuild 命令使用指南](docs/envBuild命令使用指南.md)：
 
 ```powershell
 python envBuild.py -h

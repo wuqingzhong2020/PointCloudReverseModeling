@@ -72,6 +72,22 @@ QIcon WorkbenchTheme::icon(const QString &name)
                 painter.drawPolyline(QPolygon{{7, 12}, {7, 28}, {13, 28}, {13, 19}, {19, 19},
                                              {19, 28}, {25, 28}, {25, 12}});
             }
+            else if (name == "record")
+            {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(mode == QIcon::Disabled ? color : QColor("#ed6267"));
+                painter.drawEllipse(QPointF(16, 16), 10, 10);
+            }
+            else if (name == "script")
+            {
+                painter.drawPolyline(QPolygon{{20, 28}, {5, 28}, {5, 3}, {20, 3}, {27, 10}, {27, 16}});
+                painter.drawPolyline(QPolygon{{20, 3}, {20, 10}, {27, 10}});
+                line(10, 12, 17, 12);
+                line(10, 17, 15, 17);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(mode == QIcon::Disabled ? color : QColor("#27c75b"));
+                painter.drawPolygon(QPolygon{{20, 18}, {30, 24}, {20, 30}});
+            }
             else if (name == "play" || name == "stop")
             {
                 painter.setPen(Qt::NoPen);

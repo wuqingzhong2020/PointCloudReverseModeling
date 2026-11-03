@@ -271,14 +271,14 @@ TEST(CommandService, ImportsRecognitionAndBuildsWithoutPresetParameters)
         }
     }
     CommandService service;
-    const auto wait = [&](const std::string &task)
+    const auto wait = [&](const std::string &task, TaskState expected = TaskState::Succeeded)
     {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
         while (!service.task(task).finished() && std::chrono::steady_clock::now() < deadline)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        EXPECT_EQ(service.task(task).state, TaskState::Succeeded) << service.task(task).message;
+        EXPECT_EQ(service.task(task).state, expected) << service.task(task).message;
     };
     wait(service.submitImport(file, LengthUnit::Millimeter));
     std::filesystem::remove(file);
@@ -296,7 +296,9 @@ TEST(CommandService, ImportsRecognitionAndBuildsWithoutPresetParameters)
     EXPECT_EQ(bottom["method"], "inferred_side_plate_max");
     EXPECT_EQ(bottom["thicknessMm"], toJson(imported)["recognition"]["plates"][0]["thicknessMm"]);
     EXPECT_DOUBLE_EQ(toJson(built)["model"]["recognitionOptions"]["endOverhangToleranceMm"].get<double>(), 12.5);
-    EXPECT_THROW((void)service.submitRecognizedReconstruct(true, imported.revision), GeometryError);
+    const auto stale = service.submitRecognizedReconstruct(true, imported.revision);
+    wait(stale, TaskState::Failed);
+    EXPECT_EQ(service.task(stale).errorCode, "stale_revision");
     wait(service.submitRecognizedReconstruct(true, built.revision));
     EXPECT_EQ(service.project().model->solidCount, 9u);
     EXPECT_EQ(service.project().model->surfaceCount, 0u);

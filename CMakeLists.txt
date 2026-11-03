@@ -6,6 +6,8 @@ include(cmake/common.cmake)
 include(cmake/Dependencies.cmake)
 
 enable_testing()
+add_subdirectory(commandManager)
+include(ReverseModeling/execCommonds/execCommonds.cmake)
 add_subdirectory(ReverseModeling)
 add_subdirectory(tests)
 

@@ -1,0 +1,14 @@
+/* 文件描述：按模块清单顺序注册全部定义，不绑定业务。 */
+#include "CommandModules.h"
+{% for module in modules %}
+#include "{{ module.name }}/{{ module.class_name }}.h"
+{% endfor %}
+namespace rmcmd
+{
+void registerAllCommandModules(rm::CommandManager &manager)
+{
+{% for module in modules %}
+    {{ module.name }}::register{{ module.class_name }}(manager);
+{% endfor %}
+}
+}

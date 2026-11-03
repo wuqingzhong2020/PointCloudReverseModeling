@@ -25,3 +25,5 @@ if(WIN32)
 endif()
 include(GoogleTest)
 gtest_discover_tests(ReverseServiceTests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 120)
+add_test(NAME CommandGeneratorUnitTests
+    COMMAND "${RM_CODEGEN_PYTHON}" -B "${CMAKE_CURRENT_LIST_DIR}/commandManager/test_generator.py")

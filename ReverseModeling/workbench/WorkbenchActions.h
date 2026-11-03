@@ -74,6 +74,9 @@ enum class ActionId
     FitAll,
     BottomView,
     CancelTask,
+    StartRecording,
+    StopRecording,
+    ExecuteScript,
     Count
 };
 

@@ -10,6 +10,11 @@ set(RM_OCCT_RESOURCE_DIR "${OpenCASCADE_RESOURCE_DIR}" CACHE PATH "OCCT runtime 
 set(RM_BUILD_TAG "${RM_COMPILER_TAG}-cpp${CMAKE_CXX_STANDARD}")
 set(RM_VERSION "${CMAKE_PROJECT_VERSION}")
 set(RM_INFO_DIR "${CMAKE_BINARY_DIR}/envbuild")
+get_filename_component(_rm_python_prefix "${cpython_DIR}/../.." ABSOLUTE)
+set(RM_PYTHON_HOME "${_rm_python_prefix}/tools/python3" CACHE PATH "Matching CPython standard library and native extensions")
+if(NOT EXISTS "${RM_PYTHON_HOME}/Lib/encodings/__init__.py")
+    message(FATAL_ERROR "CPython standard library not found in RM_PYTHON_HOME")
+endif()
 file(MAKE_DIRECTORY "${RM_INFO_DIR}")
 
 # 使用实际导入目标的目录及用户指定前缀，不从全局 PATH 选择其他 SDK。

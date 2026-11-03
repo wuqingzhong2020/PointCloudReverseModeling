@@ -249,7 +249,7 @@ TEST_F(FileExchange, ServiceSwitchesCloudAndCadAndPreservesStateOnFailure)
     EXPECT_FALSE(cad.canUndoCloud);
     EXPECT_FALSE(cad.lastCloudExport);
     EXPECT_EQ(reverse::toJson(cad)["model"]["method"], "imported_cad");
-    EXPECT_THROW((void)service.submitExportCloud(file(u8"无点云.pcd"), cad.revision), reverse::GeometryError);
+    EXPECT_EQ(finish(service, service.submitExportCloud(file(u8"无点云.pcd"), cad.revision)).errorCode, "no_cloud");
     ASSERT_EQ(finish(service, service.submitExport(file(u8"导出.step"), cad.revision)).state,
               reverse::TaskState::Succeeded);
     write(file(u8"损坏.cwrm"), "broken");

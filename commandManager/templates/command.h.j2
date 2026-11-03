@@ -1,0 +1,23 @@
+/* 文件描述：由 rm_define 生成的参数与描述接口；不要在此添加业务实现。 */
+#pragma once
+#include "commandManager/CommandManager.h"
+namespace rmcmd::{{ module.name }}
+{
+class {{ command.class_name }}
+{
+public:
+{% for p in command.params if p.type == 'enum' and not p.get('nullable', False) %}
+    enum class {{ p.base_type }} { {% for value in p['values'] %}Value{{ loop.index0 }}{{ ', ' if not loop.last else '' }}{% endfor %} };
+{% endfor %}
+    struct Args
+    {
+{% for p in command.params %}
+        {{ p.cpp_type }} {{ p.name }}{};
+{% endfor %}
+    };
+    static constexpr const char *name() { return {{ (module.name + '.' + command.name)|cpp }}; }
+    static rm::CommandDefinition definition();
+    static Args arguments(const rm::Arguments &values);
+    static void registerDefinition(rm::CommandManager &manager) { manager.registerDefinition(definition()); }
+};
+}

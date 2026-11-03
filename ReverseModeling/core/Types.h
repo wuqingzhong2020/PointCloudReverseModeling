@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -69,6 +70,18 @@ struct CloudSelectionRect
 };
 
 using CloudSelection = std::vector<std::size_t>;
+
+// 重放选区时从显式初始索引开始，按顺序应用各次框选；不读取当前视口或当前选区。
+struct CloudSelectionStep
+{
+    CloudSelectionRect rectangle;
+    CloudSelectionMode mode{CloudSelectionMode::Replace};
+};
+struct CloudSelectionRecipe
+{
+    std::shared_ptr<const CloudSelection> initialIndices;
+    std::vector<CloudSelectionStep> regions;
+};
 
 struct BeamFrame {
     Vec3 originMm; // 梁中心的项目坐标，单位 mm。

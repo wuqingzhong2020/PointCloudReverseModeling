@@ -1,499 +1,538 @@
-/*
- * 文件描述：
- * 串行调度耗时几何命令，通过不可变快照提交结果，处理版本冲突、失败保留和协作取消。
- */
-#include "commands/CommandService.h"
-#include <cctype>
-#include "geometry/CloudEditing.h"
-#include "geometry/Geometry.h"
-
+﻿/* 文件描述：固定工作线程和有界 FIFO；界面、原生命令和 Python 使用同一执行队列。 */
 #include <algorithm>
-#include <functional>
-#include <iomanip>
-#include <map>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <fstream>
 #include <mutex>
-#include <random>
 #include <sstream>
 #include <thread>
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+#include "CommandModules.h"
+#include "commands/CommandBindings.h"
+#include "commands/CommandFeedback.h"
+#include "commands/CommandService.h"
+#include "commands/MacroRecorder.h"
+#include "commands/ProjectOperations.h"
+#include "commands/PythonRuntime.h"
+#include "geometry/Geometry.h"
 
-namespace reverse {
-namespace {
-std::string utf8Path(const std::filesystem::path& path) {
-    const auto text = path.u8string();
-    return {reinterpret_cast<const char*>(text.data()), text.size()};
-}
-std::string sessionId() {
-    std::random_device source;
-    std::ostringstream text;
-    text << std::hex << std::setfill('0');
-    for (int i = 0; i < 4; ++i) text << std::setw(8) << source();
-    return text.str();
-}
-void checkCancelled(std::stop_token stop) {
-    if (stop.stop_requested()) throw GeometryError("cancelled", "Task cancelled before committing results.");
-}
-
-void analyzeCloud(ProjectSnapshot &snapshot, std::stop_token stop, const ProgressCallback &progress)
+namespace reverse
 {
-    if (snapshot.cloud->points.empty())
+namespace
+{
+std::filesystem::path executableDirectory()
+{
+#ifdef _WIN32
+    std::wstring buffer(32768, L'\0');
+    const auto count = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (count == 0 || count == buffer.size())
     {
-        snapshot.warnings.emplace_back("点云已清空，可撤销或重置恢复。");
-        return;
+        throw std::runtime_error("Cannot locate executable directory");
     }
-    try
+    buffer.resize(count);
+    return std::filesystem::path(buffer).parent_path();
+#else
+    return std::filesystem::read_symlink("/proc/self/exe").parent_path();
+#endif
+}
+} // namespace
+struct CommandService::Impl
+{
+    struct Job
     {
-        snapshot.estimate = estimateBeam(*snapshot.cloud, stop, [&](double p, auto m) { progress(p * 0.4, m); });
-    }
-    catch (const GeometryError &error)
+        std::string id;
+        std::optional<std::uint64_t> revision;
+        std::function<rm::CommandResult(const rm::CommandContext &, PythonRuntime &)> run;
+        std::stop_source cancellation;
+        std::optional<CommandText> uiCommand;
+    };
+    mutable std::mutex mutex;
+    std::condition_variable ready;
+    std::deque<Job> queue;
+    std::map<std::string, TaskSnapshot> tasks;
+    std::deque<std::string> taskOrder;
+    std::deque<UiCommandEvent> uiEvents;
+    std::string active;
+    std::stop_source activeCancellation;
+    bool closing{};
+    std::atomic_bool workerExited{};
+    bool committed{};
+    bool inputReady{};
+    std::optional<std::string> inputLine;
+    std::uint64_t nextId{};
+    ProjectOperations operations;
+    rm::CommandManager manager;
+    MacroRecorder recorder;
+    RecordingState recording;
+    CommandEnvironment environment;
+    std::jthread worker;
+
+    explicit Impl(CommandEnvironment env) : environment(std::move(env))
     {
-        if (error.code() == "cancelled")
+        if (environment.runtimeDirectory.empty())
         {
-            throw;
+            environment.runtimeDirectory = executableDirectory();
         }
-        snapshot.warnings.emplace_back(std::string("点云框架不可用：") + error.what());
+        rmcmd::registerAllCommandModules(manager);
+        registerApplicationCommandHandlers(manager, operations);
+        manager.registerExecutor([this](const auto &context, const auto &command, const auto &next) {
+            return execute(context, command, next);
+        });
+        manager.freeze();
+        worker = std::jthread([this] {
+            loop();
+            workerExited.store(true);
+        });
     }
-    if (snapshot.estimate)
+    ~Impl()
     {
+        requestShutdown();
+        worker.join();
+    }
+    void requestShutdown()
+    {
+        {
+            std::lock_guard lock(mutex);
+            closing = true;
+            for (auto &job : queue)
+            {
+                job.cancellation.request_stop();
+            }
+            activeCancellation.request_stop();
+        }
+        ready.notify_all();
+    }
+    void appendOutput(const std::string &id, std::string_view message)
+    {
+        std::lock_guard lock(mutex);
+        auto &output = tasks.at(id).output;
+        constexpr std::size_t limit = 1024 * 1024;
+        if (output.size() < limit)
+        {
+            output.append(message.substr(0, limit - output.size()));
+        }
+    }
+    std::optional<std::string> readInput(const std::string &id, std::stop_token stop)
+    {
+        std::unique_lock lock(mutex);
+        auto &task = tasks.at(id);
+        inputReady = false;
+        inputLine.reset();
+        task.waitingForInput = true;
+        ++task.inputRequest;
+        ready.wait(lock, [&] { return closing || stop.stop_requested() || inputReady; });
+        task.waitingForInput = false;
+        inputReady = false;
+        return std::move(inputLine);
+    }
+    void log(std::string_view text)
+    {
+        if (environment.logDirectory.empty())
+        {
+            return;
+        }
+        std::error_code error;
+        std::filesystem::create_directories(environment.logDirectory, error);
+        if (error)
+        {
+            return;
+        }
+        std::ofstream file(environment.logDirectory / "commands.log", std::ios::app | std::ios::binary);
+        file << text << '\n';
+    }
+    void record(const rm::ValidatedCommand &command)
+    {
+        auto recorded = command;
+        const auto &definition = manager.definitions().at(recorded.name);
+        for (const auto &parameter : definition.parameters)
+        {
+            if (parameter.rule.type == rm::ValueType::Path && recorded.arguments.contains(parameter.name))
+            {
+                const auto absolute =
+                    std::filesystem::absolute(commandPath(recorded.arguments.at(parameter.name).as<std::string>()))
+                        .u8string();
+                recorded.arguments[parameter.name] =
+                    std::string(reinterpret_cast<const char *>(absolute.data()), absolute.size());
+            }
+        }
+        recorder.record(definition, recorded);
+    }
+    void publishRecording()
+    {
+        std::lock_guard lock(mutex);
+        recording = recorder.state();
+    }
+    rm::CommandResult execute(const rm::CommandContext &, const rm::ValidatedCommand &command,
+                              const rm::CommandManager::Next &next)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        log("begin " + command.name);
+        rm::CommandResult result;
         try
         {
-            snapshot.recognition = recognizePlates(*snapshot.cloud, *snapshot.estimate, stop,
-                                                   [&](double p, auto m) { progress(0.4 + p * 0.6, m); });
-            snapshot.warnings.insert(snapshot.warnings.end(), snapshot.recognition->warnings.begin(),
-                                     snapshot.recognition->warnings.end());
+            result = next();
+        }
+        catch (const std::exception &error)
+        {
+            result = rm::CommandResult::error("execution_exception", error.what());
+        }
+        catch (...)
+        {
+            result = rm::CommandResult::error("execution_exception", "Unknown handler failure");
+        }
+        const double elapsed =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        const auto message =
+            command.name + " [" + (result.ok() ? "ok" : result.code) + "] " + std::to_string(elapsed) + " ms\n";
+        log(message);
+        committed = committed || result.committed;
+        if (result.kind == rm::ResultKind::Success && recorder.recording())
+        {
+            try
+            {
+                record(command);
+            }
+            catch (const std::exception &error)
+            {
+                recorder.fail(error.what());
+            }
+            publishRecording();
+            if (!recorder.state().error.empty())
+            {
+                log(recorder.state().error);
+            }
+        }
+        return result;
+    }
+    std::string submit(std::string operation, std::optional<std::uint64_t> revision, decltype(Job::run) run,
+                       std::optional<CommandText> uiCommand = {})
+    {
+        std::lock_guard lock(mutex);
+        if (closing)
+        {
+            throw GeometryError("shutting_down", "命令服务正在退出。");
+        }
+        if (queue.size() >= 64)
+        {
+            throw GeometryError("queue_full", "命令队列已满（64），请等待或取消任务。");
+        }
+        const auto id = "task-" + std::to_string(++nextId);
+        tasks.emplace(id, TaskSnapshot{id, std::move(operation)});
+        taskOrder.push_back(id);
+        while (taskOrder.size() > 256 && tasks.at(taskOrder.front()).finished())
+        {
+            tasks.erase(taskOrder.front());
+            taskOrder.pop_front();
+        }
+        queue.push_back({id, revision, std::move(run), {}, std::move(uiCommand)});
+        ready.notify_one();
+        return id;
+    }
+    void run(Job &job, PythonRuntime &python)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        committed = false;
+        rm::CommandContext context;
+        context.stop = job.cancellation.get_token();
+        context.expectedRevision = job.revision;
+        python.setInputReader([this, id = job.id, stop = context.stop] { return readInput(id, stop); });
+        struct ClearInputReader
+        {
+            PythonRuntime &python;
+            ~ClearInputReader()
+            {
+                python.setInputReader({});
+            }
+        } clearInputReader{python};
+        context.output = [this, id = job.id](std::string_view message) { appendOutput(id, message); };
+        context.diagnostic = [this](std::string_view message) { log(message); };
+        context.progress = [this, id = job.id, stop = context.stop](double progress, std::string_view message) {
+            if (stop.stop_requested())
+            {
+                throw GeometryError("cancelled", "Command cancelled");
+            }
+            std::lock_guard lock(mutex);
+            tasks.at(id).progress = std::clamp(progress, 0.0, 1.0);
+            tasks.at(id).message = message;
+        };
+        rm::CommandResult result;
+        try
+        {
+            if (context.stop.stop_requested())
+            {
+                result = rm::CommandResult::error("cancelled", "排队任务已取消");
+            }
+            else
+            {
+                result = job.run(context, python);
+            }
         }
         catch (const GeometryError &error)
         {
-            if (error.code() == "cancelled")
+            result = rm::CommandResult::error(error.code(), error.what());
+        }
+        catch (const std::exception &error)
+        {
+            result = rm::CommandResult::error("internal_error", error.what());
+        }
+        catch (...)
+        {
+            result = rm::CommandResult::error("unknown_error", "Unknown command failure");
+        }
+        result.committed = result.committed || committed;
+        if (!result.ok())
+        {
+            log(job.id + " [" + result.code + "] " + result.message + "\n" + rm::formatValue(result.value));
+        }
+        std::lock_guard lock(mutex);
+        auto &task = tasks.at(job.id);
+        task.result = std::move(result);
+        task.waitingForInput = false;
+        task.errorCode = task.result.code;
+        task.message = task.result.message;
+        task.state = task.result.ok()                ? TaskState::Succeeded
+                     : task.errorCode == "cancelled" ? TaskState::Cancelled
+                                                     : TaskState::Failed;
+        if (task.state == TaskState::Succeeded)
+        {
+            task.progress = 1;
+        }
+        task.elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        if (job.uiCommand)
+        {
+            // Only UI adapters enqueue echoes; console/Python calls already have their own transcript.
+            uiEvents.push_back({job.id, std::move(job.uiCommand->native), std::move(job.uiCommand->python),
+                                commandFeedback(task.result), task.result.ok()});
+            while (uiEvents.size() > 256)
             {
-                throw;
+                uiEvents.pop_front();
             }
-            snapshot.warnings.emplace_back(std::string("板件识别未完成：") + error.what());
         }
+        active.clear();
     }
-}
-} // namespace
-
-struct CommandService::Impl {
-    mutable std::mutex stateMutex;
-    std::mutex submitMutex;
-    ProjectSnapshot project;
-    std::shared_ptr<const Model> model;
-    struct HistoryEntry
+    void loop()
     {
-        ProjectSnapshot project;
-        std::shared_ptr<const Model> model;
-    };
-    std::vector<HistoryEntry> undoCloud;
-    std::vector<HistoryEntry> redoCloud;
-    HistoryEntry importedCloud;
-    std::map<std::string, TaskSnapshot> tasks;
-    std::string activeTask;
-    const std::string session{sessionId()};
-    std::uint64_t nextTask{};
-    bool active{};
-    std::jthread worker;
-
-    static void pushHistory(std::vector<HistoryEntry> &history, HistoryEntry entry)
-    {
-        history.push_back(std::move(entry));
-        if (history.size() > 10)
+        PythonRuntime python(manager, environment.runtimeDirectory);
+        while (true)
         {
-            history.erase(history.begin());
-        }
-    }
-
-    ~Impl() {
-        worker.request_stop();
-        if (worker.joinable()) worker.join();
-    }
-
-    using Work = std::function<void(std::stop_token, const ProgressCallback&)>;
-    std::string launch(std::string operation, std::uint64_t expectedRevision, Work work) {
-        std::lock_guard submitLock(submitMutex);
-        {
-            std::lock_guard stateLock(stateMutex);
-            if (active) throw GeometryError("busy", "Another task is running; wait or request cancellation.");
-            if (project.revision != expectedRevision)
-                throw GeometryError("stale_revision", "Project changed; refresh the project snapshot before submitting.");
-        }
-        if (worker.joinable()) worker.join();
-        std::string id;
-        {
-            std::lock_guard stateLock(stateMutex);
-            id = session + "-task-" + std::to_string(++nextTask);
-            tasks.emplace(id, TaskSnapshot{id, std::move(operation)});
-            activeTask = id;
-            active = true;
-        }
-        try {
-            worker = std::jthread([this, id, work = std::move(work)](std::stop_token stop) {
+            Job job;
+            {
+                std::unique_lock lock(mutex);
+                ready.wait(lock, [this] { return closing || !queue.empty(); });
+                if (queue.empty())
                 {
-                    std::lock_guard lock(stateMutex);
-                    tasks.at(id).state = TaskState::Running;
+                    break;
                 }
-                const ProgressCallback progress = [this, id, stop](double value, std::string_view message) {
-                    checkCancelled(stop);
-                    std::lock_guard lock(stateMutex);
-                    auto& task = tasks.at(id);
-                    task.progress = std::clamp(value, 0.0, 1.0);
-                    task.message = message;
-                };
-                try {
-                    checkCancelled(stop);
-                    work(stop, progress);
-                    // 几何服务已完成提交时，迟到的取消请求不能把成功文件伪报为取消。
-                    std::lock_guard lock(stateMutex);
-                    auto& task = tasks.at(id);
-                    task.state = TaskState::Succeeded;
-                    task.progress = 1.0;
-                    task.message = "Completed";
-                    active = false;
-                } catch (const GeometryError& error) {
-                    std::lock_guard lock(stateMutex);
-                    auto& task = tasks.at(id);
-                    task.state = error.code() == "cancelled" ? TaskState::Cancelled : TaskState::Failed;
-                    task.errorCode = error.code();
-                    task.message = error.what();
-                    active = false;
-                } catch (const std::exception& error) {
-                    std::lock_guard lock(stateMutex);
-                    auto& task = tasks.at(id);
-                    task.state = TaskState::Failed;
-                    task.errorCode = "internal_error";
-                    task.message = error.what();
-                    active = false;
-                } catch (...) {
-                    std::lock_guard lock(stateMutex);
-                    auto& task = tasks.at(id);
-                    task.state = TaskState::Failed;
-                    task.errorCode = "unknown_error";
-                    task.message = "Unrecognized backend failure";
-                    active = false;
-                }
-            });
-        } catch (...) {
-            std::lock_guard lock(stateMutex);
-            active = false;
-            tasks.erase(id);
-            throw;
+                job = std::move(queue.front());
+                queue.pop_front();
+                active = job.id;
+                activeCancellation = job.cancellation;
+                auto &task = tasks.at(job.id);
+                task.state = TaskState::Running;
+                std::ostringstream thread;
+                thread << std::this_thread::get_id();
+                task.workerThread = thread.str();
+            }
+            run(job, python);
         }
-        return id;
+        if (recorder.state().active)
+        {
+            const auto result = recorder.stop();
+            if (!result.ok())
+            {
+                log(result.message);
+            }
+            publishRecording();
+        }
     }
 };
-
-CommandService::CommandService() : impl_(std::make_unique<Impl>()) {}
+CommandService::CommandService(CommandEnvironment environment) : impl_(std::make_unique<Impl>(std::move(environment)))
+{
+}
 CommandService::~CommandService() = default;
-
-std::string CommandService::submitImport(const std::filesystem::path& path, LengthUnit unit) {
-    const auto version = project().revision;
-    const auto absolutePath = std::filesystem::absolute(path);
-    auto* state = impl_.get();
-    auto extension = absolutePath.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (extension != ".pcd" && extension != ".step" && extension != ".stp" && extension != ".cwrm")
-        throw GeometryError("unsupported_format", "支持导入 PCD、STEP/STP 和 CWRM 文件");
-    if (extension != ".pcd")
-    {
-        return state->launch("ImportModel", version, [state, absolutePath](auto stop, const auto& progress) {
-            auto model = loadCadModel(absolutePath, stop, progress);
-            ProjectSnapshot next;
-            next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-            next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-            next.sourcePathUtf8 = utf8Path(absolutePath);
-            next.warnings = model->summary().warnings;
-            checkCancelled(stop);
-            std::lock_guard lock(state->stateMutex);
-            next.revision = state->project.revision + 1;
-            next.modelId = state->session + "-model-" + std::to_string(next.revision);
-            state->project = std::move(next);
-            state->model = std::move(model);
-            state->undoCloud.clear();
-            state->redoCloud.clear();
-            state->importedCloud = {};
-        });
-    }
-    return state->launch("ImportPointCloud", version, [state, absolutePath, unit](auto stop, const auto& progress) {
-        auto cloud = loadPointCloud(absolutePath, unit, stop, [&](double p, auto m) { progress(p * 0.65, m); });
-        ProjectSnapshot next;
-        next.cloud = std::move(cloud);
-        analyzeCloud(next, stop, [&](double p, auto m) { progress(0.65 + p * 0.35, m); });
-        checkCancelled(stop);
-        next.sourcePathUtf8 = utf8Path(absolutePath);
-        std::lock_guard lock(state->stateMutex);
-        next.revision = state->project.revision + 1;
-        next.cloudId = state->session + "-cloud-" + std::to_string(next.revision);
-        state->project = std::move(next);
-        state->model.reset();
-        state->undoCloud.clear();
-        state->redoCloud.clear();
-        state->importedCloud = {state->project, {}};
-    });
-}
-
-std::string CommandService::submitCloudSelection(const CloudSelectionRect &rectangle, CloudSelectionMode mode,
-                                                 std::uint64_t expectedRevision)
+void CommandService::requestShutdown()
 {
-    const auto snapshot = project();
-    if (snapshot.revision != expectedRevision)
-    {
-        throw GeometryError("stale_revision", "工程已变化，请重新框选。");
-    }
-    if (!snapshot.cloud)
-    {
-        throw GeometryError("no_cloud", "请先导入点云。");
-    }
+    impl_->requestShutdown();
+}
+bool CommandService::shutdownComplete() const
+{
+    return impl_->workerExited.load();
+}
+std::string CommandService::submitCommand(std::string name, rm::Array positional, rm::Arguments options,
+                                          std::optional<std::uint64_t> revision)
+{
     auto *state = impl_.get();
-    return state->launch(
-        "SelectCloud", expectedRevision,
-        [state, snapshot, rectangle, mode](auto stop, const auto &progress)
-        {
-            auto selected = std::make_shared<const CloudSelection>(selectCloudPoints(
-                *snapshot.cloud, rectangle, mode,
-                snapshot.selection ? std::span<const std::size_t>(*snapshot.selection) : std::span<const std::size_t>{},
-                stop, progress));
-            checkCancelled(stop);
-            std::lock_guard lock(state->stateMutex);
-            state->project.selection = std::move(selected);
-            ++state->project.revision;
+    return state->submit(
+        name, revision,
+        [state, name, positional = std::move(positional), options = std::move(options)](const auto &context, auto &) {
+            return state->manager.execute(name, positional, options, context);
         });
 }
-
-std::string CommandService::submitCloudEdit(CloudEditMode mode, std::uint64_t expectedRevision)
-{
-    const auto snapshot = project();
-    if (snapshot.revision != expectedRevision)
-    {
-        throw GeometryError("stale_revision", "工程已变化，请重新框选。");
-    }
-    if (!snapshot.cloud)
-    {
-        throw GeometryError("no_cloud", "请先导入点云。");
-    }
-    if (!snapshot.selection || snapshot.selection->empty())
-    {
-        throw GeometryError("empty_selection", "请先框选需要处理的点云。");
-    }
-    auto *state = impl_.get();
-    return state->launch(mode == CloudEditMode::KeepSelection ? "CropCloud" : "DeleteCloud", expectedRevision,
-                         [state, snapshot, mode](auto stop, const auto &progress)
-                         {
-                             // 全选后截取不改变数据，也不丢弃已生成模型和重做记录。
-                             if (mode == CloudEditMode::KeepSelection &&
-                                 snapshot.selection->size() == snapshot.cloud->points.size())
-                             {
-                                 return;
-                             }
-                             ProjectSnapshot next;
-                             next.cloud = editCloudPoints(*snapshot.cloud, *snapshot.selection, mode, stop,
-                                                          [&](double p, auto m) { progress(p * 0.25, m); });
-                             next.sourcePathUtf8 = snapshot.sourcePathUtf8;
-                             analyzeCloud(next, stop, [&](double p, auto m) { progress(0.25 + p * 0.75, m); });
-                             checkCancelled(stop);
-                             std::lock_guard lock(state->stateMutex);
-                             next.revision = state->project.revision + 1;
-                             next.cloudId = state->session + "-cloud-" + std::to_string(next.revision);
-                             Impl::pushHistory(state->undoCloud, {state->project, state->model});
-                             state->redoCloud.clear();
-                             state->project = std::move(next);
-                             state->model.reset();
-                         });
-}
-
-std::string CommandService::submitCloudHistory(CloudHistoryAction action, std::uint64_t expectedRevision)
+std::string CommandService::submitLine(std::string line)
 {
     auto *state = impl_.get();
-    return state->launch("CloudHistory", expectedRevision,
-                         [state, action](auto stop, const auto &)
-                         {
-                             std::lock_guard lock(state->stateMutex);
-                             checkCancelled(stop);
-                             const auto revision = state->project.revision + 1;
-                             Impl::HistoryEntry restored;
-                             if (action == CloudHistoryAction::Undo)
-                             {
-                                 if (state->undoCloud.empty())
-                                 {
-                                     throw GeometryError("no_history", "没有可撤销的点云编辑。");
-                                 }
-                                 restored = state->undoCloud.back();
-                                 Impl::pushHistory(state->redoCloud, {state->project, state->model});
-                                 state->undoCloud.pop_back();
-                             }
-                             else if (action == CloudHistoryAction::Redo)
-                             {
-                                 if (state->redoCloud.empty())
-                                 {
-                                     throw GeometryError("no_history", "没有可重做的点云编辑。");
-                                 }
-                                 restored = state->redoCloud.back();
-                                 Impl::pushHistory(state->undoCloud, {state->project, state->model});
-                                 state->redoCloud.pop_back();
-                             }
-                             else if (action == CloudHistoryAction::Reset)
-                             {
-                                 if (!state->importedCloud.project.cloud)
-                                 {
-                                     throw GeometryError("no_cloud", "请先导入点云。");
-                                 }
-                                 if (state->project.cloud == state->importedCloud.project.cloud)
-                                 {
-                                     return;
-                                 }
-                                 restored = state->importedCloud;
-                                 Impl::pushHistory(state->undoCloud, {state->project, state->model});
-                                 state->redoCloud.clear();
-                             }
-                             else
-                             {
-                                 throw GeometryError("invalid_edit", "未知点云历史操作。");
-                             }
-                             restored.project.revision = revision;
-                             state->project = std::move(restored.project);
-                             state->model = std::move(restored.model);
-                         });
-}
-
-std::string CommandService::submitReconstruct(const BeamParameters& parameters,
-        std::uint64_t expectedRevision, std::optional<BeamFrame> frameOverride) {
-    const auto snapshot = project();
-    if (snapshot.revision != expectedRevision)
-        throw GeometryError("stale_revision", "Refresh the project snapshot before submitting.");
-    if (!snapshot.cloud || snapshot.cloud->points.empty())
-    {
-        throw GeometryError("no_cloud", "Import a nonempty point cloud before reconstruction.");
-    }
-    if (!snapshot.estimate && !frameOverride)
-        throw GeometryError("no_frame", "Provide an explicit frame; this cloud has no usable PCA initial frame.");
-    const auto frame = frameOverride ? *frameOverride : snapshot.estimate->frame;
-    auto* state = impl_.get();
-    return state->launch("Reconstruct", expectedRevision, [state, parameters, frame](auto stop, const auto& progress) {
-        auto model = buildBeam(frame, parameters, stop, progress);
-        checkCancelled(stop);
-        std::lock_guard lock(state->stateMutex);
-        auto next = state->project;
-        ++next.revision;
-        next.modelId = state->session + "-model-" + std::to_string(next.revision);
-        next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-        next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-        next.deviation.reset();
-        next.lastExport.reset();
-        next.exportedPathUtf8.clear();
-        state->project = std::move(next);
-        state->model = std::move(model);
+    return state->submit("Command", {}, [line = std::move(line)](const auto &context, PythonRuntime &python) {
+        return python.executeConsole(line, context);
     });
 }
-
-std::string CommandService::submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
-                                                       double endOverhangToleranceMm)
+std::string CommandService::submitUiCommand(std::string name, rm::Array positional, rm::Arguments options,
+                                            std::optional<std::uint64_t> revision)
 {
-    const auto snapshot = project();
-    if (snapshot.revision != expectedRevision)
-    {
-        throw GeometryError("stale_revision", "工程已变化，请刷新后重建。");
-    }
-    if (!snapshot.recognition)
-    {
-        throw GeometryError("no_recognition", "点云没有可用的板件识别结果，不使用默认板厚补建。");
-    }
     auto *state = impl_.get();
-    return state->launch("ReconstructRecognized", expectedRevision,
-        [state, recognition = *snapshot.recognition,
-         options = PlateBuildOptions{mirrorSymmetry, endOverhangToleranceMm}](auto stop, const auto &progress)
-        {
-            auto model = buildRecognizedPlates(recognition, options, stop, progress);
-            checkCancelled(stop);
-            std::lock_guard lock(state->stateMutex);
-            auto next = state->project;
-            ++next.revision;
-            next.modelId = state->session + "-model-" + std::to_string(next.revision);
-            next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-            next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-            next.deviation.reset();
-            next.lastExport.reset();
-            next.exportedPathUtf8.clear();
-            state->project = std::move(next);
-            state->model = std::move(model);
-        });
+    auto echo = commandText(state->manager.definitions().at(name), positional, options);
+    return state->submit(
+        name, revision,
+        [state, name, positional = std::move(positional), options = std::move(options)](const auto &context, auto &) {
+            return state->manager.execute(name, positional, options, context);
+        },
+        std::move(echo));
 }
-
-std::string CommandService::submitExport(const std::filesystem::path& path, std::uint64_t expectedRevision) {
-    std::shared_ptr<const Model> model;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != expectedRevision)
-            throw GeometryError("stale_revision", "Refresh the project snapshot before submitting.");
-        model = impl_->model;
-    }
-    if (!model) throw GeometryError("no_model", "Reconstruct a model before exporting STEP.");
-    const auto absolutePath = std::filesystem::absolute(path);
-    auto* state = impl_.get();
-    return state->launch("ExportStep", expectedRevision, [state, model, absolutePath](auto stop, const auto& progress) {
-        const auto result = exportStep(*model, absolutePath, stop, progress);
-        std::lock_guard lock(state->stateMutex);
-        state->project.lastExport = result;
-        state->project.exportedPathUtf8 = utf8Path(absolutePath);
-    });
-}
-
-std::string CommandService::submitExportCloud(const std::filesystem::path& path, std::uint64_t expectedRevision)
+std::vector<UiCommandEvent> CommandService::takeUiCommandEvents()
 {
-    const auto snapshot = project();
-    if (snapshot.revision != expectedRevision)
-        throw GeometryError("stale_revision", "工程已变化，请刷新后重试");
-    if (!snapshot.cloud) throw GeometryError("no_cloud", "当前没有可导出的点云");
-    const auto absolutePath = std::filesystem::absolute(path);
-    auto* state = impl_.get();
-    return state->launch("ExportPointCloud", expectedRevision, [state, snapshot, absolutePath](auto stop, const auto& progress) {
-        const auto result = exportPointCloud(*snapshot.cloud, absolutePath, stop, progress);
-        std::lock_guard lock(state->stateMutex);
-        state->project.lastCloudExport = result;
-        state->project.exportedCloudPathUtf8 = utf8Path(absolutePath);
-    });
-}
-
-std::string CommandService::submitDeviation(std::uint64_t expectedRevision) {
-    std::shared_ptr<const Model> model;
-    std::shared_ptr<const CloudData> cloud;
+    std::lock_guard lock(impl_->mutex);
+    std::vector<UiCommandEvent> events;
+    events.reserve(impl_->uiEvents.size());
+    while (!impl_->uiEvents.empty())
     {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != expectedRevision)
-            throw GeometryError("stale_revision", "Refresh the project snapshot before submitting.");
-        model = impl_->model;
-        cloud = impl_->project.cloud;
+        events.push_back(std::move(impl_->uiEvents.front()));
+        impl_->uiEvents.pop_front();
     }
-    if (!model || !cloud) throw GeometryError("no_model", "A cloud and reconstructed model are required.");
-    auto* state = impl_.get();
-    return state->launch("EvaluateDeviation", expectedRevision, [state, model, cloud](auto stop, const auto& progress) {
-        auto result = std::make_shared<const DeviationResult>(evaluateDeviation(*cloud, *model, stop, progress));
-        checkCancelled(stop);
-        std::lock_guard lock(state->stateMutex);
-        state->project.deviation = std::move(result);
+    return events;
+}
+std::string CommandService::submitPython(std::string code)
+{
+    return impl_->submit("Python", {}, [code = std::move(code)](const auto &context, PythonRuntime &python) {
+        return python.execute(code, context);
     });
 }
-
-bool CommandService::cancel(const std::string& taskId) {
-    std::lock_guard submitLock(impl_->submitMutex);
-    std::lock_guard stateLock(impl_->stateMutex);
-    if (!impl_->active || impl_->activeTask != taskId || impl_->tasks.at(taskId).finished()) return false;
-    impl_->tasks.at(taskId).cancellationRequested = true;
-    impl_->worker.request_stop();
+std::string CommandService::submitPythonLine(std::string line)
+{
+    return impl_->submit("PythonConsole", {}, [line = std::move(line)](const auto &context, PythonRuntime &python) {
+        return python.execute(line, context, true);
+    });
+}
+std::string CommandService::resetPythonConsole()
+{
+    return impl_->submit("PythonConsoleReset", {}, [](const auto &, PythonRuntime &python) {
+        python.resetConsole();
+        return rm::CommandResult{rm::ResultKind::Success, {}, {}, {}, false};
+    });
+}
+bool CommandService::provideInput(const std::string &id, std::uint64_t request, std::optional<std::string> line)
+{
+    std::lock_guard lock(impl_->mutex);
+    const auto found = impl_->tasks.find(id);
+    if (impl_->active != id || found == impl_->tasks.end() || !found->second.waitingForInput ||
+        found->second.inputRequest != request || found->second.cancellationRequested || impl_->inputReady ||
+        (line && line->size() > 1024 * 1024))
+    {
+        return false;
+    }
+    impl_->inputLine = std::move(line);
+    impl_->inputReady = true;
+    found->second.waitingForInput = false;
+    impl_->ready.notify_all();
     return true;
 }
-
-TaskSnapshot CommandService::task(const std::string& taskId) const {
-    std::lock_guard lock(impl_->stateMutex);
-    const auto found = impl_->tasks.find(taskId);
-    if (found == impl_->tasks.end()) throw GeometryError("unknown_task", "Task ID was not found.");
+std::string CommandService::submitStartRecording(const std::filesystem::path &path, bool overwrite)
+{
+    auto *state = impl_.get();
+    return state->submit("StartRecording", {}, [state, path, overwrite](const auto &, auto &) {
+        auto result = state->recorder.start(path, overwrite);
+        state->publishRecording();
+        return result;
+    });
+}
+std::string CommandService::submitStopRecording()
+{
+    auto *state = impl_.get();
+    return state->submit("StopRecording", {}, [state](const auto &, auto &) {
+        auto result = state->recorder.stop();
+        state->publishRecording();
+        return result;
+    });
+}
+RecordingState CommandService::recordingState() const
+{
+    std::lock_guard lock(impl_->mutex);
+    return impl_->recording;
+}
+std::string CommandService::submitScriptFile(const std::filesystem::path &path)
+{
+    auto *state = impl_.get();
+    return state->submit("ExecuteScript", {}, [path](const auto &context, PythonRuntime &python) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file)
+        {
+            return rm::CommandResult::error("script_open_failed", "无法读取脚本文件。");
+        }
+        const auto length = file.tellg();
+        constexpr std::streamoff limit = 64 * 1024 * 1024;
+        if (length < 0 || length > limit)
+        {
+            return rm::CommandResult::error("script_size_limit", "脚本读取失败或超过 64 MiB。");
+        }
+        std::string code(static_cast<std::size_t>(length), '\0');
+        file.seekg(0);
+        if (!file.read(code.data(), static_cast<std::streamsize>(code.size())))
+        {
+            return rm::CommandResult::error("script_read_failed", "脚本未能完整读取。");
+        }
+        // Execute a fixed snapshot, even if this is the current recording file.
+        // Commands appended during execution must not extend this run's input.
+        file.close();
+        if (context.stop.stop_requested())
+        {
+            return rm::CommandResult::error("cancelled", "脚本任务已取消。");
+        }
+        return python.executeScript(code, context);
+    });
+}
+bool CommandService::cancel(const std::string &id)
+{
+    std::lock_guard lock(impl_->mutex);
+    const auto found = impl_->tasks.find(id);
+    if (found == impl_->tasks.end() || found->second.finished())
+    {
+        return false;
+    }
+    found->second.cancellationRequested = true;
+    if (impl_->active == id)
+    {
+        impl_->activeCancellation.request_stop();
+        impl_->ready.notify_all();
+        return true;
+    }
+    for (auto &job : impl_->queue)
+    {
+        if (job.id == id)
+        {
+            job.cancellation.request_stop();
+            return true;
+        }
+    }
+    return false;
+}
+TaskSnapshot CommandService::task(const std::string &id) const
+{
+    std::lock_guard lock(impl_->mutex);
+    const auto found = impl_->tasks.find(id);
+    if (found == impl_->tasks.end())
+    {
+        throw GeometryError("unknown_task", "Task ID was not found.");
+    }
     return found->second;
 }
-
-ProjectSnapshot CommandService::project() const {
-    std::lock_guard lock(impl_->stateMutex);
-    auto snapshot = impl_->project;
-    snapshot.canUndoCloud = !impl_->undoCloud.empty();
-    snapshot.canRedoCloud = !impl_->redoCloud.empty();
-    snapshot.canResetCloud = snapshot.cloud && snapshot.cloud != impl_->importedCloud.project.cloud;
-    return snapshot;
+ProjectSnapshot CommandService::project() const
+{
+    return impl_->operations.project();
+}
+std::vector<std::string> CommandService::completions() const
+{
+    return impl_->manager.completions();
 }
 } // namespace reverse

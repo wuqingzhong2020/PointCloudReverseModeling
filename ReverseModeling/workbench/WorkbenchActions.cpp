@@ -95,7 +95,10 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {Section, "section", "剖视", "plane", Preview},
                                 {FitAll, "fitAll", "适合视图", "fit", Available},
                                 {BottomView, "bottomView", "底板面", "home", Available},
-                                {CancelTask, "cancelTask", "取消任务", "stop", Available}};
+                                {CancelTask, "cancelTask", "取消任务", "stop", Available},
+                                {StartRecording, "startRecording", "开始录制", "record", Available},
+                                {StopRecording, "stopRecording", "停止录制", "stop", Available},
+                                {ExecuteScript, "executeScript", "执行脚本", "script", Available}};
     for (const auto &spec : specs)
     {
         auto *action =
@@ -113,6 +116,9 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
         }
         m_actions[static_cast<std::size_t>(spec.id)] = action;
     }
+    get(StartRecording)->setToolTip(QStringLiteral("选择脚本文件，每条成功执行的命令立即写入"));
+    get(StopRecording)->setToolTip(QStringLiteral("停止录制并关闭脚本文件，无需另行保存"));
+    get(ExecuteScript)->setToolTip(QStringLiteral("选择脚本，在命令工作线程按顺序执行"));
     const auto exclusive = [this](std::initializer_list<ActionId> ids, ActionId selected)
     {
         auto *group = new QActionGroup(this);

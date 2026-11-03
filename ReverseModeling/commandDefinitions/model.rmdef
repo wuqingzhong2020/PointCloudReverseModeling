@@ -1,0 +1,80 @@
+# UTF-8 声明文件；仅允许字面量 rm_module/rm_define 调用。
+rm_module(name='model', summary='模型重建和导出')
+
+rm_define(
+    name='reconstruct',
+    summary='按点云识别板厚重建',
+    usage='model.reconstruct [--mirror false] [--end-tolerance 30]',
+    params=[{'name': 'mirror',
+      'binding': 'option',
+      'option': '--mirror',
+      'type': 'bool',
+      'default': False,
+      'description': '是否补建镜像侧'},
+     {'name': 'end_tolerance',
+      'binding': 'option',
+      'option': '--end-tolerance',
+      'type': 'float',
+      'ranges': [[0, 100000]],
+      'default': 30.0,
+      'unit': 'mm',
+      'description': '端部突出容差'}],
+    returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
+    examples=['model.reconstruct --mirror false --end-tolerance 30', 'rm.execute("model.reconstruct", mirror=False)'],
+)
+
+rm_define(
+    name='parametric',
+    summary='按显式参数构建梁体',
+    usage='model.parametric --parameters <object> [--frame <object>]',
+    params=[{'name': 'parameters',
+      'binding': 'option',
+      'option': '--parameters',
+      'type': 'object',
+      'properties': {'length': {'type': 'float'},
+                     'width': {'type': 'float'},
+                     'height': {'type': 'float'},
+                     'webThickness': {'type': 'float'},
+                     'flangeThickness': {'type': 'float'},
+                     'ribThickness': {'type': 'float'},
+                     'ribStations': {'type': 'array', 'items': {'type': 'float'}},
+                     'swapCrossSection': {'type': 'bool'},
+                     'mirrorSymmetry': {'type': 'bool'}},
+      'required': True,
+      'description': '梁尺寸及板厚，单位 mm'},
+     {'name': 'frame',
+      'binding': 'option',
+      'option': '--frame',
+      'type': 'object',
+      'properties': {'originMm': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3},
+                     'xAxis': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3},
+                     'yAxis': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3},
+                     'zAxis': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}},
+      'description': '未传入时采用点云识别框架'}],
+    returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
+    examples=[],
+)
+
+rm_define(
+    name='export_step',
+    summary='导出模型为 STEP',
+    usage='model.export_step <path>',
+    params=[{'name': 'path',
+      'binding': 'positional',
+      'position': 1,
+      'type': 'path',
+      'required': True,
+      'min_size': 1}],
+    returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
+    examples=['model.export_step "D:/data/result.step"', 'rm.execute("model.export_step", "D:/data/result.step")'],
+)
+
+rm_define(
+    name='deviation',
+    summary='计算点云与当前模型的偏差',
+    usage='model.deviation',
+    params=[],
+    returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
+    examples=['model.deviation', 'rm.execute("model.deviation")'],
+)
+

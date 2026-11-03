@@ -114,6 +114,11 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     }
     auto *windowPanel = category->addPanel(QStringLiteral("工作区"));
     windowPanel->addLargeMenu(windows);
+    auto *script = category->addPanel(QStringLiteral("脚本"));
+    for (const auto id : {StartRecording, StopRecording, ExecuteScript})
+    {
+        script->addLargeAction(actions.get(id));
+    }
 }
 
 QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)

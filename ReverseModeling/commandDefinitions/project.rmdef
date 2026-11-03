@@ -1,0 +1,12 @@
+# UTF-8 声明文件；仅允许字面量 rm_module/rm_define 调用。
+rm_module(name='project', summary='工程查询')
+
+rm_define(
+    name='snapshot',
+    summary='查询当前工程摘要',
+    usage='project.snapshot',
+    params=[],
+    returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
+    examples=['project.snapshot', 'snapshot = rm.execute("project.snapshot")'],
+)
+

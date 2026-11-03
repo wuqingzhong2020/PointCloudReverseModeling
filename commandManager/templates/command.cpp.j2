@@ -1,0 +1,58 @@
+/* 文件描述：由 rm_define 生成的声明元数据和类型转换；无产品依赖。 */
+#include "{{ module.name }}/{{ command.class_name }}.h"
+namespace rmcmd::{{ module.name }}
+{
+rm::CommandDefinition {{ command.class_name }}::definition()
+{
+    rm::CommandDefinition d;
+    d.name = name();
+    d.module = {{ module.name|cpp }};
+    d.summary = {{ command.summary|cpp }};
+    d.usage = {{ command.usage|cpp }};
+    d.description = {{ command.description|cpp }};
+    d.returns = {{ (command.returns.type + ': ' + command.returns.get('description', ''))|cpp }};
+{% for p in command.params %}
+    {
+        rm::Parameter p;
+        p.name = {{ p.name|cpp }};
+        p.binding = rm::Binding::{{ 'Option' if p.binding == 'option' else 'Positional' }};
+        p.option = {{ p.get('option', '')|cpp }};
+        p.position = {{ p.get('position', 0) }};
+        p.rule = {{ p|rule }};
+        p.required = {{ 'true' if p.get('required', False) else 'false' }};
+{% if 'default' in p %}
+        p.defaultValue = {{ p.default|value }};
+{% endif %}
+        p.description = {{ p.get('description', '')|cpp }};
+        p.unit = {{ p.get('unit', '')|cpp }};
+        d.parameters.push_back(std::move(p));
+    }
+{% endfor %}
+    d.examples = { {% for example in command.examples %}{{ example|cpp }}{{ ', ' if not loop.last else '' }}{% endfor %} };
+    return d;
+}
+{{ command.class_name }}::Args {{ command.class_name }}::arguments(const rm::Arguments &values)
+{
+    (void)values;
+    Args args;
+{% for p in command.params %}
+    if (const auto it = values.find({{ p.name|cpp }}); it != values.end())
+    {
+{% if p.type == 'enum' and not p.get('nullable', False) %}
+{% for value in p['values'] %}
+        {{ 'if' if loop.first else 'else if' }} (it->second.as<std::string>() == {{ value|cpp }}) { args.{{ p.name }} = {{ p.base_type }}::Value{{ loop.index0 }}; }
+{% endfor %}
+        else { throw std::invalid_argument("Unvalidated enum value"); }
+{% elif p.base_type == 'rm::Value' %}
+        args.{{ p.name }} = it->second;
+{% else %}
+        args.{{ p.name }} = it->second.as<{{ p.base_type }}>();
+{% endif %}
+    }
+{% if not p.optional %}
+    else { throw std::invalid_argument("Missing normalized argument: {{ p.name }}"); }
+{% endif %}
+{% endfor %}
+    return args;
+}
+}

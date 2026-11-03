@@ -1,0 +1,20 @@
+# 文件描述：独立 C++20 命令输入与帮助库；沿用父工程输出目录。
+cmake_minimum_required(VERSION 3.25)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(RmCommandManager VERSION 1.0 LANGUAGES CXX)
+    include("${CMAKE_CURRENT_LIST_DIR}/../cmake/common.cmake")
+endif()
+include(commandManager.cmake)
+add_library(RmCommandManager STATIC ${RM_COMMAND_SOURCES} ${RM_COMMAND_HEADERS})
+add_library(RmCommandManager::RmCommandManager ALIAS RmCommandManager)
+target_compile_features(RmCommandManager PUBLIC cxx_std_20)
+target_include_directories(RmCommandManager PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+if(MSVC)
+    target_compile_options(RmCommandManager PRIVATE /utf-8 /W4)
+endif()
+install(TARGETS RmCommandManager EXPORT RmCommandManagerTargets ARCHIVE DESTINATION lib COMPONENT development)
+install(DIRECTORY include/ DESTINATION include COMPONENT development)
+install(EXPORT RmCommandManagerTargets NAMESPACE RmCommandManager::
+    DESTINATION lib/cmake/RmCommandManager COMPONENT development)
+install(FILES RmCommandManagerConfig.cmake DESTINATION lib/cmake/RmCommandManager COMPONENT development)

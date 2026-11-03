@@ -1,0 +1,14 @@
+/* 文件描述：模块只聚合命令定义，业务回调由使用方绑定。 */
+#include "{{ module.name }}/{{ module.class_name }}.h"
+{% for command in module.commands %}
+#include "{{ module.name }}/{{ command.class_name }}.h"
+{% endfor %}
+namespace rmcmd::{{ module.name }}
+{
+void register{{ module.class_name }}(rm::CommandManager &manager)
+{
+{% for command in module.commands %}
+    {{ command.class_name }}::registerDefinition(manager);
+{% endfor %}
+}
+}

@@ -1,0 +1,609 @@
+{
+  "schema": 1,
+  "modules": [
+    {
+      "name": "cloud",
+      "summary": "点云与文件操作",
+      "commands": [
+        {
+          "name": "import",
+          "summary": "导入 PCD 点云或 STEP/STP/CWRM 模型",
+          "usage": "cloud.import <path> [--unit mm|cm|m]",
+          "params": [
+            {
+              "name": "path",
+              "binding": "positional",
+              "position": 1,
+              "type": "path",
+              "required": true,
+              "min_size": 1,
+              "description": "输入文件路径（支持中文）"
+            },
+            {
+              "name": "unit",
+              "binding": "option",
+              "option": "--unit",
+              "type": "enum",
+              "values": [
+                "mm",
+                "cm",
+                "m"
+              ],
+              "default": "mm",
+              "description": "仅点云使用，默认毫米"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "cloud.import \"D:/data/中文点云.pcd\"",
+            "rm.execute(\"cloud.import\", \"D:/data/cloud.pcd\", unit=\"mm\")"
+          ],
+          "description": ""
+        },
+        {
+          "name": "select",
+          "summary": "按视图矩形贯穿深度选择点云",
+          "usage": "cloud.select --rectangle <object> [--mode replace|add|subtract|clear]",
+          "params": [
+            {
+              "name": "rectangle",
+              "binding": "option",
+              "option": "--rectangle",
+              "type": "object",
+              "properties": {
+                "viewProjection": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 16,
+                  "max_size": 16
+                },
+                "minX": {
+                  "type": "float"
+                },
+                "minY": {
+                  "type": "float"
+                },
+                "maxX": {
+                  "type": "float"
+                },
+                "maxY": {
+                  "type": "float"
+                },
+                "zeroToOneDepth": {
+                  "type": "bool"
+                }
+              },
+              "required": true,
+              "description": "视图投影矩阵和 NDC 矩形，供视图适配器使用"
+            },
+            {
+              "name": "mode",
+              "binding": "option",
+              "option": "--mode",
+              "type": "enum",
+              "values": [
+                "replace",
+                "add",
+                "subtract",
+                "clear"
+              ],
+              "default": "replace"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [],
+          "description": ""
+        },
+        {
+          "name": "select_indices",
+          "summary": "按原始点索引选择点云",
+          "usage": "cloud.select_indices --indices <array> [--mode replace|add|subtract|clear]",
+          "params": [
+            {
+              "name": "indices",
+              "binding": "option",
+              "option": "--indices",
+              "type": "array",
+              "items": {
+                "type": "uint"
+              },
+              "max_size": 10000000,
+              "required": true,
+              "description": "当前点云中的零起始索引"
+            },
+            {
+              "name": "mode",
+              "binding": "option",
+              "option": "--mode",
+              "type": "enum",
+              "values": [
+                "replace",
+                "add",
+                "subtract",
+                "clear"
+              ],
+              "default": "replace"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "rm.execute(\"cloud.select_indices\", indices=[0, 1, 2])"
+          ],
+          "description": ""
+        },
+        {
+          "name": "crop",
+          "summary": "保留选中点云",
+          "usage": "cloud.crop [--regions <array>] [--indices <array>]",
+          "description": "传入regions或indices即可独立重放选区并编辑，失败不改变当前选区或点云；均省略时兼容旧命令，使用当前选区。需使用相同输入点云和前序编辑结果。",
+          "params": [
+            {
+              "name": "regions",
+              "binding": "option",
+              "option": "--regions",
+              "type": "array",
+              "min_size": 1,
+              "max_size": 1000,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "rectangle": {
+                    "type": "object",
+                    "properties": {
+                      "viewProjection": {
+                        "type": "array",
+                        "items": {
+                          "type": "float"
+                        },
+                        "min_size": 16,
+                        "max_size": 16
+                      },
+                      "minX": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "minY": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "maxX": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "maxY": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "zeroToOneDepth": {
+                        "type": "bool"
+                      }
+                    }
+                  },
+                  "mode": {
+                    "type": "enum",
+                    "values": [
+                      "replace",
+                      "add",
+                      "subtract"
+                    ]
+                  }
+                }
+              },
+              "description": "完整框选序列。矩形位置为(minX,minY)，宽高为(maxX-minX,maxY-minY)，坐标为NDC；viewProjection保存当时投影。按顺序替换/增选/减选，不读取当前视口。"
+            },
+            {
+              "name": "indices",
+              "binding": "option",
+              "option": "--indices",
+              "type": "array",
+              "items": {
+                "type": "uint"
+              },
+              "max_size": 10000000,
+              "description": "框选序列之前的初始选区，零起始点索引；未传时从空选区开始。"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "cloud.crop --indices \"[0,1,2]\"",
+            "rm.execute(\"cloud.crop\", regions=[{'rectangle': {'viewProjection': [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], 'minX': -0.5, 'minY': -0.5, 'maxX': 0.5, 'maxY': 0.5, 'zeroToOneDepth': False}, 'mode': 'replace'}])"
+          ]
+        },
+        {
+          "name": "delete",
+          "summary": "删除选中点云",
+          "usage": "cloud.delete [--regions <array>] [--indices <array>]",
+          "description": "传入regions或indices即可独立重放选区并编辑，失败不改变当前选区或点云；均省略时兼容旧命令，使用当前选区。需使用相同输入点云和前序编辑结果。",
+          "params": [
+            {
+              "name": "regions",
+              "binding": "option",
+              "option": "--regions",
+              "type": "array",
+              "min_size": 1,
+              "max_size": 1000,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "rectangle": {
+                    "type": "object",
+                    "properties": {
+                      "viewProjection": {
+                        "type": "array",
+                        "items": {
+                          "type": "float"
+                        },
+                        "min_size": 16,
+                        "max_size": 16
+                      },
+                      "minX": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "minY": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "maxX": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "maxY": {
+                        "type": "float",
+                        "ranges": [
+                          [
+                            -1,
+                            1
+                          ]
+                        ]
+                      },
+                      "zeroToOneDepth": {
+                        "type": "bool"
+                      }
+                    }
+                  },
+                  "mode": {
+                    "type": "enum",
+                    "values": [
+                      "replace",
+                      "add",
+                      "subtract"
+                    ]
+                  }
+                }
+              },
+              "description": "完整框选序列。矩形位置为(minX,minY)，宽高为(maxX-minX,maxY-minY)，坐标为NDC；viewProjection保存当时投影。按顺序替换/增选/减选，不读取当前视口。"
+            },
+            {
+              "name": "indices",
+              "binding": "option",
+              "option": "--indices",
+              "type": "array",
+              "items": {
+                "type": "uint"
+              },
+              "max_size": 10000000,
+              "description": "框选序列之前的初始选区，零起始点索引；未传时从空选区开始。"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "cloud.delete --indices \"[0,1,2]\"",
+            "rm.execute(\"cloud.delete\", regions=[{'rectangle': {'viewProjection': [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], 'minX': -0.5, 'minY': -0.5, 'maxX': 0.5, 'maxY': 0.5, 'zeroToOneDepth': False}, 'mode': 'replace'}])"
+          ]
+        },
+        {
+          "name": "undo",
+          "summary": "撤销点云编辑",
+          "usage": "cloud.undo",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [],
+          "description": ""
+        },
+        {
+          "name": "redo",
+          "summary": "重做点云编辑",
+          "usage": "cloud.redo",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [],
+          "description": ""
+        },
+        {
+          "name": "reset",
+          "summary": "恢复导入时的点云",
+          "usage": "cloud.reset",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [],
+          "description": ""
+        },
+        {
+          "name": "export",
+          "summary": "导出当前点云为 PCD",
+          "usage": "cloud.export <path>",
+          "params": [
+            {
+              "name": "path",
+              "binding": "positional",
+              "position": 1,
+              "type": "path",
+              "required": true,
+              "min_size": 1
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "cloud.export \"D:/data/result.pcd\"",
+            "rm.execute(\"cloud.export\", \"D:/data/result.pcd\")"
+          ],
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "model",
+      "summary": "模型重建和导出",
+      "commands": [
+        {
+          "name": "reconstruct",
+          "summary": "按点云识别板厚重建",
+          "usage": "model.reconstruct [--mirror false] [--end-tolerance 30]",
+          "params": [
+            {
+              "name": "mirror",
+              "binding": "option",
+              "option": "--mirror",
+              "type": "bool",
+              "default": false,
+              "description": "是否补建镜像侧"
+            },
+            {
+              "name": "end_tolerance",
+              "binding": "option",
+              "option": "--end-tolerance",
+              "type": "float",
+              "ranges": [
+                [
+                  0,
+                  100000
+                ]
+              ],
+              "default": 30.0,
+              "unit": "mm",
+              "description": "端部突出容差"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "model.reconstruct --mirror false --end-tolerance 30",
+            "rm.execute(\"model.reconstruct\", mirror=False)"
+          ],
+          "description": ""
+        },
+        {
+          "name": "parametric",
+          "summary": "按显式参数构建梁体",
+          "usage": "model.parametric --parameters <object> [--frame <object>]",
+          "params": [
+            {
+              "name": "parameters",
+              "binding": "option",
+              "option": "--parameters",
+              "type": "object",
+              "properties": {
+                "length": {
+                  "type": "float"
+                },
+                "width": {
+                  "type": "float"
+                },
+                "height": {
+                  "type": "float"
+                },
+                "webThickness": {
+                  "type": "float"
+                },
+                "flangeThickness": {
+                  "type": "float"
+                },
+                "ribThickness": {
+                  "type": "float"
+                },
+                "ribStations": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  }
+                },
+                "swapCrossSection": {
+                  "type": "bool"
+                },
+                "mirrorSymmetry": {
+                  "type": "bool"
+                }
+              },
+              "required": true,
+              "description": "梁尺寸及板厚，单位 mm"
+            },
+            {
+              "name": "frame",
+              "binding": "option",
+              "option": "--frame",
+              "type": "object",
+              "properties": {
+                "originMm": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "xAxis": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "yAxis": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "zAxis": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                }
+              },
+              "description": "未传入时采用点云识别框架"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [],
+          "description": ""
+        },
+        {
+          "name": "export_step",
+          "summary": "导出模型为 STEP",
+          "usage": "model.export_step <path>",
+          "params": [
+            {
+              "name": "path",
+              "binding": "positional",
+              "position": 1,
+              "type": "path",
+              "required": true,
+              "min_size": 1
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "model.export_step \"D:/data/result.step\"",
+            "rm.execute(\"model.export_step\", \"D:/data/result.step\")"
+          ],
+          "description": ""
+        },
+        {
+          "name": "deviation",
+          "summary": "计算点云与当前模型的偏差",
+          "usage": "model.deviation",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "model.deviation",
+            "rm.execute(\"model.deviation\")"
+          ],
+          "description": ""
+        }
+      ]
+    },
+    {
+      "name": "project",
+      "summary": "工程查询",
+      "commands": [
+        {
+          "name": "snapshot",
+          "summary": "查询当前工程摘要",
+          "usage": "project.snapshot",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "结果摘要；执行失败返回错误码"
+          },
+          "examples": [
+            "project.snapshot",
+            "snapshot = rm.execute(\"project.snapshot\")"
+          ],
+          "description": ""
+        }
+      ]
+    }
+  ]
+}

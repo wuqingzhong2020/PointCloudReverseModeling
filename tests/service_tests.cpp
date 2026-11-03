@@ -1,4 +1,4 @@
-/*
+﻿/*
  * 文件描述：
  * 验证点云单位与属性、有限板件几何、STEP 回读，以及异步命令失败时的版本和结果保护。
  */
@@ -127,7 +127,7 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
     ASSERT_TRUE(imported.revision == 1 && imported.cloud && imported.estimate) << "Import did not commit snapshot";
     const auto importJson = toJson(imported);
     ASSERT_FALSE(importJson.contains("suggestedParameters")) << "No preset thickness should be serialized after import";
-    expectError([&] { (void)service.submitReconstruct(parameters, 0); }, "stale_revision");
+    EXPECT_EQ(wait(service, service.submitReconstruct(parameters, 0)).errorCode, "stale_revision");
     success(service, service.submitReconstruct(parameters, imported.revision, frame));
     const auto built = service.project();
     ASSERT_TRUE(built.revision == 2 && built.model && built.mesh && built.model->solidCount == 7) << "Model commit failed";
@@ -161,7 +161,7 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
     success(service, service.submitImport(planar, LengthUnit::Millimeter));
     const auto planarProject = service.project();
     ASSERT_TRUE(planarProject.cloud && !planarProject.estimate && !planarProject.recognition && !planarProject.model && !planarProject.warnings.empty()) << "Valid planar cloud must import even without a beam frame";
-    expectError([&] { (void)service.submitReconstruct(parameters, planarProject.revision); }, "no_frame");
+    EXPECT_EQ(wait(service, service.submitReconstruct(parameters, planarProject.revision)).errorCode, "no_frame");
 }
 
 namespace
@@ -199,7 +199,7 @@ TEST(CloudCommands, CropInvalidatesDerivedResultsAndUndoRestoresExportableModel)
     EXPECT_EQ(selected.selection->size(), 60u);
     EXPECT_EQ(selected.model, built.model);
     EXPECT_FALSE(selected.canUndoCloud);
-    expectError([&] { (void)service.submitCloudEdit(CloudEditMode::KeepSelection, built.revision); }, "stale_revision");
+    EXPECT_EQ(wait(service, service.submitCloudEdit(CloudEditMode::KeepSelection, built.revision)).errorCode, "stale_revision");
     success(service, service.submitCloudEdit(CloudEditMode::KeepSelection, selected.revision));
     const auto cropped = service.project();
     ASSERT_TRUE(cropped.cloud);
@@ -215,7 +215,7 @@ TEST(CloudCommands, CropInvalidatesDerivedResultsAndUndoRestoresExportableModel)
     EXPECT_FALSE(cropped.selection);
     ASSERT_TRUE(cropped.estimate);
     EXPECT_NEAR(cropped.estimate->length, 60, 1e-6); // 剩余最长尺寸为 Z=60，不再沿用原梁长 100。
-    expectError([&] { (void)service.submitExport(temp.path / "stale.step", cropped.revision); }, "no_model");
+    EXPECT_EQ(wait(service, service.submitExport(temp.path / "stale.step", cropped.revision)).errorCode, "no_model");
     success(service, service.submitCloudHistory(CloudHistoryAction::Undo, cropped.revision));
     const auto undone = service.project();
     EXPECT_EQ(undone.cloud, built.cloud);
@@ -244,8 +244,7 @@ TEST(CloudCommands, DeleteAllResetAndNoOpPreserveHistoryCorrectly)
     CommandService service;
     success(service, service.submitImport(input, LengthUnit::Millimeter));
     const auto original = service.project();
-    expectError([&] { (void)service.submitCloudEdit(CloudEditMode::DeleteSelection, original.revision); },
-                "empty_selection");
+    EXPECT_EQ(wait(service, service.submitCloudEdit(CloudEditMode::DeleteSelection, original.revision)).errorCode, "empty_selection");
     success(service, service.submitCloudSelection(cloudRectangle(), CloudSelectionMode::Replace, original.revision));
     const auto selected = service.project();
     ASSERT_EQ(selected.selection->size(), 110u);

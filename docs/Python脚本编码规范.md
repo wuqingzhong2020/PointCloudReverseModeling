@@ -1,6 +1,6 @@
 # ReverseModeling Python 脚本编码规范
 
-本规范用于本工程的 Python 脚本以及未来的嵌入式 Python 扩展。当前 `ReverseModeler` 尚未接入 CPython、pybind11 或 Python 业务接口；SDK 具备相应能力并不表示宿主已经提供脚本入口。下文宿主接口示例仅用于说明设计方式。
+本规范用于本工程的 Python 脚本及嵌入式 Python 扩展。`ReverseModeler` 已接入 CPython、pybind11 和内建 `rm` 模块；实际可用接口是 `rm.execute`、`rm.execute_line`、`rm.help`，见[命令框架与 Python 使用指南](命令框架与Python使用指南.md)。命令窗口和 `.py` 文件支持原生命令与 Python 混合输入；原生命令直接或经内部转换调用同一校验入口，Python 语句由工作线程中的 CPython 执行。下文规范适用于构建工具及脚本中的 Python 部分。其他宿主接口示例仍用于说明设计方式，不代表已经实现。
 
 运行时基线为 `LibPackByVcpkgWindows` 的 CPython **3.15.2 自由线程共享 SDK（3.15t）**。其本地 `python3` overlay 将 libffi、mpdecimal、zlib、OpenSSL、SQLite3、Zstandard、bzip2、liblzma 和 Expat 九个公共 C 库作为依赖。实际产品使用时仍须按所选平台、Debug/Release 和部署内容验证对应模块及动态库。
 

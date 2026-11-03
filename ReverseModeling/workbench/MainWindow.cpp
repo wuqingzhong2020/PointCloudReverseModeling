@@ -23,6 +23,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -34,6 +35,7 @@
 
 #include "commands/CommandService.h"
 #include "workbench/DockWorkspace.h"
+#include "workbench/CommandConsoleWidget.h"
 #include "workbench/MainWindow.h"
 #include "workbench/ModelDisplayData.h"
 #include "workbench/ModelInspector.h"
@@ -69,6 +71,22 @@ QString vectorText(const Vec3 &value)
     return QStringLiteral("(%1, %2, %3)").arg(value.x, 0, 'g', 8).arg(value.y, 0, 'g', 8).arg(value.z, 0, 'g', 8);
 }
 
+CommandEnvironment commandEnvironment()
+{
+    CommandEnvironment result;
+    result.runtimeDirectory = nativePath(QCoreApplication::applicationDirPath());
+    result.logDirectory = nativePath(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)) / "log";
+    for (auto path = result.runtimeDirectory; !path.empty() && path != path.parent_path(); path = path.parent_path())
+    {
+        if (path.filename() == "output")
+        {
+            result.logDirectory = path / "log";
+            break;
+        }
+    }
+    return result;
+}
+
 QLabel *label(const QString &value, QWidget *parent)
 {
     auto *result = new QLabel(value, parent);
@@ -92,7 +110,7 @@ struct MainWindow::State
         SelectCloud,
         EditCloud
     };
-    CommandService service;
+    CommandService service{commandEnvironment()};
     std::string activeTask;
     Operation pending{Operation::None};
     std::string cloudBeforeEdit;
@@ -108,6 +126,7 @@ struct MainWindow::State
     OperationPanel *operation{};
     QPlainTextEdit *log{};
     ModelInspector *inspector{};
+    CommandConsoleWidget *console{};
     QLabel *taskDetails{};
     QLabel *status{};
     QProgressBar *progress{};
@@ -195,6 +214,29 @@ MainWindow::MainWindow(QWidget *parent)
     logLayout->addWidget(logTools);
     logLayout->addWidget(state_->log, 1);
     state_->workspace->addPanel(QStringLiteral("dock.log"), QStringLiteral("日志窗口"), logPanel, DockPosition::Bottom);
+    auto *console = new CommandConsoleWidget(state_->service, actions, this);
+    state_->console = console;
+    console->onShowRequested = [this] { state_->workspace->showPanel(QStringLiteral("dock.commands")); };
+    state_->workspace->addPanel(QStringLiteral("dock.commands"), QStringLiteral("命令窗口"), console, DockPosition::Right);
+    console->onProjectChanged = [this, lastCloud = std::string{}, lastModel = std::string{}]() mutable
+    {
+        const auto project = state_->service.project();
+        state_->parameters->setRecognition(project.recognition);
+        state_->parameters->setSourceText(text(project.sourcePathUtf8));
+        state_->parameters->setModelText(project.model
+            ? QStringLiteral("命令已更新模型，当前版本 %1").arg(project.revision)
+            : QStringLiteral("尚无模型。"));
+        state_->parametersDirty = !project.model;
+        state_->appliedParameters.reset();
+        state_->actions->get(ActionId::ShowCloud)->setChecked(static_cast<bool>(project.cloud));
+        state_->actions->get(ActionId::ShowModel)->setChecked(static_cast<bool>(project.model));
+        const bool geometryChanged = lastCloud != project.cloudId || lastModel != project.modelId;
+        lastCloud = project.cloudId;
+        lastModel = project.modelId;
+        refreshDisplay(geometryChanged);
+        refreshProjectPanels();
+        updateActions();
+    };
     state_->taskDetails = label(QStringLiteral("当前没有任务。"), this);
     state_->taskDetails->setObjectName(QStringLiteral("panel.tasks"));
     state_->taskDetails->setContentsMargins(14, 12, 14, 12);
@@ -422,6 +464,10 @@ void MainWindow::reportError(const QString &message)
 void MainWindow::updateActions()
 {
     const bool idle = state_->activeTask.empty() && !state_->closing;
+    if (state_->console)
+    {
+        state_->console->setWorkbenchBusy(!idle);
+    }
     const auto project = state_->service.project();
     auto &actions = *state_->actions;
     actions.get(ActionId::Open)->setEnabled(idle);
@@ -741,6 +787,14 @@ void MainWindow::refreshProjectPanels()
 
 void MainWindow::pollTask()
 {
+    if (state_->closing)
+    {
+        if (state_->service.shutdownComplete())
+        {
+            close();
+        }
+        return;
+    }
     if (state_->activeTask.empty())
     {
         return;
@@ -929,22 +983,14 @@ void MainWindow::pollTask()
         reportError(text(error.what()));
         updateActions();
     }
-    if (state_->closing && state_->activeTask.empty())
-    {
-        QTimer::singleShot(0, this,
-                           [this]
-                           {
-                               close();
-                           });
-    }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    if (!state_->activeTask.empty())
+    state_->service.requestShutdown();
+    if (!state_->service.shutdownComplete())
     {
         state_->closing = true;
-        (void)state_->service.cancel(state_->activeTask);
         state_->status->setText(QStringLiteral("正在取消任务并等待安全退出…"));
         updateActions();
         event->ignore();
