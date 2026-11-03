@@ -16,7 +16,9 @@ namespace reverse
 class PythonRuntime
 {
   public:
-    PythonRuntime(rm::CommandManager &manager, std::filesystem::path runtimeDirectory);
+    PythonRuntime(rm::CommandManager &manager, std::filesystem::path runtimeDirectory,
+                  std::function<bool()> exitRequested = {});
+    bool exitRequested() const;
     ~PythonRuntime();
     rm::CommandResult execute(const std::string &code, const rm::CommandContext &context, bool interactive = false,
                               bool mixedCommands = false, const std::string &scriptPath = {},

@@ -70,7 +70,8 @@ bool isNativeCommandScript(const rm::CommandManager &manager, std::string_view s
     return true;
 }
 rm::CommandResult executeCommandScript(rm::CommandManager &manager, std::string_view source,
-                                       const rm::CommandContext &context)
+                                       const rm::CommandContext &context,
+                                       const std::function<bool()> &exitRequested)
 {
     if (source.starts_with("\xEF\xBB\xBF"))
     {
@@ -110,7 +111,7 @@ rm::CommandResult executeCommandScript(rm::CommandManager &manager, std::string_
             continue;
         }
         line = line.substr(first, line.find_last_not_of(" \t\r") - first + 1);
-        output("[脚本] rm> " + std::string(line) + '\n');
+        output(commandExecutionEcho(line));
         auto result = manager.executeLine(line, context);
         committed = committed || result.committed;
         if (!result.ok())
@@ -123,6 +124,7 @@ rm::CommandResult executeCommandScript(rm::CommandManager &manager, std::string_
         {
             output(feedback + '\n');
         }
+        if (exitRequested && exitRequested()) return result;
     }
     return {rm::ResultKind::Success, {}, "脚本执行完成，共 " + std::to_string(commandCount) + " 条命令。", {}, committed};
 }

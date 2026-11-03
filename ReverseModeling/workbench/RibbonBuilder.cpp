@@ -66,6 +66,7 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     auto *exportMenu = menu(ribbon, QStringLiteral("导出"), actions,
                             {ExportStep, ExportCloud, ExportModel, ExportParameters}, QStringLiteral("export"));
     file->addLargeMenu(exportMenu);
+    file->addLargeAction(actions.get(ExportAndExit));
 
     auto *edit = category->addPanel(QStringLiteral("编辑"));
     edit->addSmallAction(actions.get(Undo));

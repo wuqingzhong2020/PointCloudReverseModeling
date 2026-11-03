@@ -43,6 +43,7 @@ class DockWorkspace final : public QObject
     QMenu *windowMenu() const;
 
   private:
+    void applyDefaultSizes();
     QMainWindow *m_window;
     ads::CDockManager *m_manager;
     QMenu *m_menu;

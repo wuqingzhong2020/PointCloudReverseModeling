@@ -9,6 +9,7 @@
 #include <QMenu>
 #include <QScreen>
 #include <QSettings>
+#include <QSplitter>
 
 #include <DockAreaWidget.h>
 #include <DockManager.h>
@@ -22,8 +23,7 @@ namespace reverse::workbench
 {
 namespace
 {
-constexpr int layoutVersion = 2;
-constexpr int commandDockPlacementVersion = 1;
+constexpr int layoutVersion = 3;
 
 void recoverWindow(QWidget *window)
 {
@@ -99,7 +99,9 @@ void DockWorkspace::addPanel(const QString &id, const QString &title, QWidget *c
         const auto area = position == DockPosition::Left    ? ads::LeftDockWidgetArea
                           : position == DockPosition::Right ? ads::RightDockWidgetArea
                                                             : ads::BottomDockWidgetArea;
-        m_manager->addDockWidget(area, dock);
+        // 左侧工具页仅分割中央视图，底部命令窗口仍跨越两者。
+        auto *relativeArea = position == DockPosition::Left ? m_manager->centralWidget()->dockAreaWidget() : nullptr;
+        m_manager->addDockWidget(area, dock, relativeArea);
         m_anchors.insert(position, dock);
     }
     dock->toggleViewAction()->setObjectName(QStringLiteral("window.") + id);
@@ -109,17 +111,13 @@ void DockWorkspace::addPanel(const QString &id, const QString &title, QWidget *c
 
 void DockWorkspace::initializeLayout()
 {
-    if (m_anchors.contains(DockPosition::Right))
-    {
-        m_manager->setSplitterSizes(m_anchors.value(DockPosition::Right)->dockAreaWidget(), {460, 340});
-    }
-    if (m_anchors.contains(DockPosition::Bottom))
-    {
-        m_manager->setSplitterSizes(m_anchors.value(DockPosition::Bottom)->dockAreaWidget(), {650, 190});
-    }
     hidePanels();
+    showPanel(QStringLiteral("dock.reconstruction"));
+    showPanel(QStringLiteral("dock.operation"));
     showPanel(QStringLiteral("dock.modelTree"));
     showPanel(QStringLiteral("dock.properties"));
+    showPanel(QStringLiteral("dock.commands"));
+    applyDefaultSizes();
     m_defaultState = m_manager->saveState(layoutVersion);
     m_menu->addSeparator();
     auto *hide = m_menu->addAction(QStringLiteral("隐藏所有辅助窗口"));
@@ -141,49 +139,18 @@ void DockWorkspace::initializeLayout()
 void DockWorkspace::restoreLayout()
 {
     QSettings settings;
-    settings.beginGroup(QStringLiteral("ui/layout/v2"));
-    const auto geometry = settings.value(QStringLiteral("geometry")).toByteArray();
+    // 新布局首次启用只继承旧主窗大小，避免旧停靠状态覆盖新的初始排列。
+    const auto previousGeometry = settings.value(QStringLiteral("ui/layout/v2/geometry")).toByteArray();
+    settings.beginGroup(QStringLiteral("ui/layout/v3"));
+    const auto geometry = settings.value(QStringLiteral("geometry"), previousGeometry).toByteArray();
     if (!geometry.isEmpty())
     {
         m_window->restoreGeometry(geometry);
     }
     const auto state = settings.value(QStringLiteral("docks")).toByteArray();
-    const bool restored = !state.isEmpty() && m_manager->restoreState(state, layoutVersion);
-    if (!state.isEmpty() && !restored)
+    if (state.isEmpty() || !m_manager->restoreState(state, layoutVersion))
     {
         resetLayout();
-    }
-    // 旧布局只迁移命令窗口一次，保留其他窗口以及命令窗口的显隐状态。
-    // 更早的布局没有命令窗口，ADS 恢复后可能把新增窗口留在浮动状态。
-    const bool missingCommands = !state.contains("dock.commands");
-    const bool migrateCommands = settings.value(QStringLiteral("commandDockPlacementVersion"), 0).toInt() <
-                                 commandDockPlacementVersion;
-    if (restored && (missingCommands || migrateCommands) && m_panels.contains(QStringLiteral("dock.commands")))
-    {
-        auto *commands = m_panels.value(QStringLiteral("dock.commands"));
-        auto *modelTree = m_panels.value(QStringLiteral("dock.modelTree"), nullptr);
-        const bool open = !missingCommands && !commands->isClosed();
-        if (modelTree && modelTree->dockAreaWidget())
-        {
-            if (commands->dockAreaWidget() != modelTree->dockAreaWidget())
-            {
-                m_manager->addDockWidgetTabToArea(commands, modelTree->dockAreaWidget());
-                commands->toggleView(open);
-                if (open)
-                {
-                    commands->setAsCurrentTab();
-                }
-            }
-        }
-        else
-        {
-            m_manager->addDockWidget(ads::RightDockWidgetArea, commands);
-            commands->toggleView(open);
-        }
-        if (missingCommands)
-        {
-            commands->toggleView(false);
-        }
     }
     recoverWindow(m_window);
     for (auto *floating : m_manager->floatingWidgets())
@@ -195,10 +162,9 @@ void DockWorkspace::restoreLayout()
 void DockWorkspace::saveLayout() const
 {
     QSettings settings;
-    settings.beginGroup(QStringLiteral("ui/layout/v2"));
+    settings.beginGroup(QStringLiteral("ui/layout/v3"));
     settings.setValue(QStringLiteral("geometry"), m_window->saveGeometry());
     settings.setValue(QStringLiteral("docks"), m_manager->saveState(layoutVersion));
-    settings.setValue(QStringLiteral("commandDockPlacementVersion"), commandDockPlacementVersion);
 }
 
 void DockWorkspace::resetLayout()
@@ -209,6 +175,39 @@ void DockWorkspace::resetLayout()
         {
             hidePanels();
         }
+        else
+        {
+            applyDefaultSizes();
+        }
+    }
+}
+
+void DockWorkspace::applyDefaultSizes()
+{
+    const int width = m_manager->width();
+    const int height = m_manager->height();
+    auto *right = m_anchors.value(DockPosition::Right);
+    // 右侧上下分区外面的水平分割器，负责整列与左侧工作区的宽度。
+    if (right)
+    {
+        for (auto *parent = right->dockAreaWidget()->parentWidget(); parent; parent = parent->parentWidget())
+        {
+            auto *splitter = qobject_cast<QSplitter *>(parent);
+            if (splitter && splitter->orientation() == Qt::Horizontal && splitter->count() == 2)
+            {
+                splitter->setSizes({qMax(1, width - 344), 340});
+                break;
+            }
+        }
+        m_manager->setSplitterSizes(right->dockAreaWidget(), {height / 2, height / 2});
+    }
+    if (auto *left = m_anchors.value(DockPosition::Left))
+    {
+        m_manager->setSplitterSizes(left->dockAreaWidget(), {340, qMax(1, width - 688)});
+    }
+    if (auto *bottom = m_anchors.value(DockPosition::Bottom))
+    {
+        m_manager->setSplitterSizes(bottom->dockAreaWidget(), {height * 7 / 10, height * 3 / 10});
     }
 }
 

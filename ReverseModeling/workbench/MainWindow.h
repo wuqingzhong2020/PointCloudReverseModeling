@@ -33,6 +33,8 @@ private:
     void refreshProjectPanels();
     void reconstruct();
     void exportStep();
+    void exportAndExit();
+    void continueStartup();
     void exportCloud();
     void evaluateDeviation();
     void pollTask();
@@ -40,7 +42,7 @@ private:
     void refreshDisplay(bool fitView = true);
     void editCloud(ActionId action);
     void appendLog(const QString& message);
-    void reportError(const QString& message);
+    void reportError(const QString& message, bool writeLog = true);
 };
 
 } // namespace reverse::workbench

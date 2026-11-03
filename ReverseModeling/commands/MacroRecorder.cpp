@@ -20,10 +20,13 @@ rm::CommandResult MacroRecorder::start(const std::filesystem::path &path, bool o
         return rm::CommandResult::error("invalid_script_path", "录制文件必须使用 .py 扩展名。");
     }
     const auto target = std::filesystem::absolute(path);
-    if (std::filesystem::exists(target) && !overwrite)
+    const bool replacing = std::filesystem::exists(target);
+    if (replacing && !overwrite)
     {
         return rm::CommandResult::error("output_exists", "脚本文件已存在，未覆盖。");
     }
+    std::error_code directoryError;
+    std::filesystem::create_directories(target.parent_path(), directoryError);
     std::ofstream file(target, std::ios::binary | std::ios::trunc);
     if (!file)
     {
@@ -40,7 +43,7 @@ rm::CommandResult MacroRecorder::start(const std::filesystem::path &path, bool o
     m_path = target;
     const auto utf8 = target.u8string();
     m_state = {true, std::string(reinterpret_cast<const char *>(utf8.data()), utf8.size()), 0, {}};
-    return {rm::ResultKind::Success, {}, "开始录制：" + m_state.pathUtf8, {}, false};
+    return {rm::ResultKind::Success, {}, (replacing ? "录制文件已存在，已覆盖：" : "开始录制：") + m_state.pathUtf8, {}, false};
 }
 rm::CommandResult MacroRecorder::stop()
 {

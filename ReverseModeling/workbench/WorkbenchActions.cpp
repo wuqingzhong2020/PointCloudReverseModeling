@@ -41,6 +41,7 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {OpenFolder, "openFolder", "打开文件夹", "folder", Pending},
                                 {ImportParameters, "importParameters", "导入重建参数", "parameters", Pending},
                                 {ExportStep, "exportStep", "导出 STEP", "export", Available},
+                                {ExportAndExit, "exportAndExit", "导出并退出", "export", Available},
                                 {ExportCloud, "exportCloud", "导出点云 (*.pcd)", "cloud", Available},
                                 {ExportModel, "exportModel", "导出工程模型", "cube", Pending},
                                 {ExportParameters, "exportParameters", "导出重建参数", "parameters", Pending},

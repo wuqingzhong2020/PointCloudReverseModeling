@@ -12,13 +12,11 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
-#include <QDateTime>
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
-#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
@@ -26,7 +24,6 @@
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTimer>
-#include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -102,6 +99,9 @@ struct MainWindow::State
     enum class Operation
     {
         None,
+        StartRecording,
+        InitializeOutput,
+        ExportAndExit,
         Import,
         Reconstruct,
         Export,
@@ -112,6 +112,8 @@ struct MainWindow::State
     };
     CommandService service{commandEnvironment()};
     std::string activeTask;
+    StartupRequest startup;
+    bool startupPending{};
     Operation pending{Operation::None};
     std::string cloudBeforeEdit;
     bool closing{};
@@ -124,7 +126,6 @@ struct MainWindow::State
     DockWorkspace *workspace{};
     ReconstructionPanel *parameters{};
     OperationPanel *operation{};
-    QPlainTextEdit *log{};
     ModelInspector *inspector{};
     CommandConsoleWidget *console{};
     QLabel *taskDetails{};
@@ -138,6 +139,8 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
                          SARibbonMainWindowStyleFlag::UseRibbonMenuBar | SARibbonMainWindowStyleFlag::UseNativeFrame),
       state_(std::make_unique<State>())
 {
+    state_->startup = std::move(startup);
+    state_->startupPending = true;
     using enum ActionId;
     setObjectName(QStringLiteral("ReverseModeler.MainWindow"));
     setStyleSheet(qApp->styleSheet());
@@ -168,10 +171,6 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     hint->setContentsMargins(12, 5, 6, 5);
     viewLayout->addWidget(hint);
     state_->inspector = new ModelInspector(this);
-    state_->workspace->addPanel(QStringLiteral("dock.modelTree"), QStringLiteral("模型树"), state_->inspector->tree(),
-                                DockPosition::Right);
-    state_->workspace->addPanel(QStringLiteral("dock.properties"), QStringLiteral("属性"), state_->inspector->properties(),
-                                DockPosition::Right, QStringLiteral("dock.modelTree"));
     state_->inspector->onPartSelected = [this](const std::string &id)
     {
         if (!id.empty())
@@ -191,33 +190,21 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         }
     };
     state_->parameters = new ReconstructionPanel(this);
-    state_->workspace->addPanel(QStringLiteral("dock.reconstruction"), QStringLiteral("重建参数"), state_->parameters,
-                                DockPosition::Left);
     state_->operation = new OperationPanel(this);
-    state_->workspace->addPanel(QStringLiteral("dock.operation"), QStringLiteral("操作面板"), state_->operation,
-                                DockPosition::Left);
-    auto *logPanel = new QWidget(this);
-    auto *logLayout = new QVBoxLayout(logPanel);
-    logLayout->setContentsMargins(0, 0, 0, 0);
-    auto *logTools = new QToolBar(logPanel);
-    logTools->setMinimumHeight(36);
-    auto *copy = logTools->addAction(QStringLiteral("复制所选"));
-    auto *clear = logTools->addAction(QStringLiteral("清空日志"));
-    state_->log = new QPlainTextEdit(logPanel);
-    state_->log->setObjectName(QStringLiteral("panel.log"));
-    state_->log->setReadOnly(true);
-    state_->log->setMaximumBlockCount(2000);
-    copy->setEnabled(false);
-    connect(copy, &QAction::triggered, state_->log, &QPlainTextEdit::copy);
-    connect(clear, &QAction::triggered, state_->log, &QPlainTextEdit::clear);
-    connect(state_->log, &QPlainTextEdit::copyAvailable, copy, &QAction::setEnabled);
-    logLayout->addWidget(logTools);
-    logLayout->addWidget(state_->log, 1);
-    state_->workspace->addPanel(QStringLiteral("dock.log"), QStringLiteral("日志窗口"), logPanel, DockPosition::Bottom);
     auto *console = new CommandConsoleWidget(state_->service, actions, this);
     state_->console = console;
     console->onShowRequested = [this] { state_->workspace->showPanel(QStringLiteral("dock.commands")); };
-    state_->workspace->addPanel(QStringLiteral("dock.commands"), QStringLiteral("命令窗口"), console, DockPosition::Right);
+    // 先建立“上方工作区 + 底部命令”，再在工作区左侧加工具页、最外层右侧加模型树/属性。
+    // 这样命令窗口横跨左侧工具页和三维视图，而右侧栏始终占满工作区高度。
+    state_->workspace->addPanel(QStringLiteral("dock.commands"), QStringLiteral("命令窗口"), console, DockPosition::Bottom);
+    state_->workspace->addPanel(QStringLiteral("dock.reconstruction"), QStringLiteral("重建参数"), state_->parameters,
+                                DockPosition::Left);
+    state_->workspace->addPanel(QStringLiteral("dock.operation"), QStringLiteral("操作面板"), state_->operation,
+                                DockPosition::Left);
+    state_->workspace->addPanel(QStringLiteral("dock.modelTree"), QStringLiteral("模型树"), state_->inspector->tree(),
+                                DockPosition::Right);
+    state_->workspace->addPanel(QStringLiteral("dock.properties"), QStringLiteral("属性"), state_->inspector->properties(),
+                                DockPosition::Right, QStringLiteral("dock.modelTree"));
     console->onProjectChanged = [this, lastCloud = std::string{}, lastModel = std::string{}]() mutable
     {
         const auto project = state_->service.project();
@@ -272,6 +259,7 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
             {
                 exportStep();
             });
+    connect(actions.get(ExportAndExit), &QAction::triggered, this, [this] { exportAndExit(); });
     connect(actions.get(ExportCloud), &QAction::triggered, this, [this] { exportCloud(); });
     connect(actions.get(Reconstruct), &QAction::triggered, this,
             [this]
@@ -433,41 +421,93 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
                 pollTask();
             });
     state_->timer->start();
-    appendLog(QStringLiteral("工作台就绪。点云直接按 mm 导入；窗口菜单可显示日志和参数面板。"));
+    appendLog(QStringLiteral("工作台就绪。点云按 mm 导入；命令及运行日志统一显示在本窗口。"));
     refreshProjectPanels();
     updateActions();
     QTimer::singleShot(0, this,
-                       [this, startup = std::move(startup)]
+                       [this]
                        {
                            state_->workspace->restoreLayout();
-                           state_->console->executeStartup(startup);
+                           continueStartup();
                        });
 }
 
 MainWindow::~MainWindow() = default;
 
-void MainWindow::appendLog(const QString &message)
+void MainWindow::continueStartup()
 {
-    state_->log->appendPlainText(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss  ")) + message);
+    try
+    {
+        if (state_->startup.recordFile)
+        {
+            const auto path = *state_->startup.recordFile;
+            state_->startup.recordFile.reset();
+            state_->pending = State::Operation::StartRecording;
+            state_->activeTask = state_->service.submitStartRecording(path, true);
+            state_->workspace->showPanel(QStringLiteral("dock.commands"));
+        }
+        else if (state_->startup.outputDirectory)
+        {
+            const auto path = *state_->startup.outputDirectory;
+            state_->startup.outputDirectory.reset();
+            state_->activeTask = state_->service.submitInitializeOutput(path);
+            state_->pending = State::Operation::InitializeOutput;
+        }
+        else if (state_->startup.inputFile)
+        {
+            const auto path = *state_->startup.inputFile;
+            state_->startup.inputFile.reset();
+            state_->activeTask = state_->service.submitStartupImport(path);
+            state_->pending = State::Operation::Import;
+        }
+        else
+        {
+            state_->startupPending = false;
+            updateActions();
+            state_->console->executeStartup(state_->startup);
+            state_->startup = {};
+            return;
+        }
+        state_->cancellationRequested = false;
+        state_->progress->setValue(0);
+        updateActions();
+    }
+    catch (const std::exception &error)
+    {
+        if (state_->pending == State::Operation::StartRecording)
+        {
+            state_->startup = {};
+            state_->startupPending = false;
+        }
+        appendLog(QStringLiteral("启动任务失败：") + text(error.what()));
+        state_->workspace->showPanel(QStringLiteral("dock.commands"));
+        QTimer::singleShot(0, this, [this] { continueStartup(); });
+    }
 }
 
-void MainWindow::reportError(const QString &message)
+void MainWindow::appendLog(const QString &message)
+{
+    if (state_->console) state_->console->appendLog(message);
+}
+
+void MainWindow::reportError(const QString &message, bool writeLog)
 {
     state_->status->setText(QStringLiteral("操作失败"));
-    appendLog(QStringLiteral("错误：") + message);
+    if (writeLog) appendLog(QStringLiteral("错误：") + message);
     if (!state_->closing)
     {
-        state_->workspace->showPanel(QStringLiteral("dock.log"));
+        state_->workspace->showPanel(QStringLiteral("dock.commands"));
         QMessageBox::warning(this, QStringLiteral("ReverseModeler"), message);
     }
 }
 
 void MainWindow::updateActions()
 {
-    const bool idle = state_->activeTask.empty() && !state_->closing;
+    const bool workbenchIdle = state_->activeTask.empty() && !state_->closing && !state_->startupPending;
+    const bool idle = workbenchIdle && state_->service.isIdle();
     if (state_->console)
     {
-        state_->console->setWorkbenchBusy(!idle);
+        state_->console->setWorkbenchBusy(!workbenchIdle);
     }
     const auto project = state_->service.project();
     auto &actions = *state_->actions;
@@ -501,6 +541,37 @@ void MainWindow::updateActions()
     const bool currentModel = idle && project.model && (!project.model->importedFormat.empty() ||
         (!state_->parametersDirty && !state_->parameters->hasEdits()));
     actions.get(ActionId::ExportStep)->setEnabled(currentModel);
+    const bool initialized = state_->service.outputInitialized();
+    const auto outputDirectory = state_->service.outputDirectory();
+    auto *deliver = actions.get(ActionId::ExportAndExit);
+    deliver->setEnabled(initialized && currentModel);
+    QString reason;
+    if (!outputDirectory)
+    {
+        reason = QStringLiteral("尚未设置输出目录，可用 --output_dir 或 project.set_output_dir 设置");
+    }
+    else if (!initialized)
+    {
+        reason = QStringLiteral("本次结果输出未初始化");
+    }
+    else if (!idle)
+    {
+        reason = QStringLiteral("请等待当前任务结束");
+    }
+    else if (!currentModel)
+    {
+        reason = QStringLiteral("请先生成最终模型；调整参数后需重新建模");
+    }
+    else
+    {
+        reason = QStringLiteral("完整导出当前模型，提交结果 JSON 后退出");
+    }
+    if (outputDirectory)
+    {
+        reason += QStringLiteral("\n目标：") +
+                  QString::fromStdWString((*outputDirectory / "reserveModel.step").wstring());
+    }
+    deliver->setToolTip(reason);
     actions.get(ActionId::ExportCloud)->setEnabled(idle && project.cloud && !project.cloud->points.empty());
     actions.get(ActionId::Deviation)->setEnabled(currentModel && project.cloud && project.model->importedFormat.empty());
     const bool cancellable = !state_->activeTask.empty() && !state_->closing && !state_->cancellationRequested;
@@ -530,7 +601,6 @@ void MainWindow::importCloud(const QString &path)
         state_->pending = State::Operation::Import;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("开始导入：") + path);
         updateActions();
     }
     catch (const std::exception &error)
@@ -590,9 +660,6 @@ void MainWindow::reconstruct()
             state_->pending = State::Operation::Reconstruct;
             state_->cancellationRequested = false;
             state_->progress->setValue(0);
-            appendLog(state_->parameters->mirrorSymmetry()
-                ? QStringLiteral("按点云逐板识别结果建模，并按显式选项镜像补建另一侧。")
-                : QStringLiteral("按点云逐板识别结果建模；不补建不可见的镜像侧。"));
             updateActions();
         }
         catch (const std::exception &error)
@@ -625,7 +692,6 @@ void MainWindow::reconstruct()
         state_->pending = State::Operation::Reconstruct;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("开始手动参数建模；本模式参数不是点云识别结果。"));
         updateActions();
     }
     catch (const std::exception &error)
@@ -663,7 +729,28 @@ void MainWindow::exportStep()
         state_->pending = State::Operation::Export;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("导出并独立回读验证：") + path);
+        updateActions();
+    }
+    catch (const std::exception &error)
+    {
+        reportError(text(error.what()));
+    }
+}
+
+void MainWindow::exportAndExit()
+{
+    // 当前产品没有可取消的工程保存询问；点击本按钮即确认当前完整模型。
+    updateActions();
+    if (!state_->actions->get(ActionId::ExportAndExit)->isEnabled())
+    {
+        return;
+    }
+    try
+    {
+        state_->activeTask = state_->service.submitExportAndExit(state_->service.project().revision);
+        state_->pending = State::Operation::ExportAndExit;
+        state_->cancellationRequested = false;
+        state_->progress->setValue(0);
         updateActions();
     }
     catch (const std::exception &error)
@@ -684,7 +771,6 @@ void MainWindow::exportCloud()
         state_->pending = State::Operation::ExportCloud;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("导出当前完整点云（mm，XYZ/可选强度）：") + path);
         updateActions();
     }
     catch (const std::exception& error) { reportError(text(error.what())); }
@@ -698,7 +784,6 @@ void MainWindow::evaluateDeviation()
         state_->pending = State::Operation::Deviation;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(QStringLiteral("开始计算当前有限板件表面偏差。"));
         updateActions();
     }
     catch (const std::exception &error)
@@ -734,7 +819,6 @@ void MainWindow::editCloud(ActionId action)
         state_->pending = State::Operation::EditCloud;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
-        appendLog(state_->actions->get(action)->text() + QStringLiteral("：处理内存点云，源文件保持不变。"));
         updateActions();
     }
     catch (const std::exception &error)
@@ -788,6 +872,12 @@ void MainWindow::refreshProjectPanels()
 
 void MainWindow::pollTask()
 {
+    if (state_->service.exitRequested() && state_->service.shutdownComplete())
+    {
+        state_->console->flushUiCommands();
+        close();
+        return;
+    }
     if (state_->closing)
     {
         if (state_->service.shutdownComplete())
@@ -798,6 +888,7 @@ void MainWindow::pollTask()
     }
     if (state_->activeTask.empty())
     {
+        updateActions();
         return;
     }
     try
@@ -815,13 +906,15 @@ void MainWindow::pollTask()
         {
             return;
         }
+        state_->console->flushUiCommands();
         const auto operation = state_->pending;
+        const bool commandEchoed = operation != State::Operation::StartRecording;
         state_->activeTask.clear();
         state_->pending = State::Operation::None;
         if (task.state == TaskState::Succeeded)
         {
             const auto project = state_->service.project();
-            if (operation != State::Operation::SelectCloud)
+            if (!commandEchoed)
             {
                 appendLog(QStringLiteral("完成：") + text(task.message));
             }
@@ -868,19 +961,11 @@ void MainWindow::pollTask()
                             .arg(vectorText(estimate.frame.originMm), vectorText(estimate.frame.xAxis),
                                  vectorText(estimate.frame.yAxis), vectorText(estimate.frame.zAxis)));
                     state_->parameters->setModelText(QStringLiteral("点云已导入；请核对逐板识别结果，默认仅构建观测侧。"));
-                    for (const auto &warning : estimate.warnings)
-                    {
-                        appendLog(QStringLiteral("初值提示：") + text(warning));
-                    }
                 }
                 else
                 {
                     state_->parameters->setFrameText(QStringLiteral("当前点云不能提供可靠的三维 PCA 梁框架。"));
                     state_->parameters->setModelText(QStringLiteral("点云可查看，当前辅助建模需要可用的坐标框架。"));
-                }
-                for (const auto &warning : project.warnings)
-                {
-                    appendLog(QStringLiteral("点云提示：") + text(warning));
                 }
                 if (operation == State::Operation::EditCloud)
                 {
@@ -893,7 +978,6 @@ void MainWindow::pollTask()
                         state_->appliedParameters = project.model->parameters;
                         state_->parametersDirty = false;
                     }
-                    appendLog(QStringLiteral("当前点数：%1；可使用撤销、重做或重置恢复。").arg(cloud.points.size()));
                     state_->status->setText(QStringLiteral("当前点数：%1").arg(cloud.points.size()));
                 }
                 refreshDisplay(operation == State::Operation::Import);
@@ -916,8 +1000,6 @@ void MainWindow::pollTask()
                     .arg(text(project.model->importedFormat).toUpper())
                     .arg(project.model->solidCount).arg(project.model->surfaceCount);
                 state_->parameters->setModelText(description);
-                appendLog(description);
-                for (const auto& warning : project.warnings) appendLog(text(warning));
                 state_->actions->get(ActionId::ShowModel)->setChecked(true);
                 refreshDisplay(true);
             }
@@ -932,50 +1014,46 @@ void MainWindow::pollTask()
                         .arg(static_cast<qulonglong>(project.model->surfaceCount))
                         .arg(project.model->fromPointCloud ? QStringLiteral("标签区分识别厚度与底板最大值估算厚度。")
                             : QStringLiteral("手动参数模型，标签不是点云识别厚度。")));
-                for (const auto &warning : project.model->warnings)
-                {
-                    appendLog(text(warning));
-                }
                 refreshDisplay();
             }
-            else if (operation == State::Operation::Export && project.lastExport)
+            else if (operation == State::Operation::Deviation && !state_->closing)
             {
-                appendLog(QStringLiteral("STEP 回读：%1 个实体，%2 字节；文件：%3；另有 %4 个观测面")
-                              .arg(static_cast<qulonglong>(project.lastExport->solidCount))
-                              .arg(static_cast<qulonglong>(project.lastExport->fileBytes))
-                              .arg(text(project.exportedPathUtf8))
-                              .arg(project.lastExport->surfaceCount));
-            }
-            else if (operation == State::Operation::ExportCloud && project.lastCloudExport)
-            {
-                appendLog(QStringLiteral("PCD 已导出：%1 点，%2 字节；文件：%3")
-                    .arg(project.lastCloudExport->pointCount).arg(project.lastCloudExport->fileBytes)
-                    .arg(text(project.exportedCloudPathUtf8)));
-            }
-            else if (operation == State::Operation::Deviation && project.deviation)
-            {
-                const auto &result = *project.deviation;
-                appendLog(QStringLiteral("偏差（mm）：均值 %1，RMS %2，P95 %3，最大 %4；%5 点。仅当前矩形板件表面。")
-                              .arg(result.meanMm, 0, 'g', 8)
-                              .arg(result.rmsMm, 0, 'g', 8)
-                              .arg(result.p95Mm, 0, 'g', 8)
-                              .arg(result.maximumMm, 0, 'g', 8)
-                              .arg(static_cast<qulonglong>(result.pointCount)));
-                if (!state_->closing)
-                {
-                    state_->workspace->showPanel(QStringLiteral("dock.log"));
-                }
+                state_->workspace->showPanel(QStringLiteral("dock.commands"));
             }
         }
         else if (task.state == TaskState::Cancelled)
         {
-            appendLog(QStringLiteral("任务已取消，保留原工程状态。"));
+            if (!commandEchoed) appendLog(QStringLiteral("任务已取消，保留原工程状态。"));
         }
         else
         {
-            reportError(text(task.errorCode) + QStringLiteral(": ") + text(task.message));
+            auto message = text(task.errorCode) + QStringLiteral(": ") + text(task.message);
+            if (state_->startupPending)
+            {
+                if (operation == State::Operation::InitializeOutput)
+                {
+                    message.prepend(QStringLiteral("本次结果输出未初始化："));
+                }
+                if (!commandEchoed) appendLog(message);
+                state_->status->setText(message);
+                state_->workspace->showPanel(QStringLiteral("dock.commands"));
+            }
+            else
+            {
+                reportError(message, !commandEchoed);
+            }
+        }
+        if (operation == State::Operation::StartRecording && task.state != TaskState::Succeeded)
+        {
+            state_->startup = {};
+            state_->startupPending = false;
+            appendLog(QStringLiteral("启动录制失败，已停止后续启动操作。"));
         }
         updateActions();
+        if (state_->startupPending)
+        {
+            continueStartup();
+        }
     }
     catch (const std::exception &error)
     {

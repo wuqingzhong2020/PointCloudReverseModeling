@@ -19,6 +19,7 @@ enum class ActionId
     OpenFolder,
     ImportParameters,
     ExportStep,
+    ExportAndExit,
     ExportCloud,
     ExportModel,
     ExportParameters,

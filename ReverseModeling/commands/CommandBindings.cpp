@@ -1,5 +1,6 @@
 ﻿/* 文件描述：将产品命令定义绑定到现有同步几何业务，统一返回错误码和提交状态。 */
 #include "commands/CommandBindings.h"
+#include "commands/CommandFeedback.h"
 #include <algorithm>
 #include "cloud/ImportCommand.h"
 #include "commands/Json.h"
@@ -160,6 +161,11 @@ void bind(rm::CommandManager &manager, ProjectOperations &operations, const std:
                 operations.setContext(context);
                 business(args, before.revision);
                 const auto after = operations.project();
+                if (context.output)
+                {
+                    const auto details = commandDetails(name, after);
+                    if (!details.empty()) context.output(details);
+                }
                 const bool committed = after.revision != before.revision || after.deviation != before.deviation ||
                                        name == "cloud.export" || name == "model.export_step";
                 return rm::CommandResult{

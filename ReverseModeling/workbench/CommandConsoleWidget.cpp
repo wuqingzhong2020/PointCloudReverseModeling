@@ -3,6 +3,7 @@
 
 #include <QAction>
 #include <QDir>
+#include <QDateTime>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -46,6 +47,7 @@ struct CommandConsoleWidget::State
     QLabel *status{};
     QToolButton *cancel{};
     QToolButton *moreMenu{};
+    QAction *helpAction{};
     QString taskId;
     std::size_t outputSize{};
     std::uint64_t inputRequest{};
@@ -73,7 +75,6 @@ CommandConsoleWidget::CommandConsoleWidget(CommandService &service, WorkbenchAct
     m_state->moreMenu = new QToolButton(this);
     m_state->moreMenu->setText(QStringLiteral("更多"));
     m_state->moreMenu->setPopupMode(QToolButton::InstantPopup);
-    initializeMenu();
     toolbar->addWidget(m_state->moreMenu);
     layout->addLayout(toolbar);
     m_state->recordingStatus = new QLabel(this);
@@ -95,6 +96,7 @@ CommandConsoleWidget::CommandConsoleWidget(CommandService &service, WorkbenchAct
             m_state->console->takeInput();
         }
     };
+    initializeMenu();
     loadHistory();
     m_state->console->writeOutput(QStringLiteral("命令窗口 · 输入 help 查看命令用法\n"
                                                  "支持 Python，如 print(\"aaaa\")；多行语句以空行结束。\n"
@@ -113,11 +115,27 @@ void CommandConsoleWidget::initializeMenu()
 {
     auto *menu = new QMenu(m_state->moreMenu);
     m_state->moreMenu->setMenu(menu);
-    menu->addAction(QStringLiteral("命令帮助"), this, [this] {
+    m_state->helpAction = menu->addAction(QStringLiteral("命令帮助"), this, [this] {
         m_state->console->replaceInput(QStringLiteral("help"));
         submit(m_state->console->takeInput());
     });
-    menu->addAction(QStringLiteral("清屏 Ctrl+L"), this, [this] { m_state->console->clearScreen(); });
+    menu->addSeparator();
+    auto *copy = menu->addAction(QStringLiteral("复制所选 Ctrl+C"), m_state->console, &ConsoleEditor::copy);
+    copy->setObjectName(QStringLiteral("command.copy"));
+    copy->setEnabled(false);
+    connect(m_state->console, &ConsoleEditor::copyAvailable, copy, &QAction::setEnabled);
+    auto *clear = menu->addAction(QStringLiteral("清空输出 Ctrl+L"), this, [this] { m_state->console->clearScreen(); });
+    clear->setObjectName(QStringLiteral("command.clear"));
+    auto *tools = new QHBoxLayout;
+    for (auto *action : {copy, clear})
+    {
+        auto *button = new QToolButton(this);
+        button->setDefaultAction(action);
+        tools->addWidget(button);
+    }
+    tools->addStretch();
+    static_cast<QVBoxLayout *>(layout())->insertLayout(1, tools);
+    clear->setToolTip(QStringLiteral("清空命令和日志显示，保留当前输入、输入历史及录制脚本。"));
 }
 void CommandConsoleWidget::replayScript()
 {
@@ -161,14 +179,14 @@ void CommandConsoleWidget::executeStartup(const StartupRequest &request)
         {
             const auto line = request.arguments.size() == 1 ? request.arguments.front()
                                                            : commandArgumentsText(request.arguments);
-            m_state->console->writeOutput(QStringLiteral("[启动] rm> ") + text(line) + '\n');
+            m_state->console->writeCommand(text(line));
             beginTask(m_state->service.submitCommandArguments(request.arguments));
         }
         else
         {
             const auto &value = request.arguments.front();
             const auto path = std::filesystem::path(std::u8string(value.begin(), value.end()));
-            m_state->console->writeOutput(QStringLiteral("[启动] 执行脚本：") +
+            m_state->console->writeOutput(QStringLiteral("执行脚本：") +
                 text(commandArgumentsText(request.arguments)) + '\n');
             beginTask(m_state->service.submitScriptFile(path,
                 {request.arguments.begin() + 1, request.arguments.end()}));
@@ -185,14 +203,14 @@ void CommandConsoleWidget::beginTask(const std::string &id)
     m_state->taskId = text(id);
     m_state->outputSize = 0;
     m_state->inputRequest = 0;
-    m_state->moreMenu->setEnabled(false);
+    m_state->helpAction->setEnabled(false);
     m_state->cancel->setEnabled(true);
     m_state->status->setText(QStringLiteral("执行中…"));
     refreshRecordingState();
 }
 void CommandConsoleWidget::finishPrompt()
 {
-    m_state->moreMenu->setEnabled(true);
+    m_state->helpAction->setEnabled(true);
     m_state->cancel->setEnabled(false);
     m_state->status->setText(m_state->moreInput ? QStringLiteral("继续输入 · 空行结束 · Ctrl+C 取消")
                                              : QStringLiteral("Enter 执行 · Ctrl+L 清屏"));
@@ -219,6 +237,13 @@ void CommandConsoleWidget::submit(const QString &line)
                 m_state->console->showPrompt({}, {}, true);
             }
         }
+        return;
+    }
+    if (m_state->workbenchBusy)
+    {
+        m_state->console->writeOutput(QStringLiteral("请等待当前工作台任务结束。\n"));
+        finishPrompt();
+        m_state->console->replaceInput(line);
         return;
     }
     const auto value = line.trimmed().isEmpty() ? QString{} : line;
@@ -347,27 +372,48 @@ void CommandConsoleWidget::rememberInput(const QString &input)
     }
     m_state->historyIndex = static_cast<int>(history.size());
 }
+void CommandConsoleWidget::appendLog(const QString &message)
+{
+    // Drain earlier worker events before adding a GUI message, without consuming its input draft.
+    pollUiCommands();
+    m_state->console->writeOutput(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss  ")) +
+                                  message + '\n');
+}
+void CommandConsoleWidget::flushUiCommands()
+{
+    poll();
+}
 void CommandConsoleWidget::pollUiCommands()
 {
     const auto events = m_state->service.takeUiCommandEvents();
+    bool historyChanged = false;
     for (const auto &event : events)
     {
-        const auto native = text(event.commandLine);
-        // writeOutput preserves an unfinished command or macro input() reply.
-        m_state->console->writeOutput(QStringLiteral("[界面] rm> ") + native + '\n' +
-                                      (event.succeeded ? QString{} : QStringLiteral("未完成：")) + text(event.message) +
-                                      '\n');
-        rememberInput(native);
+        if (event.kind == UiCommandEventKind::Started)
+        {
+            const auto native = text(event.commandLine);
+            m_state->console->writeCommand(native);
+            m_state->console->writeOutput(text(commandExecutionEcho(event.commandLine)));
+            rememberInput(native);
+            historyChanged = true;
+        }
+        else if (event.kind == UiCommandEventKind::Output)
+        {
+            m_state->console->writeOutput(text(event.message));
+        }
+        else
+        {
+            m_state->console->writeOutput((event.succeeded ? QString{} : QStringLiteral("未完成：")) +
+                                          text(event.message) + '\n');
+        }
     }
-    if (!events.empty())
-    {
-        saveHistory();
-    }
+    if (historyChanged) saveHistory();
 }
 void CommandConsoleWidget::startRecording()
 {
     QFileDialog dialog(this, QStringLiteral("选择录制脚本"));
     dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setOption(QFileDialog::DontConfirmOverwrite, true);
     dialog.setNameFilter(QStringLiteral("命令脚本 (*.py)"));
     dialog.setDefaultSuffix(QStringLiteral("py"));
     if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty())
@@ -377,7 +423,7 @@ void CommandConsoleWidget::startRecording()
     const auto path = dialog.selectedFiles().front();
     try
     {
-        // The save dialog confirms replacement of an existing script.
+        // Existing scripts are overwritten; the recorder reports this in the command window.
         const auto id = m_state->service.submitStartRecording(std::filesystem::path(path.toStdWString()), true);
         if (onShowRequested)
         {

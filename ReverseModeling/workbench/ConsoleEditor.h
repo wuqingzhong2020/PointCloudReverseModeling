@@ -15,6 +15,7 @@ class ConsoleEditor final : public QPlainTextEdit
     QString input() const;
     void replaceInput(const QString &value);
     void writeOutput(const QString &value);
+    void writeCommand(const QString &command);
     void clearScreen();
     bool acceptingInput() const;
     void setCompletions(QStringList values);
@@ -30,6 +31,7 @@ class ConsoleEditor final : public QPlainTextEdit
     void contextMenuEvent(QContextMenuEvent *event) override;
 
   private:
+    void writeTranscript(const QString &value, bool indent);
     void editableCursor();
     void completeWord();
     int m_promptStart{};

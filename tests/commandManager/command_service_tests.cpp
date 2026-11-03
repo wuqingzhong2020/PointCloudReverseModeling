@@ -26,6 +26,12 @@ reverse::TaskSnapshot finished(reverse::CommandService &service, const std::stri
     (void)service.cancel(id);
     throw std::runtime_error("Command test timed out");
 }
+std::vector<reverse::UiCommandEvent> completedUiCommands(reverse::CommandService &service)
+{
+    auto events = service.takeUiCommandEvents();
+    std::erase_if(events, [](const auto &event) { return event.kind != reverse::UiCommandEventKind::Finished; });
+    return events;
+}
 struct CloudFixture
 {
     std::filesystem::path directory =
@@ -115,7 +121,7 @@ TEST(UiCommandEcho, SelectionCropHistoryAndExportReplayInBothModes)
         const auto collect = [&](const std::string &id) {
             const auto task = finished(service, id);
             EXPECT_TRUE(task.result.ok()) << task.message;
-            auto batch = service.takeUiCommandEvents();
+            auto batch = completedUiCommands(service);
             if (batch.size() != 1)
             {
                 throw std::runtime_error("Expected exactly one UI echo");
@@ -127,7 +133,7 @@ TEST(UiCommandEcho, SelectionCropHistoryAndExportReplayInBothModes)
             const auto project = service.project();
             expectedCounts.push_back(project.cloud->points.size());
             expectedSelections.push_back(project.selection ? *project.selection : reverse::CloudSelection{});
-            EXPECT_TRUE(service.takeUiCommandEvents().empty());
+            EXPECT_TRUE(completedUiCommands(service).empty());
         };
         collect(service.submitImport(file.path, reverse::LengthUnit::Millimeter));
         reverse::CloudSelectionRect rectangle;
@@ -184,7 +190,7 @@ TEST(UiCommandEcho, ParametricGeometryAndExportRetainActualParameters)
         const auto exported =
             finished(service, service.submitExport(file.directory / "model.step", service.project().revision));
         ASSERT_TRUE(exported.result.ok()) << exported.message;
-        events = service.takeUiCommandEvents();
+        events = completedUiCommands(service);
     }
     ASSERT_EQ(events.size(), 3u);
     EXPECT_NE(events[1].commandLine.find("mirrorSymmetry"), std::string::npos);
@@ -211,7 +217,7 @@ TEST(UiCommandEcho, FailedAndCancelledUiTasksAreReportedOnceWithoutConsoleDuplic
     reverse::CommandService service;
     const auto bad = service.submitRecognizedReconstruct(false, 0, -1);
     EXPECT_FALSE(finished(service, bad).result.ok());
-    const auto errors = service.takeUiCommandEvents();
+    const auto errors = completedUiCommands(service);
     ASSERT_EQ(errors.size(), 1u);
     EXPECT_FALSE(errors.front().succeeded);
     EXPECT_NE(errors.front().message.find("end_tolerance"), std::string::npos);
@@ -220,18 +226,18 @@ TEST(UiCommandEcho, FailedAndCancelledUiTasksAreReportedOnceWithoutConsoleDuplic
     const auto blocked = service.submitPython("input('waiting')");
     const auto waiting = waitingForInput(service, blocked);
     const auto ui = service.submitCloudHistory(reverse::CloudHistoryAction::Reset, 0);
-    EXPECT_TRUE(service.takeUiCommandEvents().empty());
+    EXPECT_TRUE(completedUiCommands(service).empty());
     ASSERT_TRUE(service.cancel(ui));
     ASSERT_TRUE(service.provideInput(blocked, waiting.inputRequest, std::string("continue")));
     ASSERT_TRUE(finished(service, blocked).result.ok());
     EXPECT_EQ(finished(service, ui).state, reverse::TaskState::Cancelled);
-    const auto cancelled = service.takeUiCommandEvents();
+    const auto cancelled = completedUiCommands(service);
     ASSERT_EQ(cancelled.size(), 1u);
     EXPECT_FALSE(cancelled.front().succeeded);
     EXPECT_EQ(cancelled.front().commandLine, "cloud.reset");
     (void)finished(service, service.submitLine("help"));
     (void)finished(service, service.submitCommand("project.snapshot"));
-    EXPECT_TRUE(service.takeUiCommandEvents().empty());
+    EXPECT_TRUE(completedUiCommands(service).empty());
 }
 TEST(CloudEditCommands, UiCropAndDeleteReplayAloneWithNoOrDifferentLiveSelection)
 {
@@ -251,7 +257,7 @@ TEST(CloudEditCommands, UiCropAndDeleteReplayAloneWithNoOrDifferentLiveSelection
                                                                        service.project().revision))
                             .result.ok());
             ASSERT_TRUE(finished(service, service.submitCloudEdit(mode, service.project().revision)).result.ok());
-            edit = service.takeUiCommandEvents().back();
+            edit = completedUiCommands(service).back();
             EXPECT_NE(edit.commandLine.find("--regions"), std::string::npos);
             EXPECT_NE(edit.commandLine.find("viewProjection"), std::string::npos);
             EXPECT_EQ(edit.commandLine.find("--indices"), std::string::npos);
@@ -309,7 +315,7 @@ TEST(CloudEditCommands, MultipleCameraRegionsAndUndoKeepCompleteRecipe)
         ASSERT_TRUE(finished(service,
                              service.submitCloudEdit(reverse::CloudEditMode::KeepSelection, service.project().revision))
                         .result.ok());
-        crop = service.takeUiCommandEvents().back();
+        crop = completedUiCommands(service).back();
         for (const auto &point : service.project().cloud->points)
             expectedCrop.push_back(point.sourceIndex);
         ASSERT_TRUE(
@@ -320,7 +326,7 @@ TEST(CloudEditCommands, MultipleCameraRegionsAndUndoKeepCompleteRecipe)
         ASSERT_TRUE(finished(service, service.submitCloudEdit(reverse::CloudEditMode::DeleteSelection,
                                                               service.project().revision))
                         .result.ok());
-        remove = service.takeUiCommandEvents().back();
+        remove = completedUiCommands(service).back();
         for (const auto &point : service.project().cloud->points)
             expectedRemove.push_back(point.sourceIndex);
     }
@@ -356,7 +362,7 @@ TEST(CloudEditCommands, IndexSeedPlusRectangleAndClearDoNotReuseOldRegions)
         ASSERT_TRUE(finished(service,
                              service.submitCloudEdit(reverse::CloudEditMode::KeepSelection, service.project().revision))
                         .result.ok());
-        edit = service.takeUiCommandEvents().back();
+        edit = completedUiCommands(service).back();
         EXPECT_NE(edit.commandLine.find("--indices"), std::string::npos);
         EXPECT_NE(edit.commandLine.find("--regions"), std::string::npos);
         for (const auto &point : service.project().cloud->points)
@@ -372,7 +378,7 @@ TEST(CloudEditCommands, IndexSeedPlusRectangleAndClearDoNotReuseOldRegions)
             finished(service, service.submitCloudEdit(reverse::CloudEditMode::KeepSelection, before.revision));
         EXPECT_EQ(empty.errorCode, "empty_selection");
         EXPECT_EQ(service.project().revision, before.revision);
-        EXPECT_EQ(service.takeUiCommandEvents().back().commandLine, "cloud.crop --indices []");
+        EXPECT_EQ(completedUiCommands(service).back().commandLine, "cloud.crop --indices []");
     }
     reverse::CommandService replay;
     ASSERT_TRUE(finished(replay, replay.submitCommand("cloud.import", {file.utf8()})).result.ok());
@@ -623,17 +629,17 @@ TEST(CommandMacros, NativeScriptRecordsSuccessfulPrefixAndStopsAtInvalidParamete
     const auto result = finished(service, script);
     EXPECT_EQ(result.errorCode, "invalid_value");
     EXPECT_TRUE(result.result.committed);
-    EXPECT_NE(result.output.find("[脚本] rm> cloud.import "), std::string::npos);
+    EXPECT_NE(result.output.find("// cloud.import "), std::string::npos);
     EXPECT_NE(result.output.find("已导入点云，共 8 点。"), std::string::npos);
-    EXPECT_NE(result.output.find("[脚本] rm> cloud.select_indices --indices '[0,1]'"), std::string::npos);
-    EXPECT_NE(result.output.find("[脚本] rm> cloud.crop"), std::string::npos);
-    EXPECT_NE(result.output.find("[脚本] rm> model.reconstruct --mirror wrong"), std::string::npos);
+    EXPECT_NE(result.output.find("// cloud.select_indices --indices '[0,1]'"), std::string::npos);
+    EXPECT_NE(result.output.find("// cloud.crop"), std::string::npos);
+    EXPECT_NE(result.output.find("// model.reconstruct --mirror wrong"), std::string::npos);
     EXPECT_TRUE(result.output.ends_with("未完成：" + result.message + '\n'));
     EXPECT_TRUE(result.message.starts_with("第 5 行："));
     EXPECT_NE(result.message.find("--mirror"), std::string::npos);
     EXPECT_EQ(result.result.value.as<rm::Arguments>().at("scriptLine"), rm::Value(5U));
     EXPECT_EQ(result.result.value.as<rm::Arguments>().at("parameter"), rm::Value("--mirror"));
-    EXPECT_EQ(result.output.find("[脚本] rm> cloud.reset"), std::string::npos);
+    EXPECT_EQ(result.output.find("// cloud.reset"), std::string::npos);
     EXPECT_EQ(result.output.find("canUndoCloud"), std::string::npos);
     EXPECT_TRUE(service.recordingState().active);
     ASSERT_TRUE(service.project().cloud);
@@ -665,19 +671,19 @@ TEST(ScriptEcho, NativeLinesCommentsHelpAndQueriesWithoutRecording)
     ASSERT_TRUE(result.result.ok()) << result.message;
     EXPECT_FALSE(service.recordingState().active);
     EXPECT_EQ(result.message, "脚本执行完成，共 4 条命令。");
-    const auto first = result.output.find("[脚本] rm> project.snapshot\n");
+    const auto first = result.output.find("// project.snapshot\n");
     ASSERT_NE(first, std::string::npos);
-    const auto second = result.output.find("[脚本] rm> project.snapshot\n", first + 1);
+    const auto second = result.output.find("// project.snapshot\n", first + 1);
     ASSERT_NE(second, std::string::npos);
-    EXPECT_EQ(result.output.find("[脚本] rm> project.snapshot\n", second + 1), std::string::npos);
-    EXPECT_NE(result.output.find("[脚本] rm> help cloud.crop\n"), std::string::npos);
-    EXPECT_NE(result.output.find("[脚本] rm> cloud.reset --help\n"), std::string::npos);
+    EXPECT_EQ(result.output.find("// project.snapshot\n", second + 1), std::string::npos);
+    EXPECT_NE(result.output.find("// help cloud.crop\n"), std::string::npos);
+    EXPECT_NE(result.output.find("// cloud.reset --help\n"), std::string::npos);
     EXPECT_NE(result.output.find("用法: cloud.crop"), std::string::npos);
     EXPECT_EQ(result.output.find("注释"), std::string::npos);
     EXPECT_EQ(result.output.find("版本:"), std::string::npos);
-    EXPECT_TRUE(finished(service, service.submitLine("project.snapshot")).output.empty());
+    EXPECT_EQ(finished(service, service.submitLine("project.snapshot")).output, "// project.snapshot\n");
     EXPECT_EQ(finished(service, service.submitPythonLine("1 + 1")).output, "2\n");
-    EXPECT_TRUE(service.takeUiCommandEvents().empty());
+    EXPECT_TRUE(completedUiCommands(service).empty());
 }
 TEST(CommandScripts, StreamsBeforeHandlerAndCancelsBetweenCommandsOnSameThread)
 {
@@ -694,7 +700,7 @@ TEST(CommandScripts, StreamsBeforeHandlerAndCancelsBetweenCommandsOnSameThread)
     const auto thread = std::this_thread::get_id();
     manager.bindHandler("test.step", [&](const auto &, const auto &) {
         EXPECT_EQ(std::this_thread::get_id(), thread);
-        EXPECT_TRUE(output.ends_with("[脚本] rm> test.step\n"));
+        EXPECT_TRUE(output.ends_with("// test.step\n"));
         ++calls;
         return rm::CommandResult{rm::ResultKind::Success, {}, "done", {}, true};
     });
@@ -736,7 +742,7 @@ TEST(CommandScripts, ReportsSyntaxErrorsWithPhysicalLineNumbersWithoutExecutingL
         EXPECT_EQ(result.code, code) << result.message;
         EXPECT_TRUE(result.message.starts_with("第 3 行："));
         EXPECT_FALSE(result.committed);
-        EXPECT_EQ(output.find("[脚本] rm> help"), std::string::npos);
+        EXPECT_EQ(output.find("// help"), std::string::npos);
     }
     EXPECT_EQ(reverse::executeCommandScript(manager, "# 空脚本\r\n\n", {}).message, "脚本执行完成，共 0 条命令。");
 }
@@ -771,7 +777,7 @@ TEST(CommandMacros, InvalidPathsAndRepeatedStartDoNotEraseRecording)
     EXPECT_EQ(finished(service, service.submitStartRecording(existing)).errorCode, "output_exists");
     EXPECT_EQ(readScript(existing), original);
     EXPECT_EQ(finished(service, service.submitStartRecording(file.path)).errorCode, "invalid_script_path");
-    EXPECT_EQ(finished(service, service.submitStartRecording(file.directory / "missing" / "script.py")).errorCode,
+    EXPECT_EQ(finished(service, service.submitStartRecording(existing / "script.py")).errorCode,
               "recording_open_failed");
     EXPECT_FALSE(service.recordingState().active);
     EXPECT_EQ(finished(service, service.submitStopRecording()).errorCode, "not_recording");
@@ -782,6 +788,10 @@ TEST(CommandMacros, InvalidPathsAndRepeatedStartDoNotEraseRecording)
     EXPECT_EQ(readScript(existing), recorded);
     ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
     EXPECT_EQ(readScript(existing), recorded);
+    const auto nested = file.directory / "missing" / "script.py";
+    ASSERT_TRUE(finished(service, service.submitStartRecording(nested)).result.ok());
+    EXPECT_TRUE(std::filesystem::is_regular_file(nested));
+    ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
 }
 TEST(CommandMacros, ScriptFailureStopsLaterCommandsAndRetainsEarlierCommit)
 {
@@ -868,10 +878,10 @@ TEST(MixedScripts, PythonBlocksStringsAndNativeCommandsRecordOnlyExecutedBusines
     ASSERT_TRUE(task.result.ok()) << task.message;
     EXPECT_TRUE(task.output.starts_with("开始\n"));
     EXPECT_TRUE(task.output.ends_with("2 True\n"));
-    const auto first = task.output.find("[脚本] rm> project.snapshot\n");
+    const auto first = task.output.find("// project.snapshot\n");
     ASSERT_NE(first, std::string::npos);
-    EXPECT_NE(task.output.find("[脚本] rm> project.snapshot\n", first + 1), std::string::npos);
-    EXPECT_EQ(task.output.find("[脚本] rm> cloud.reset"), std::string::npos);
+    EXPECT_NE(task.output.find("// project.snapshot\n", first + 1), std::string::npos);
+    EXPECT_EQ(task.output.find("// cloud.reset"), std::string::npos);
     ASSERT_TRUE(service.project().cloud);
     EXPECT_EQ(service.project().cloud->points.size(), 2);
     EXPECT_EQ(service.recordingState().commandCount, 5);
@@ -1044,7 +1054,8 @@ TEST(CommandFeedback, NativeMutationIsBriefQueryAndHelpRemainExplicit)
     const auto imported = finished(service, service.submitLine("cloud.import " + rm::formatValue(file.utf8())));
     ASSERT_TRUE(imported.result.ok()) << imported.message;
     EXPECT_EQ(reverse::commandFeedback(imported.result), "已导入点云，共 8 点。");
-    EXPECT_TRUE(imported.output.empty());
+    EXPECT_NE(imported.output.find("原始点 8；无效点 0；当前点 8"), std::string::npos);
+    EXPECT_EQ(imported.output.find("canUndoCloud"), std::string::npos);
     EXPECT_EQ(reverse::commandJson(imported.result.value).at("revision"), 1);
     const auto query = finished(service, service.submitLine("project.snapshot"));
     EXPECT_NE(reverse::commandFeedback(query.result).find("\"cloud\""), std::string::npos);
@@ -1064,7 +1075,7 @@ TEST(CommandFeedback, NativeAndPythonParameterFailuresPreserveDetailsWithoutTrac
     EXPECT_NE(native.message.find("--mirror"), std::string::npos);
     EXPECT_NE(native.message.find("true|false"), std::string::npos);
     EXPECT_EQ(native.message.find("用法"), std::string::npos);
-    EXPECT_TRUE(native.output.empty());
+    EXPECT_EQ(native.output, "// model.reconstruct --mirror wrong\n");
     const auto python = finished(service, service.submitPythonLine("rm.execute('model.reconstruct', mirror='wrong')"));
     EXPECT_EQ(python.errorCode, "invalid_value");
     EXPECT_NE(python.message.find("mirror"), std::string::npos);
@@ -1081,11 +1092,13 @@ TEST(CommandFeedback, PythonReplSummarizesDirectCallsWithoutChangingScriptValues
     const auto expression = "rm.execute('cloud.import', " + rm::formatValue(file.utf8()) + ")";
     const auto direct = finished(service, service.submitPythonLine(expression));
     ASSERT_TRUE(direct.result.ok()) << direct.message;
-    EXPECT_EQ(direct.output, "已导入点云，共 8 点。\n");
+    EXPECT_TRUE(direct.output.ends_with("已导入点云，共 8 点。\n"));
+    EXPECT_NE(direct.output.find("源文件："), std::string::npos);
     EXPECT_EQ(finished(service, service.submitPythonLine("_['revision']")).output, "1\n");
     const auto assignment = finished(service, service.submitPythonLine("result = " + expression));
     ASSERT_TRUE(assignment.result.ok()) << assignment.message;
-    EXPECT_TRUE(assignment.output.empty());
+    EXPECT_NE(assignment.output.find("源文件："), std::string::npos);
+    EXPECT_EQ(assignment.output.find("canUndoCloud"), std::string::npos);
     EXPECT_EQ(finished(service, service.submitPythonLine("type(result) is dict")).output, "True\n");
     const auto explicitValue = finished(service, service.submitPythonLine("result"));
     EXPECT_NE(explicitValue.output.find("'cloud':"), std::string::npos);
@@ -1137,6 +1150,8 @@ TEST(StartupExecution, NativeArgvKeepsChinesePathAndCommandOptions)
     ASSERT_TRUE(imported.result.ok()) << imported.message;
     ASSERT_NE(service.project().cloud, nullptr);
     EXPECT_EQ(service.project().cloud->points.size(), 8);
+    EXPECT_TRUE(imported.output.starts_with(reverse::commandExecutionEcho(
+        reverse::commandArgumentsText({"cloud.import", file.utf8(), "--unit", "mm"}))));
     EXPECT_EQ(finished(service, service.submitCommandArguments({"cloud.import", "--help"})).result.kind, rm::ResultKind::Help);
     const auto invalid = finished(service, service.submitCommandArguments({"cloud.import", file.utf8(), "--unit", "wrong"}));
     EXPECT_EQ(invalid.errorCode, "invalid_value");
@@ -1199,9 +1214,128 @@ TEST(ScriptArguments, MixedCommandsInputAndCancellationKeepArgumentScope)
     const auto id = service.submitScriptFile(path, {"argument-value"});
     const auto waiting = waitingForInput(service, id);
     EXPECT_TRUE(waiting.output.starts_with("argument-value\n"));
-    EXPECT_NE(waiting.output.find("[脚本] rm> project.snapshot"), std::string::npos);
+    EXPECT_NE(waiting.output.find("// project.snapshot"), std::string::npos);
     ASSERT_TRUE(service.cancel(id));
     EXPECT_EQ(finished(service, id).state, reverse::TaskState::Cancelled);
     EXPECT_TRUE(finished(service, service.submitPython(
         "assert sys.argv is original_argv\nassert '__file__' not in globals()\n")).result.ok());
+}
+
+TEST(CommandTranscript, UiStartDetailsAndResultFollowWorkerOrder)
+{
+    CloudFixture file;
+    reverse::CommandService service;
+    const auto imported = service.submitImport(file.path, reverse::LengthUnit::Millimeter);
+    ASSERT_TRUE(finished(service, imported).result.ok());
+    const auto exported = service.submitExportCloud(file.directory / "copy.pcd", service.project().revision);
+    ASSERT_TRUE(finished(service, exported).result.ok());
+    const auto events = service.takeUiCommandEvents();
+    ASSERT_EQ(events.size(), 6u);
+    for (std::size_t offset : {0u, 3u})
+    {
+        EXPECT_EQ(events[offset].kind, reverse::UiCommandEventKind::Started);
+        EXPECT_EQ(events[offset + 1].kind, reverse::UiCommandEventKind::Output);
+        EXPECT_EQ(events[offset + 2].kind, reverse::UiCommandEventKind::Finished);
+        EXPECT_EQ(events[offset].taskId, events[offset + 1].taskId);
+        EXPECT_EQ(events[offset].taskId, events[offset + 2].taskId);
+        EXPECT_TRUE(events[offset + 2].succeeded);
+    }
+    EXPECT_EQ(events.front().taskId, imported);
+    EXPECT_EQ(events.back().taskId, exported);
+    EXPECT_NE(events[1].message.find(file.utf8()), std::string::npos);
+    EXPECT_NE(events[1].message.find("原始点 8"), std::string::npos);
+    EXPECT_NE(events[4].message.find("PCD 导出：8 点"), std::string::npos);
+    EXPECT_NE(events[4].message.find("copy.pcd"), std::string::npos);
+    EXPECT_TRUE(service.takeUiCommandEvents().empty());
+}
+
+TEST(CommandTranscript, NativeAndMixedScriptsKeepEachCommandsDetailsTogether)
+{
+    CloudFixture file;
+    for (const bool python : {false, true})
+    {
+        const auto script = file.directory / (python ? "mixed.py" : "native.py");
+        std::ofstream source(script, std::ios::binary);
+        if (python) source << "print('before')\n";
+        source << "cloud.import " << rm::formatValue(file.utf8()) << "\n"
+               << "cloud.export " << rm::formatValue((file.directory / (python ? "mixed.pcd" : "native.pcd")).string())
+               << "\nmodel.reconstruct --mirror wrong\ncloud.reset\n";
+        source.close();
+        reverse::CommandService service;
+        const auto result = finished(service, service.submitScriptFile(script));
+        ASSERT_FALSE(result.result.ok());
+        const auto &output = result.output;
+        const auto importCommand = output.find("// cloud.import");
+        const auto importLog = output.find("原始点 8");
+        const auto importDone = output.find("已导入点云，共 8 点。");
+        const auto exportCommand = output.find("// cloud.export");
+        const auto exportLog = output.find("PCD 导出：8 点");
+        const auto exportDone = output.find("点云已导出。");
+        const auto failed = output.find("// model.reconstruct");
+        ASSERT_NE(failed, std::string::npos);
+        EXPECT_LT(importCommand, importLog);
+        EXPECT_LT(importLog, importDone);
+        EXPECT_LT(importDone, exportCommand);
+        EXPECT_LT(exportCommand, exportLog);
+        EXPECT_LT(exportLog, exportDone);
+        EXPECT_LT(exportDone, failed);
+        EXPECT_EQ(output.find("// cloud.reset"), std::string::npos);
+        EXPECT_EQ(output.find("canUndoCloud"), std::string::npos);
+        EXPECT_TRUE(output.ends_with("未完成：" + result.message + '\n'));
+    }
+}
+
+TEST(CommandTranscript, ReconstructionWarningsDeviationAndStepReadbackAreIncluded)
+{
+    CloudFixture file;
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    const reverse::BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
+    const auto model = finished(service, service.submitReconstruct(parameters, service.project().revision));
+    ASSERT_TRUE(model.result.ok()) << model.message;
+    EXPECT_NE(model.output.find("手动参数模型"), std::string::npos);
+    for (const auto &warning : service.project().model->warnings)
+        EXPECT_NE(model.output.find(warning), std::string::npos);
+    const auto deviation = finished(service, service.submitDeviation(service.project().revision));
+    ASSERT_TRUE(deviation.result.ok()) << deviation.message;
+    EXPECT_NE(deviation.output.find("偏差（mm）：均值"), std::string::npos);
+    EXPECT_NE(deviation.output.find("RMS"), std::string::npos);
+    EXPECT_NE(deviation.output.find("P95"), std::string::npos);
+    const auto exported = finished(service, service.submitExport(file.directory / "model.step", service.project().revision));
+    ASSERT_TRUE(exported.result.ok()) << exported.message;
+    EXPECT_NE(exported.output.find("STEP 回读："), std::string::npos);
+    EXPECT_NE(exported.output.find("model.step"), std::string::npos);
+}
+
+TEST(CommandTranscript, UiAndTypedReconstructionHaveIdenticalInputExecutionAndResult)
+{
+    CloudFixture file;
+    std::string command;
+    std::string uiTranscript;
+    {
+        reverse::CommandService service;
+        ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+        (void)service.takeUiCommandEvents();
+        const reverse::BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
+        const auto built = finished(service, service.submitReconstruct(parameters, service.project().revision));
+        ASSERT_TRUE(built.result.ok()) << built.message;
+        const auto events = service.takeUiCommandEvents();
+        ASSERT_EQ(events.size(), 3u);
+        ASSERT_EQ(events.front().kind, reverse::UiCommandEventKind::Started);
+        command = events.front().commandLine;
+        uiTranscript = reverse::commandExecutionEcho(command, true);
+        for (const auto &event : events)
+        {
+            if (event.kind == reverse::UiCommandEventKind::Output) uiTranscript += event.message;
+            if (event.kind == reverse::UiCommandEventKind::Finished) uiTranscript += event.message + '\n';
+        }
+    }
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    const auto typed = finished(service, service.submitLine(command));
+    ASSERT_TRUE(typed.result.ok()) << typed.message;
+    const auto typedTranscript = "rm> " + command + '\n' + typed.output + reverse::commandFeedback(typed.result) + '\n';
+    EXPECT_EQ(uiTranscript, typedTranscript);
+    EXPECT_TRUE(typedTranscript.starts_with("rm> " + command + "\n// " + command + '\n'));
+    EXPECT_EQ(typedTranscript.find("// " + command, typedTranscript.find("// " + command) + 1), std::string::npos);
 }

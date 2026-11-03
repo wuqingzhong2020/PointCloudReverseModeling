@@ -4,6 +4,7 @@
 #include "commands/CommandService.h"
 namespace reverse
 {
+class TaskOutput;
 class ProjectOperations
 {
   public:
@@ -25,6 +26,7 @@ class ProjectOperations
     [[nodiscard]] std::string submitExport(const std::filesystem::path &path, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitExportCloud(const std::filesystem::path &path, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitDeviation(std::uint64_t expectedRevision);
+    void exportTaskOutput(TaskOutput &output, std::uint64_t expectedRevision);
     void setContext(const rm::CommandContext &context);
     void selectIndices(const rm::Array &indices, CloudSelectionMode mode);
     [[nodiscard]] ProjectSnapshot project() const;

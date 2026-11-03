@@ -15,6 +15,11 @@ thread_local PythonRuntime *currentRuntime{};
 std::mutex interpreterMutex;
 int traceCancellation(PyObject *, PyFrameObject *, int, PyObject *)
 {
+    if (currentRuntime && currentRuntime->exitRequested())
+    {
+        PyErr_SetNone(PyExc_SystemExit);
+        return -1;
+    }
     if (currentRuntime && currentRuntime->context().stop.stop_requested())
     {
         PyErr_SetString(PyExc_KeyboardInterrupt, "Command cancelled");
@@ -28,6 +33,7 @@ struct PythonRuntime::Impl
     rm::CommandManager &manager;
     std::filesystem::path directory;
     rm::CommandContext context;
+    std::function<bool()> exitRequested;
     bool initialized{};
     std::unique_ptr<py::dict> globals;
     std::unique_ptr<py::object> compiler;
@@ -191,9 +197,15 @@ rm::CommandResult pythonFailure(const py::error_already_set &error)
                                                         py::str(value).cast<std::string>());
 }
 } // namespace
-PythonRuntime::PythonRuntime(rm::CommandManager &manager, std::filesystem::path directory)
+PythonRuntime::PythonRuntime(rm::CommandManager &manager, std::filesystem::path directory,
+                             std::function<bool()> exitRequested)
     : m_impl(std::make_unique<Impl>(manager, std::move(directory)))
 {
+    m_impl->exitRequested = std::move(exitRequested);
+}
+bool PythonRuntime::exitRequested() const
+{
+    return m_impl->exitRequested && m_impl->exitRequested();
 }
 PythonRuntime::~PythonRuntime() = default;
 PythonRuntime &PythonRuntime::current()
@@ -256,6 +268,7 @@ rm::CommandResult PythonRuntime::executeConsole(const std::string &line, const r
         }
         if (isNativeCommandLine(m_impl->manager, line))
         {
+            if (context.output) context.output(commandExecutionEcho(line));
             return m_impl->manager.executeLine(line, context);
         }
     }
@@ -266,7 +279,7 @@ rm::CommandResult PythonRuntime::executeScript(const std::string &source, const 
 {
     if (isNativeCommandScript(m_impl->manager, source))
     {
-        return executeCommandScript(m_impl->manager, source, context);
+        return executeCommandScript(m_impl->manager, source, context, m_impl->exitRequested);
     }
     const auto code = source.starts_with("\xEF\xBB\xBF") ? source.substr(3) : source;
     return execute(code, context, false, true, scriptPath, arguments);
@@ -279,10 +292,8 @@ rm::CommandResult PythonRuntime::executeNative(const std::string &line, std::siz
             m_impl->context.output(text);
         }
     };
-    if (m_impl->scriptCommands)
-    {
-        output("[脚本] rm> " + line + '\n');
-    }
+    // Also log native commands executed inside an interactive Python block.
+    output(commandExecutionEcho(line));
     auto result = m_impl->manager.executeLine(line, m_impl->context);
     if (!result.ok() && m_impl->scriptCommands)
     {
@@ -453,6 +464,8 @@ rm::CommandResult PythonRuntime::execute(const std::string &code, const rm::Comm
     catch (const py::error_already_set &error)
     {
         resetConsole();
+        if (exitRequested() && error.matches(PyExc_SystemExit))
+            return {rm::ResultKind::Success, {}, "STEP 与结果 JSON 已提交，正在退出。", {}, true};
         if (context.diagnostic)
         {
             context.diagnostic(error.what());

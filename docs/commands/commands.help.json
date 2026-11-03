@@ -586,7 +586,7 @@
     },
     {
       "name": "project",
-      "summary": "工程查询",
+      "summary": "工程与任务交付",
       "commands": [
         {
           "name": "snapshot",
@@ -600,6 +600,44 @@
           "examples": [
             "project.snapshot",
             "snapshot = rm.execute(\"project.snapshot\")"
+          ],
+          "description": ""
+        },
+        {
+          "name": "set_output_dir",
+          "summary": "设置本次任务输出目录",
+          "usage": "project.set_output_dir <path>",
+          "params": [
+            {
+              "name": "path",
+              "binding": "positional",
+              "position": 1,
+              "type": "path",
+              "required": true,
+              "min_size": 1,
+              "description": "交付目录；同目录重复设置不重置结果，不允许切换到其他目录"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "输出目录；初始化 result.json 为失败状态"
+          },
+          "examples": [
+            "project.set_output_dir \"D:/任务/001\""
+          ],
+          "description": ""
+        },
+        {
+          "name": "export_and_exit",
+          "summary": "导出完整模型、提交结果并退出",
+          "usage": "project.export_and_exit",
+          "params": [],
+          "returns": {
+            "type": "object",
+            "description": "STEP 和结果 JSON；成功保存录制后退出并停止脚本后续内容"
+          },
+          "examples": [
+            "project.export_and_exit"
           ],
           "description": ""
         }

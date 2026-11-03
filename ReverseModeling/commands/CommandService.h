@@ -66,7 +66,8 @@ struct CommandEnvironment
     std::filesystem::path logDirectory;
 };
 
-// Completed UI operations only; the console polls these without calling the GUI from the worker.
+// Ordered UI command lifecycle and output; only the GUI consumes these events.
+enum class UiCommandEventKind { Started, Output, Finished };
 struct UiCommandEvent
 {
     std::string taskId;
@@ -74,6 +75,7 @@ struct UiCommandEvent
     std::string pythonLine;
     std::string message;
     bool succeeded{};
+    UiCommandEventKind kind{UiCommandEventKind::Finished};
 };
 
 class CommandService {
@@ -83,6 +85,14 @@ public:
     // GUI 关闭时先请求退出，再异步查询；完成后析构不会等待正在执行的 Python。
     void requestShutdown();
     [[nodiscard]] bool shutdownComplete() const;
+    [[nodiscard]] bool isIdle() const;
+    [[nodiscard]] bool outputInitialized() const;
+    [[nodiscard]] std::optional<std::filesystem::path> outputDirectory() const;
+    [[nodiscard]] bool exitRequested() const;
+    [[nodiscard]] std::string submitInitializeOutput(const std::filesystem::path &directory);
+    [[nodiscard]] std::string submitStartupImport(const std::filesystem::path &path);
+    // 独占提交；成功后服务停止接收任务并退出工作线程，GUI 只需完成无取消项的关闭。
+    [[nodiscard]] std::string submitExportAndExit(std::uint64_t expectedRevision);
     CommandService(const CommandService&) = delete;
     CommandService& operator=(const CommandService&) = delete;
 

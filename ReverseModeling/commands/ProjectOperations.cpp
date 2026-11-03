@@ -3,6 +3,7 @@
  * 手写同步几何业务，通过不可变快照提交结果；由固定命令工作线程调用。
  */
 #include "commands/ProjectOperations.h"
+#include "commands/TaskOutput.h"
 #include "geometry/CloudEditing.h"
 #include "geometry/Geometry.h"
 #include <cctype>
@@ -425,6 +426,31 @@ std::string ProjectOperations::submitExport(const std::filesystem::path &path, s
         std::lock_guard lock(state->stateMutex);
         state->project.lastExport = result;
         state->project.exportedPathUtf8 = utf8Path(absolutePath);
+    });
+}
+
+void ProjectOperations::exportTaskOutput(TaskOutput &output, std::uint64_t expectedRevision)
+{
+    std::shared_ptr<const Model> model;
+    {
+        std::lock_guard lock(impl_->stateMutex);
+        if (impl_->project.revision != expectedRevision)
+        {
+            throw GeometryError("stale_revision", "工程已变化，请刷新后重试。");
+        }
+        model = impl_->model;
+    }
+    if (!model)
+    {
+        throw GeometryError("no_model", "当前没有可导出的模型。");
+    }
+    (void)impl_->launch("ExportAndExit", expectedRevision, [&](auto stop, const auto &progress) {
+        const auto result = output.deliver([&](const auto &path) {
+            return exportStep(*model, path, stop, progress);
+        }, stop);
+        std::lock_guard lock(impl_->stateMutex);
+        impl_->project.lastExport = result;
+        impl_->project.exportedPathUtf8 = utf8Path(output.modelPath());
     });
 }
 

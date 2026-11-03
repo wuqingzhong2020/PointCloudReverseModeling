@@ -91,6 +91,14 @@ void ConsoleEditor::replaceInput(const QString &value)
 }
 void ConsoleEditor::writeOutput(const QString &value)
 {
+    writeTranscript(value, true);
+}
+void ConsoleEditor::writeCommand(const QString &command)
+{
+    writeTranscript(QStringLiteral("rm> ") + command + '\n', false);
+}
+void ConsoleEditor::writeTranscript(const QString &value, bool indent)
+{
     if (value.isEmpty())
     {
         return;
@@ -105,7 +113,29 @@ void ConsoleEditor::writeOutput(const QString &value)
         cursor.removeSelectedText();
     }
     cursor.movePosition(QTextCursor::End);
-    cursor.insertText(value);
+    if (!indent)
+    {
+        if (cursor.positionInBlock() != 0) cursor.insertText(QStringLiteral("\n"));
+        cursor.insertText(value);
+    }
+    else
+    {
+        // Indent each displayed line once, including Python writes arriving in separate chunks.
+        // The input, command arguments and recorded script remain unchanged.
+        QString output;
+        output.reserve(value.size() + 4 * (value.count('\n') + 1));
+        bool lineStart = cursor.positionInBlock() == 0;
+        for (qsizetype begin = 0; begin < value.size();)
+        {
+            if (lineStart) output += QStringLiteral("    ");
+            const auto newline = value.indexOf('\n', begin);
+            const auto end = newline < 0 ? value.size() : newline + 1;
+            output += value.mid(begin, end - begin);
+            lineStart = newline >= 0;
+            begin = end;
+        }
+        cursor.insertText(output);
+    }
     setTextCursor(cursor);
     if (restore)
     {

@@ -21,6 +21,8 @@ class CommandConsoleWidget final : public QWidget
     std::function<void()> onShowRequested;
     void setWorkbenchBusy(bool busy);
     void executeStartup(const StartupRequest &request);
+    void appendLog(const QString &message);
+    void flushUiCommands();
 
   private:
     struct State;

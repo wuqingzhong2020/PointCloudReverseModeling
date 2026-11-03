@@ -31,8 +31,12 @@
   "model/ParametricCommand.h": "14e77e2ee2c02b950c9d88d8688f8c8fc9fe5cf78b7638b7707bb3b4f7e8548a",
   "model/ReconstructCommand.cpp": "e95f4c444f652297ab41c0446f1632107b23e79e4476f57d5e5cafcb6cdac129",
   "model/ReconstructCommand.h": "3ab4668258acede8f7f3b5d5c98389720d7e43e60052563fc24e4ed926b43115",
-  "project/ProjectModule.cpp": "73cae66f729d3249976d30d82d36ce5b34de2a816e488aaca9d11e6880f9e30e",
+  "project/ExportAndExitCommand.cpp": "5361539fe5d729cdab6f09478caec1f7fc5c92878282e4821b9f048fc0640fd6",
+  "project/ExportAndExitCommand.h": "678555042e48e2ea8af86836735c680bcb67ba3dbf3496e90a4d67a2ac8c0332",
+  "project/ProjectModule.cpp": "25d4b0ee27a18f99ca5dd662a1e6003105d39e95413905748b4adf3a32785595",
   "project/ProjectModule.h": "db874307c1d57ee7cdd6eedb4f29179c866855da2eecf142c9bd98a81b1ccb13",
+  "project/SetOutputDirCommand.cpp": "678ed9b8c898d3eca69d43f63b4694cf0ace57186b8ab0a9f48086892eeb3913",
+  "project/SetOutputDirCommand.h": "d6d0c4e37e24d26cdb13c5082c78a17b6e0af87566a3511d590ffbbb60d1fb0f",
   "project/SnapshotCommand.cpp": "8fa36658d0228d6abd80bb952b98c549f1e796209c8865b67b5ac28ec3f35f5f",
   "project/SnapshotCommand.h": "47c6dcb29239ec4613b85504a69bb6ec941ad17a1b483c1b222a902121eb43ad"
 }

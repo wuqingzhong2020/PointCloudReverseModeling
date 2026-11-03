@@ -2,6 +2,10 @@
 #include <algorithm>
 #include <cctype>
 #include <set>
+#include <sstream>
+#include <iomanip>
+#include <locale>
+#include "commands/CommandService.h"
 
 #include "commands/CommandFeedback.h"
 
@@ -144,6 +148,12 @@ std::string commandArgumentsText(const std::vector<std::string> &arguments)
     }
     return result;
 }
+std::string commandExecutionEcho(std::string_view line, bool includeInput)
+{
+    if (line.find_first_not_of(" \t\r\n") == std::string_view::npos) return {};
+    const std::string command(line);
+    return (includeInput ? "rm> " + command + '\n' : std::string{}) + "// " + command + '\n';
+}
 std::string commandFeedback(const rm::CommandResult &result)
 {
     if (!result.message.empty())
@@ -155,5 +165,60 @@ std::string commandFeedback(const rm::CommandResult &result)
         return rm::formatValue(result.value);
     }
     return {};
+}
+std::string commandDetails(const std::string &name, const ProjectSnapshot &project)
+{
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out << std::setprecision(8);
+    const bool cloudChanged = name == "cloud.import" || name == "cloud.crop" || name == "cloud.delete" ||
+                              name == "cloud.undo" || name == "cloud.redo" || name == "cloud.reset";
+    const auto warnings = [&out](const auto &values, const std::string &prefix) {
+        for (const auto &warning : values) out << prefix << warning << '\n';
+    };
+    if (cloudChanged)
+    {
+        if (name == "cloud.import") out << "源文件：" << project.sourcePathUtf8 << '\n';
+        if (project.cloud)
+        {
+            const auto &cloud = *project.cloud;
+            out << "原始点 " << cloud.sourcePointCount << "；无效点 " << cloud.invalidPointCount
+                << "；当前点 " << cloud.points.size() << "；1 单位 = " << cloud.sourceScaleToMm << " mm。\n";
+            if (project.estimate) warnings(project.estimate->warnings, "初值：");
+            if (name != "cloud.import") out << "源文件未修改，可使用撤销、重做或重置恢复点云。\n";
+        }
+        else if (project.model)
+        {
+            out << "模型格式 " << project.model->importedFormat << "；显示及导出单位 mm。\n";
+        }
+        warnings(project.warnings, "");
+    }
+    if ((name == "model.reconstruct" || name == "model.parametric") && project.model)
+    {
+        out << "模型版本 " << project.revision << "；" << project.model->solidCount << " 个板件实体，"
+            << project.model->surfaceCount << " 个观测面。\n";
+        out << (project.model->fromPointCloud ? "板厚采用点云识别结果，底板厚度估算会单独标记。"
+                                                            : "手动参数模型，标签不是点云识别厚度。") << '\n';
+        warnings(project.model->warnings, "");
+    }
+    if (name == "model.export_step" && project.lastExport)
+    {
+        const auto &result = *project.lastExport;
+        out << "STEP 回读：" << result.solidCount << " 个实体，" << result.surfaceCount << " 个观测面，"
+            << result.fileBytes << " 字节；文件：" << project.exportedPathUtf8 << '\n';
+    }
+    if (name == "cloud.export" && project.lastCloudExport)
+    {
+        const auto &result = *project.lastCloudExport;
+        out << "PCD 导出：" << result.pointCount << " 点，" << result.fileBytes
+            << " 字节；文件：" << project.exportedCloudPathUtf8 << '\n';
+    }
+    if (name == "model.deviation" && project.deviation)
+    {
+        const auto &result = *project.deviation;
+        out << "偏差（mm）：均值 " << result.meanMm << "，RMS " << result.rmsMm << "，P95 " << result.p95Mm
+            << "，最大 " << result.maximumMm << "；" << result.pointCount << " 点。仅当前矩形板件表面。\n";
+    }
+    return out.str();
 }
 } // namespace reverse

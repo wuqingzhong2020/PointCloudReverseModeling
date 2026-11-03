@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <condition_variable>
 #include <deque>
 #include <fstream>
@@ -17,6 +18,7 @@
 #include "commands/CommandService.h"
 #include "commands/MacroRecorder.h"
 #include "commands/ProjectOperations.h"
+#include "commands/TaskOutput.h"
 #include "commands/PythonRuntime.h"
 #include "geometry/Geometry.h"
 
@@ -49,6 +51,7 @@ struct CommandService::Impl
         std::function<rm::CommandResult(const rm::CommandContext &, PythonRuntime &)> run;
         std::stop_source cancellation;
         std::optional<CommandText> uiCommand;
+        bool exclusive{};
     };
     mutable std::mutex mutex;
     std::condition_variable ready;
@@ -57,14 +60,23 @@ struct CommandService::Impl
     std::deque<std::string> taskOrder;
     std::deque<UiCommandEvent> uiEvents;
     std::string active;
+    std::string activeUiTask;
     std::stop_source activeCancellation;
     bool closing{};
+    bool submissionLocked{};
+    bool outputInitialized{};
+    std::optional<std::filesystem::path> outputDirectory;
+    std::atomic_bool exitRequested{};
+    std::vector<rm::ValidatedCommand> startupCommands;
+    std::uint64_t startupRevision{};
+    bool capturingStartup{};
     std::atomic_bool workerExited{};
     bool committed{};
     bool inputReady{};
     std::optional<std::string> inputLine;
     std::uint64_t nextId{};
     ProjectOperations operations;
+    TaskOutput taskOutput;
     rm::CommandManager manager;
     MacroRecorder recorder;
     RecordingState recording;
@@ -79,6 +91,30 @@ struct CommandService::Impl
         }
         rmcmd::registerAllCommandModules(manager);
         registerApplicationCommandHandlers(manager, operations);
+        manager.bindHandler("project.set_output_dir", [this](const auto &, const auto &args) {
+            try
+            {
+                taskOutput.initialize(commandPath(args.at("path").template as<std::string>()));
+                const auto path = taskOutput.modelPath().parent_path();
+                const auto bytes = path.u8string();
+                const std::string value(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+                { std::lock_guard lock(mutex); outputInitialized = true; outputDirectory = path; }
+                return rm::CommandResult{rm::ResultKind::Success, {}, "任务输出目录：" + value,
+                                         rm::Arguments{{"path", value}}, true};
+            }
+            catch (const GeometryError &error) { return rm::CommandResult::error(error.code(), error.what()); }
+        });
+        manager.bindHandler("project.export_and_exit", [this](const auto &context, const auto &) {
+            try
+            {
+                operations.setContext(context);
+                operations.exportTaskOutput(taskOutput, context.expectedRevision.value_or(operations.project().revision));
+                { std::lock_guard lock(mutex); outputInitialized = false; }
+                if (context.output) context.output(commandDetails("model.export_step", operations.project()));
+                return rm::CommandResult{rm::ResultKind::Success, {}, "STEP 与结果 JSON 已提交。", {}, true};
+            }
+            catch (const GeometryError &error) { return rm::CommandResult::error(error.code(), error.what()); }
+        });
         manager.registerExecutor([this](const auto &context, const auto &command, const auto &next) {
             return execute(context, command, next);
         });
@@ -113,7 +149,21 @@ struct CommandService::Impl
         constexpr std::size_t limit = 1024 * 1024;
         if (output.size() < limit)
         {
-            output.append(message.substr(0, limit - output.size()));
+            const auto chunk = message.substr(0, limit - output.size());
+            output.append(chunk);
+            if (activeUiTask == id)
+            {
+                // Coalesce writes without crossing the command start/finish boundaries.
+                if (!uiEvents.empty() && uiEvents.back().taskId == id &&
+                    uiEvents.back().kind == UiCommandEventKind::Output)
+                {
+                    uiEvents.back().message.append(chunk);
+                }
+                else
+                {
+                    uiEvents.push_back({id, {}, {}, std::string(chunk), false, UiCommandEventKind::Output});
+                }
+            }
         }
     }
     std::optional<std::string> readInput(const std::string &id, std::stop_token stop)
@@ -144,7 +194,7 @@ struct CommandService::Impl
         std::ofstream file(environment.logDirectory / "commands.log", std::ios::app | std::ios::binary);
         file << text << '\n';
     }
-    void record(const rm::ValidatedCommand &command)
+    rm::ValidatedCommand absoluteCommand(const rm::ValidatedCommand &command)
     {
         auto recorded = command;
         const auto &definition = manager.definitions().at(recorded.name);
@@ -159,16 +209,21 @@ struct CommandService::Impl
                     std::string(reinterpret_cast<const char *>(absolute.data()), absolute.size());
             }
         }
-        recorder.record(definition, recorded);
+        return recorded;
+    }
+    void record(const rm::ValidatedCommand &command)
+    {
+        recorder.record(manager.definitions().at(command.name), absoluteCommand(command));
     }
     void publishRecording()
     {
         std::lock_guard lock(mutex);
         recording = recorder.state();
     }
-    rm::CommandResult execute(const rm::CommandContext &, const rm::ValidatedCommand &command,
+    rm::CommandResult execute(const rm::CommandContext &context, const rm::ValidatedCommand &command,
                               const rm::CommandManager::Next &next)
     {
+        if (exitRequested.load()) return rm::CommandResult::error("shutting_down", "交付已完成，程序正在退出。");
         const auto start = std::chrono::steady_clock::now();
         log("begin " + command.name);
         rm::CommandResult result;
@@ -190,6 +245,11 @@ struct CommandService::Impl
             command.name + " [" + (result.ok() ? "ok" : result.code) + "] " + std::to_string(elapsed) + " ms\n";
         log(message);
         committed = committed || result.committed;
+        if (result.kind == rm::ResultKind::Success && capturingStartup)
+        {
+            startupCommands.push_back(absoluteCommand(command));
+            startupRevision = operations.project().revision;
+        }
         if (result.kind == rm::ResultKind::Success && recorder.recording())
         {
             try
@@ -206,15 +266,44 @@ struct CommandService::Impl
                 log(recorder.state().error);
             }
         }
+        if (result.kind == rm::ResultKind::Success && command.name == "project.export_and_exit")
+        {
+            const bool wasRecording = recorder.recording();
+            if (wasRecording) (void)recorder.stop();
+            publishRecording();
+            if (!recorder.state().error.empty())
+            {
+                result = rm::CommandResult::error("recording_write_failed",
+                    "模型已交付，但录制未完整保存，已停止自动退出：" + recorder.state().error);
+                result.committed = true;
+                return result;
+            }
+            if (wasRecording && context.output) context.output("录制脚本已保存。\n");
+            result.message = "STEP 与结果 JSON 已提交，正在退出。";
+            std::lock_guard lock(mutex);
+            submissionLocked = true;
+            exitRequested.store(true);
+        }
         return result;
     }
+    rm::CommandResult executeStartup(const std::string &name, const rm::Array &args,
+                                     const rm::Arguments &options, const rm::CommandContext &context)
+    {
+        capturingStartup = true;
+        struct Reset { bool &flag; ~Reset() { flag = false; } } reset{capturingStartup};
+        return manager.execute(name, args, options, context);
+    }
     std::string submit(std::string operation, std::optional<std::uint64_t> revision, decltype(Job::run) run,
-                       std::optional<CommandText> uiCommand = {})
+                       std::optional<CommandText> uiCommand = {}, bool exclusive = false)
     {
         std::lock_guard lock(mutex);
-        if (closing)
+        if (closing || exitRequested.load())
         {
             throw GeometryError("shutting_down", "命令服务正在退出。");
+        }
+        if (submissionLocked || (exclusive && (!active.empty() || !queue.empty())))
+        {
+            throw GeometryError("task_busy", "请等待当前任务结束，导出并退出期间不能执行其他命令。");
         }
         if (queue.size() >= 64)
         {
@@ -228,7 +317,8 @@ struct CommandService::Impl
             tasks.erase(taskOrder.front());
             taskOrder.pop_front();
         }
-        queue.push_back({id, revision, std::move(run), {}, std::move(uiCommand)});
+        queue.push_back({id, revision, std::move(run), {}, std::move(uiCommand), exclusive});
+        submissionLocked = exclusive;
         ready.notify_one();
         return id;
     }
@@ -236,6 +326,13 @@ struct CommandService::Impl
     {
         const auto start = std::chrono::steady_clock::now();
         committed = false;
+        if (job.uiCommand)
+        {
+            std::lock_guard lock(mutex);
+            activeUiTask = job.id;
+            uiEvents.push_back({job.id, job.uiCommand->native, job.uiCommand->python, {}, false,
+                                UiCommandEventKind::Started});
+        }
         rm::CommandContext context;
         context.stop = job.cancellation.get_token();
         context.expectedRevision = job.revision;
@@ -307,16 +404,35 @@ struct CommandService::Impl
             // Only UI adapters enqueue echoes; console/Python calls already have their own transcript.
             uiEvents.push_back({job.id, std::move(job.uiCommand->native), std::move(job.uiCommand->python),
                                 commandFeedback(task.result), task.result.ok()});
-            while (uiEvents.size() > 256)
+            while (uiEvents.size() > 1024)
             {
                 uiEvents.pop_front();
             }
         }
+        if (job.exclusive)
+        {
+            submissionLocked = false;
+        }
+        if (exitRequested.load())
+        {
+            // 交付成功后不存在等待任务，也不再接受新命令；不触发可取消的关闭检查。
+            closing = true;
+            for (const auto &pending : queue)
+            {
+                auto &cancelled = tasks.at(pending.id);
+                cancelled.state = TaskState::Cancelled;
+                cancelled.errorCode = "shutting_down";
+                cancelled.message = "交付已完成，未执行后续任务。";
+                cancelled.result = rm::CommandResult::error(cancelled.errorCode, cancelled.message);
+            }
+            queue.clear();
+        }
+        activeUiTask.clear();
         active.clear();
     }
     void loop()
     {
-        PythonRuntime python(manager, environment.runtimeDirectory);
+        PythonRuntime python(manager, environment.runtimeDirectory, [this] { return exitRequested.load(); });
         while (true)
         {
             Job job;
@@ -362,6 +478,68 @@ bool CommandService::shutdownComplete() const
 {
     return impl_->workerExited.load();
 }
+bool CommandService::isIdle() const
+{
+    std::lock_guard lock(impl_->mutex);
+    return !impl_->closing && impl_->active.empty() && impl_->queue.empty() && !impl_->submissionLocked;
+}
+bool CommandService::outputInitialized() const
+{
+    std::lock_guard lock(impl_->mutex);
+    return impl_->outputInitialized;
+}
+std::optional<std::filesystem::path> CommandService::outputDirectory() const
+{
+    std::lock_guard lock(impl_->mutex);
+    return impl_->outputDirectory;
+}
+bool CommandService::exitRequested() const { return impl_->exitRequested.load(); }
+std::string CommandService::submitInitializeOutput(const std::filesystem::path &directory)
+{
+    auto *state = impl_.get();
+    const auto bytes = std::filesystem::absolute(directory).lexically_normal().u8string();
+    const std::string path(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    auto echo = commandText(state->manager.definitions().at("project.set_output_dir"), {path}, {});
+    return state->submit("InitializeOutput", {}, [state, path](const auto &context, auto &) {
+        return state->executeStartup("project.set_output_dir", {path}, {}, context);
+    }, std::move(echo), true);
+}
+std::string CommandService::submitStartupImport(const std::filesystem::path &requestedPath)
+{
+    auto *state = impl_.get();
+    const auto path = std::filesystem::absolute(requestedPath).lexically_normal();
+    const auto bytes = path.u8string();
+    const std::string value(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    auto echo = commandText(state->manager.definitions().at("cloud.import"), {value}, {{"unit", "mm"}});
+    return state->submit("StartupImport", {}, [state, path, value](const auto &context, auto &) {
+        auto extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error))
+        {
+            return rm::CommandResult::error("input_not_file", "--input_file 文件不存在或不是普通文件：" + value);
+        }
+        if (extension != ".pcd")
+        {
+            return rm::CommandResult::error("unsupported_format", "--input_file 仅接受 PCD 点云：" + value);
+        }
+        auto result = state->executeStartup("cloud.import", {value}, {{"unit", "mm"}}, context);
+        if (!result.ok())
+        {
+            result.message = "--input_file " + value + "：" + result.message;
+        }
+        return result;
+    }, std::move(echo));
+}
+std::string CommandService::submitExportAndExit(std::uint64_t expectedRevision)
+{
+    auto *state = impl_.get();
+    auto echo = commandText(state->manager.definitions().at("project.export_and_exit"), {}, {});
+    return state->submit("ExportAndExit", expectedRevision, [state](const auto &context, auto &) {
+        return state->manager.execute("project.export_and_exit", {}, {}, context);
+    }, std::move(echo), true);
+}
 std::string CommandService::submitCommand(std::string name, rm::Array positional, rm::Arguments options,
                                           std::optional<std::uint64_t> revision)
 {
@@ -385,6 +563,7 @@ std::string CommandService::submitCommandArguments(std::vector<std::string> argu
         return submitLine(std::move(arguments.front()));
     auto *state = impl_.get();
     return state->submit("Command", {}, [state, arguments = std::move(arguments)](const auto &context, auto &) {
+        if (context.output) context.output(commandExecutionEcho(commandArgumentsText(arguments)));
         return state->manager.executeArgv(arguments, context);
     });
 }
@@ -452,6 +631,14 @@ std::string CommandService::submitStartRecording(const std::filesystem::path &pa
     auto *state = impl_.get();
     return state->submit("StartRecording", {}, [state, path, overwrite](const auto &, auto &) {
         auto result = state->recorder.start(path, overwrite);
+        if (result.ok())
+        {
+            for (const auto &command : state->startupCommands) state->record(command);
+            if (!state->recorder.state().error.empty())
+                result = rm::CommandResult::error("recording_write_failed", state->recorder.state().error);
+            else if (state->operations.project().revision != state->startupRevision)
+                result.message += "\n已补写成功的启动命令；开始录制前的编辑未包含，请重新执行这些操作以完整复现。";
+        }
         state->publishRecording();
         return result;
     });
