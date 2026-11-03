@@ -379,6 +379,15 @@ std::string CommandService::submitLine(std::string line)
         return python.executeConsole(line, context);
     });
 }
+std::string CommandService::submitCommandArguments(std::vector<std::string> arguments)
+{
+    if (arguments.size() == 1)
+        return submitLine(std::move(arguments.front()));
+    auto *state = impl_.get();
+    return state->submit("Command", {}, [state, arguments = std::move(arguments)](const auto &context, auto &) {
+        return state->manager.executeArgv(arguments, context);
+    });
+}
 std::string CommandService::submitUiCommand(std::string name, rm::Array positional, rm::Arguments options,
                                             std::optional<std::uint64_t> revision)
 {
@@ -461,10 +470,12 @@ RecordingState CommandService::recordingState() const
     std::lock_guard lock(impl_->mutex);
     return impl_->recording;
 }
-std::string CommandService::submitScriptFile(const std::filesystem::path &path)
+std::string CommandService::submitScriptFile(const std::filesystem::path &path, std::vector<std::string> arguments)
 {
     auto *state = impl_.get();
-    return state->submit("ExecuteScript", {}, [path](const auto &context, PythonRuntime &python) {
+    const auto absolutePath = std::filesystem::absolute(path).lexically_normal();
+    return state->submit("ExecuteScript", {}, [path = absolutePath, arguments = std::move(arguments)](
+                                                const auto &context, PythonRuntime &python) {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         if (!file)
         {
@@ -489,7 +500,9 @@ std::string CommandService::submitScriptFile(const std::filesystem::path &path)
         {
             return rm::CommandResult::error("cancelled", "脚本任务已取消。");
         }
-        return python.executeScript(code, context);
+        const auto utf8 = path.u8string();
+        return python.executeScript(code, context,
+            std::string(reinterpret_cast<const char *>(utf8.data()), utf8.size()), arguments);
     });
 }
 bool CommandService::cancel(const std::string &id)

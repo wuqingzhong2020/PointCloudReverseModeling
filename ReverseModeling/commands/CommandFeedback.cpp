@@ -134,6 +134,16 @@ CommandText commandText(const rm::CommandDefinition &definition, const rm::Array
     result.python += ')';
     return result;
 }
+std::string commandArgumentsText(const std::vector<std::string> &arguments)
+{
+    std::string result;
+    for (const auto &argument : arguments)
+    {
+        if (!result.empty()) result += ' ';
+        result += quoteToken(argument);
+    }
+    return result;
+}
 std::string commandFeedback(const rm::CommandResult &result)
 {
     if (!result.message.empty())

@@ -102,6 +102,48 @@ print("结束")
 
 `input("问题")` 会在命令窗口等待回答，Enter 提交，Ctrl+D 结束输入，Ctrl+C 中断。读取输入和脚本执行均在常驻工作线程，GUI 继续响应；整份脚本占用一个 FIFO 作业，其他命令在其后执行。不可中断的第三方调用需等其返回后取消。Python 可访问本机资源，程序仅运行用户主动选择的脚本，不自动执行点云旁的文件。
 
+## 启动时执行命令或脚本
+
+`ReverseModeler.exe` 支持以下启动参数。无参数或使用 `-c/-f` 时打开 GUI；`-h/--help` 只在启动它的终端打印用法并立即退出，不创建 GUI。
+
+| 启动方式 | 行为 |
+|---|---|
+| 无参数 | 正常打开工作台，不执行命令 |
+| `-c 命令 [参数...]` | 执行一条产品命令，后续参数保持各自的边界 |
+| `-c "完整命令或 Python 语句"` | 按命令窗口的统一输入方式执行 |
+| `-f 脚本.py [参数...]` | 执行指定文件，后续参数交给脚本的 `sys.argv[1:]` |
+| `-h` / `--help` | 向终端标准输出打印启动用法、参数填写方式和示例，然后以状态码 0 退出 |
+
+在 EXE 所在目录打开 PowerShell，例如：
+
+```powershell
+.\ReverseModeler.exe -h
+.\ReverseModeler.exe --help
+.\ReverseModeler.exe -c help cloud.import
+.\ReverseModeler.exe -c cloud.import "D:/data/中文 点云.pcd" --unit mm
+.\ReverseModeler.exe -c "print('hello')"
+.\ReverseModeler.exe -f "D:/scripts/建模 脚本.py" aa "bb cc" --count 2
+```
+
+最后一个例子可以使用以下 `.py` 内容：
+
+```python
+import sys
+print("脚本路径：", __file__)
+print("全部参数：", sys.argv[1:])
+# 输出 ['aa', 'bb cc', '--count', '2']
+project.snapshot
+```
+
+- `sys.argv[0]` 和 `__file__` 是本次脚本的绝对路径；后续参数均为字符串，可使用 Python 的 `argparse` 自行解析。
+- 启动入口只识别最前面的 `-c` 或 `-f`，后面的 `--help`、`-c`、`-f`、负数等均属于该命令或脚本。例如 `-c cloud.import --help` 查询导入命令的帮助，`-f job.py --help` 则由脚本处理帮助参数。
+- 含空格的路径或单个参数须由启动终端正确引用。`-c` 的完整 Python 语句须作为一个参数传入；产品命令可按多个参数传入，也可把整条命令用引号包起来。命令参数不会插值为 Python 变量。
+- 相对路径按启动时工作目录解析，不自动切换到 EXE 或脚本目录；脚本可用 `__file__` 定位旁边的文件。
+- 缺少命令、缺少文件路径或未知启动选项，会向终端标准错误打印错误和用法，以状态码 2 退出，不打开 GUI；`-f` 指定的脚本不存在时，仍在工作台报告读取失败。错误不会触发其他命令。
+- Windows 下兼容 Git Bash、PowerShell/CMD 及输出重定向，例如 `./ReverseModeler.exe --help > usage.txt`。管道和文件输出为 UTF-8；原生控制台通过 Unicode 输出中文，不修改终端代码页。
+- 启动任务复用常驻工作线程和 FIFO，支持正常的回显、参数检查、中断和 `input()`。成功修改工程后，点云、模型树和视图同步更新。
+- 脚本结束、报错或取消后恢复先前的 `sys.argv` 和 `__file__`，避免后续交互或其他脚本读到上一份脚本的参数。普通界面“执行脚本”时 `sys.argv` 只有脚本路径。
+
 ## 3. 录制与记录位置
 
 顶部 **脚本** 分组只有三个按钮：

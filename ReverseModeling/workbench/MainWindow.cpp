@@ -133,7 +133,7 @@ struct MainWindow::State
     QTimer *timer{};
 };
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     : SARibbonMainWindow(parent,
                          SARibbonMainWindowStyleFlag::UseRibbonMenuBar | SARibbonMainWindowStyleFlag::UseNativeFrame),
       state_(std::make_unique<State>())
@@ -437,9 +437,10 @@ MainWindow::MainWindow(QWidget *parent)
     refreshProjectPanels();
     updateActions();
     QTimer::singleShot(0, this,
-                       [this]
+                       [this, startup = std::move(startup)]
                        {
                            state_->workspace->restoreLayout();
+                           state_->console->executeStartup(startup);
                        });
 }
 

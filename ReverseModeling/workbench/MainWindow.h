@@ -8,13 +8,15 @@
 
 #include <SARibbonMainWindow.h>
 
+#include "commands/StartupArguments.h"
+
 namespace reverse::workbench {
 
 enum class ActionId;
 
 class MainWindow final : public SARibbonMainWindow {
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    explicit MainWindow(QWidget* parent = nullptr, StartupRequest startup = {});
     ~MainWindow() override;
 
 protected:

@@ -1,7 +1,12 @@
 /*
  * 文件描述：
- * 创建 Qt 桌面应用，定位随程序部署的 OCCT 资源并启动工作台；业务初始化由命令服务负责。
+ * 先处理终端帮助与启动参数错误；其余请求创建 Qt 桌面工作台，业务由命令服务执行。
  */
+#include <algorithm>
+#include <cstdio>
+#include <string>
+#include <vector>
+
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -16,6 +21,7 @@
 #include <wrl/client.h>
 #endif
 
+#include "commands/StartupArguments.h"
 #include "workbench/MainWindow.h"
 #include "workbench/WorkbenchTheme.h"
 
@@ -78,6 +84,74 @@ private:
 };
 #endif
 
+reverse::StartupRequest startupRequest(int argc, char *argv[])
+{
+    std::vector<std::string> arguments;
+#if defined(Q_OS_WIN)
+    // Use the original UTF-16 command line, before Qt consumes options or the CRT loses Chinese text.
+    int count = 0;
+    auto **values = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (!values)
+        return {reverse::StartupMode::Error, {}, "无法读取启动参数。"};
+    for (int i = 1; i < count; ++i)
+        arguments.push_back(QString::fromWCharArray(values[i]).toUtf8().toStdString());
+    LocalFree(values);
+    (void)argc;
+    (void)argv;
+#else
+    for (int i = 1; i < argc; ++i)
+        arguments.push_back(QString::fromLocal8Bit(argv[i]).toUtf8().toStdString());
+#endif
+    return reverse::parseStartupArguments(arguments);
+}
+
+bool writeStartupOutput(const std::string &message, bool error)
+{
+#if defined(Q_OS_WIN)
+    const auto stream = error ? STD_ERROR_HANDLE : STD_OUTPUT_HANDLE;
+    HANDLE output = GetStdHandle(stream);
+    const auto valid = [](HANDLE handle) {
+        return handle && handle != INVALID_HANDLE_VALUE && GetFileType(handle) != FILE_TYPE_UNKNOWN;
+    };
+    // A Windows GUI executable may have no CRT stdout. Preserve inherited pipes/files
+    // (Git Bash, redirection); attach to the parent console only when no handle exists.
+    if (!valid(output))
+    {
+        if (!AttachConsole(ATTACH_PARENT_PROCESS)) return false;
+        output = GetStdHandle(stream);
+    }
+    if (!valid(output)) return false;
+    DWORD mode = 0;
+    if (GetConsoleMode(output, &mode))
+    {
+        const auto wide = QString::fromUtf8(message.data(), static_cast<qsizetype>(message.size())).toStdWString();
+        std::size_t offset = 0;
+        while (offset < wide.size())
+        {
+            DWORD written = 0;
+            const auto count = static_cast<DWORD>(std::min<std::size_t>(wide.size() - offset, 16384));
+            if (!WriteConsoleW(output, wide.data() + offset, count, &written, nullptr) || written == 0)
+                return false;
+            offset += written;
+        }
+        return true;
+    }
+    std::size_t offset = 0;
+    while (offset < message.size())
+    {
+        DWORD written = 0;
+        const auto count = static_cast<DWORD>(std::min<std::size_t>(message.size() - offset, 65536));
+        if (!WriteFile(output, message.data() + offset, count, &written, nullptr) || written == 0)
+            return false;
+        offset += written;
+    }
+    return true;
+#else
+    auto *output = error ? stderr : stdout;
+    return std::fwrite(message.data(), 1, message.size(), output) == message.size() && std::fflush(output) == 0;
+#endif
+}
+
 void initializeRuntimeResources()
 {
     const QDir resources(QCoreApplication::applicationDirPath()
@@ -102,12 +176,23 @@ void initializeRuntimeResources()
 } // namespace
 
 int main(int argc, char* argv[]) {
+    const auto startup = startupRequest(argc, argv);
+    if (startup.mode == reverse::StartupMode::Help || startup.mode == reverse::StartupMode::Error)
+    {
+        const bool error = startup.mode == reverse::StartupMode::Error;
+        const auto message = (error ? startup.error + "\n\n" : std::string{}) + reverse::startupUsage();
+        const bool printed = writeStartupOutput(message, error);
+        return error ? 2 : (printed ? 0 : 1);
+    }
 #if defined(Q_OS_WIN)
     // 让任务栏按产品标识关联窗口；在创建任何 Qt 窗口之前设置。
     if (FAILED(SetCurrentProcessExplicitAppUserModelID(applicationUserModelId)))
         qWarning("Failed to set ReverseModeler taskbar identity.");
 #endif
-    QApplication application(argc, argv);
+    // Product/script arguments such as -style and -platform must not be consumed by QApplication.
+    int qtArgc = 1;
+    char *qtArgv[] = {argv[0], nullptr};
+    QApplication application(qtArgc, qtArgv);
     initializeRuntimeResources();
     QApplication::setApplicationName(QStringLiteral("ReverseModeler"));
     QApplication::setApplicationVersion(QStringLiteral(RM_APP_VERSION));
@@ -115,7 +200,7 @@ int main(int argc, char* argv[]) {
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/workbench/app/ReverseModeler.ico")));
     QApplication::setStyle(QStringLiteral("Fusion"));
     reverse::workbench::WorkbenchTheme::apply(application);
-    reverse::workbench::MainWindow window;
+    reverse::workbench::MainWindow window(nullptr, startup);
 #if defined(Q_OS_WIN)
     const TaskbarIdentity taskbarIdentity(window);
 #endif

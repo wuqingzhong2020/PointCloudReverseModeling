@@ -5,6 +5,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 namespace pybind11
 {
 class object;
@@ -17,9 +19,11 @@ class PythonRuntime
     PythonRuntime(rm::CommandManager &manager, std::filesystem::path runtimeDirectory);
     ~PythonRuntime();
     rm::CommandResult execute(const std::string &code, const rm::CommandContext &context, bool interactive = false,
-                              bool mixedCommands = false);
+                              bool mixedCommands = false, const std::string &scriptPath = {},
+                              const std::vector<std::string> &arguments = {});
     rm::CommandResult executeConsole(const std::string &line, const rm::CommandContext &context);
-    rm::CommandResult executeScript(const std::string &source, const rm::CommandContext &context);
+    rm::CommandResult executeScript(const std::string &source, const rm::CommandContext &context,
+                                     const std::string &scriptPath = {}, const std::vector<std::string> &arguments = {});
     rm::CommandResult executeNative(const std::string &line, std::size_t lineNumber);
     void resetConsole();
     void setInputReader(std::function<std::optional<std::string>()> reader);

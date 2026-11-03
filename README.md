@@ -112,10 +112,14 @@ python envBuild.py packageAll release
 
 ```powershell
 & './output/vc143-cpp20/release/ReverseModeler.exe'
+& './output/vc143-cpp20/release/ReverseModeler.exe' -c help cloud.import
+& './output/vc143-cpp20/release/ReverseModeler.exe' -f 'D:/scripts/建模.py' aa 'bb cc'
 python envBuild.py prepareRun release
 ctest --preset windows-release
 python -m unittest discover -s tests/python -v
 ```
+
+主程序启动支持 `-c 命令 [参数...]`、`-f 脚本.py [参数...]` 和 `-h/--help`。`-h/--help` 在终端打印用法后直接退出，不打开 GUI；`-c/-f` 执行完保持工作台打开，脚本通过 `sys.argv[1:]` 读取参数。更多示例见[启动参数说明](docs/命令框架与Python使用指南.md#启动时执行命令或脚本)。
 
 Google Test 的用例筛选见 [测试程序说明](tests/README.md)。测试目标也会部署自身运行库。
 

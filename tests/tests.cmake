@@ -15,3 +15,4 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointCloudDisplayData.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointCloudDisplayData.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/file_exchange_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/commandManager/startup_arguments_tests.cpp")

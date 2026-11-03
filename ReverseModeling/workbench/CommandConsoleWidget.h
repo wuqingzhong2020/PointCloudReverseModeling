@@ -7,6 +7,7 @@
 namespace reverse
 {
 class CommandService;
+struct StartupRequest;
 }
 namespace reverse::workbench
 {
@@ -19,6 +20,7 @@ class CommandConsoleWidget final : public QWidget
     std::function<void()> onProjectChanged;
     std::function<void()> onShowRequested;
     void setWorkbenchBusy(bool busy);
+    void executeStartup(const StartupRequest &request);
 
   private:
     struct State;

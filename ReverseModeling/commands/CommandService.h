@@ -104,6 +104,8 @@ public:
     [[nodiscard]] std::string submitCommand(std::string name, rm::Array positional = {}, rm::Arguments options = {},
                                            std::optional<std::uint64_t> expectedRevision = {});
     [[nodiscard]] std::string submitLine(std::string line);
+    // One complete input string uses the unified console; multiple tokens retain native argv boundaries.
+    [[nodiscard]] std::string submitCommandArguments(std::vector<std::string> arguments);
     [[nodiscard]] std::string submitPython(std::string code);
     [[nodiscard]] std::string submitPythonLine(std::string line);
     [[nodiscard]] std::string resetPythonConsole();
@@ -113,7 +115,8 @@ public:
     // Recording and native command scripts (.py) share the FIFO; file I/O and parsing stay on the worker.
     [[nodiscard]] std::string submitStartRecording(const std::filesystem::path &path, bool overwrite = false);
     [[nodiscard]] std::string submitStopRecording();
-    [[nodiscard]] std::string submitScriptFile(const std::filesystem::path &path);
+    [[nodiscard]] std::string submitScriptFile(const std::filesystem::path &path,
+                                                std::vector<std::string> arguments = {});
     [[nodiscard]] RecordingState recordingState() const;
     [[nodiscard]] std::vector<std::string> completions() const;
     [[nodiscard]] std::vector<UiCommandEvent> takeUiCommandEvents();

@@ -261,14 +261,15 @@ rm::CommandResult PythonRuntime::executeConsole(const std::string &line, const r
     }
     return execute(line, context, true, true);
 }
-rm::CommandResult PythonRuntime::executeScript(const std::string &source, const rm::CommandContext &context)
+rm::CommandResult PythonRuntime::executeScript(const std::string &source, const rm::CommandContext &context,
+                                                 const std::string &scriptPath, const std::vector<std::string> &arguments)
 {
     if (isNativeCommandScript(m_impl->manager, source))
     {
         return executeCommandScript(m_impl->manager, source, context);
     }
     const auto code = source.starts_with("\xEF\xBB\xBF") ? source.substr(3) : source;
-    return execute(code, context, false, true);
+    return execute(code, context, false, true, scriptPath, arguments);
 }
 rm::CommandResult PythonRuntime::executeNative(const std::string &line, std::size_t lineNumber)
 {
@@ -302,7 +303,8 @@ rm::CommandResult PythonRuntime::executeNative(const std::string &line, std::siz
     return result;
 }
 rm::CommandResult PythonRuntime::execute(const std::string &code, const rm::CommandContext &context, bool interactive,
-                                        bool mixedCommands)
+                                        bool mixedCommands, const std::string &scriptPath,
+                                        const std::vector<std::string> &arguments)
 {
     currentRuntime = this;
     m_impl->context = context;
@@ -328,6 +330,36 @@ rm::CommandResult PythonRuntime::execute(const std::string &code, const rm::Comm
             resetConsole();
             return rm::CommandResult::error("cancelled", "Script cancelled");
         }
+        auto sys = py::module_::import("sys");
+        // Script invocation metadata is local to this run, even on error/cancellation or input().
+        struct ScriptScope
+        {
+            py::object sys;
+            py::dict globals;
+            py::object argv;
+            py::object file;
+            bool hadFile{};
+            bool active{};
+            ~ScriptScope()
+            {
+                if (!active) return;
+                sys.attr("argv") = argv;
+                if (hadFile) globals["__file__"] = file;
+                else globals.attr("pop")("__file__", py::none());
+            }
+        } scriptScope{sys, *m_impl->globals, {}, {}, false, false};
+        if (!scriptPath.empty())
+        {
+            scriptScope.argv = sys.attr("argv");
+            scriptScope.hadFile = m_impl->globals->contains("__file__");
+            if (scriptScope.hadFile) scriptScope.file = (*m_impl->globals)["__file__"];
+            scriptScope.active = true;
+            py::list argv;
+            argv.append(py::str(scriptPath));
+            for (const auto &argument : arguments) argv.append(py::str(argument));
+            sys.attr("argv") = argv;
+            (*m_impl->globals)["__file__"] = py::str(scriptPath);
+        }
         py::object compiled;
         if (interactive)
         {
@@ -345,7 +377,6 @@ rm::CommandResult PythonRuntime::execute(const std::string &code, const rm::Comm
             }
             resetConsole();
         }
-        auto sys = py::module_::import("sys");
         py::object oldOut = sys.attr("stdout");
         py::object oldError = sys.attr("stderr");
         py::object oldInput = sys.attr("stdin");
@@ -403,7 +434,7 @@ rm::CommandResult PythonRuntime::execute(const std::string &code, const rm::Comm
         if (mixedCommands)
         {
             const auto source = (*m_impl->transform)(code).cast<std::string>();
-            auto script = py::reinterpret_steal<py::object>(Py_CompileString(source.c_str(), "<script>", Py_file_input));
+            auto script = py::reinterpret_steal<py::object>(Py_CompileString(source.c_str(), scriptPath.empty() ? "<script>" : scriptPath.c_str(), Py_file_input));
             if (!script)
             {
                 throw py::error_already_set();
@@ -438,7 +469,8 @@ rm::CommandResult PythonRuntime::execute(const std::string &code, const rm::Comm
             py::object trace = value.attr("__traceback__");
             while (!trace.is_none())
             {
-                if (py::str(trace.attr("tb_frame").attr("f_code").attr("co_filename")).cast<std::string>() == "<script>")
+                if (py::str(trace.attr("tb_frame").attr("f_code").attr("co_filename")).cast<std::string>() ==
+                    (scriptPath.empty() ? "<script>" : scriptPath))
                 {
                     lineNumber = trace.attr("tb_lineno").cast<std::size_t>();
                 }

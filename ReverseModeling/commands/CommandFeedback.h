@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "commandManager/CommandDefinition.h"
 #include "commandManager/CommandResult.h"
@@ -16,5 +17,7 @@ struct CommandText
 // Render the actual request, including option aliases and nested values, for copy/paste replay.
 CommandText commandText(const rm::CommandDefinition &definition, const rm::Array &positional,
                         const rm::Arguments &options);
+// Format system argv tokens only for display/copy; execution can use executeArgv directly.
+std::string commandArgumentsText(const std::vector<std::string> &arguments);
 std::string commandFeedback(const rm::CommandResult &result);
 } // namespace reverse

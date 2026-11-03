@@ -19,6 +19,7 @@
 #include <QVBoxLayout>
 
 #include "commands/CommandService.h"
+#include "commands/StartupArguments.h"
 #include "commands/CommandFeedback.h"
 #include "workbench/CommandConsoleWidget.h"
 #include "workbench/ConsoleEditor.h"
@@ -140,6 +141,43 @@ void CommandConsoleWidget::replayScript()
     catch (const std::exception &error)
     {
         m_state->console->writeOutput(text(error.what()) + '\n');
+    }
+}
+void CommandConsoleWidget::executeStartup(const StartupRequest &request)
+{
+    if (request.mode == StartupMode::None) return;
+    if (onShowRequested) onShowRequested();
+    m_state->console->takeInput();
+    if (request.mode == StartupMode::Error || request.mode == StartupMode::Help)
+    {
+        if (!request.error.empty()) m_state->console->writeOutput(text(request.error) + '\n');
+        m_state->console->writeOutput(text(startupUsage()));
+        finishPrompt();
+        return;
+    }
+    try
+    {
+        if (request.mode == StartupMode::Command)
+        {
+            const auto line = request.arguments.size() == 1 ? request.arguments.front()
+                                                           : commandArgumentsText(request.arguments);
+            m_state->console->writeOutput(QStringLiteral("[启动] rm> ") + text(line) + '\n');
+            beginTask(m_state->service.submitCommandArguments(request.arguments));
+        }
+        else
+        {
+            const auto &value = request.arguments.front();
+            const auto path = std::filesystem::path(std::u8string(value.begin(), value.end()));
+            m_state->console->writeOutput(QStringLiteral("[启动] 执行脚本：") +
+                text(commandArgumentsText(request.arguments)) + '\n');
+            beginTask(m_state->service.submitScriptFile(path,
+                {request.arguments.begin() + 1, request.arguments.end()}));
+        }
+    }
+    catch (const std::exception &error)
+    {
+        m_state->console->writeOutput(text(error.what()) + '\n');
+        finishPrompt();
     }
 }
 void CommandConsoleWidget::beginTask(const std::string &id)

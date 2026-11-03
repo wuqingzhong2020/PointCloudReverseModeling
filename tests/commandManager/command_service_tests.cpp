@@ -1128,3 +1128,80 @@ TEST(CommandFeedback, PythonErrorsKeepInternalFramesOnlyInDiagnosticLog)
     EXPECT_NE(contents.find("codeop.py"), std::string::npos);
     EXPECT_NE(contents.find("ZeroDivisionError"), std::string::npos);
 }
+
+TEST(StartupExecution, NativeArgvKeepsChinesePathAndCommandOptions)
+{
+    CloudFixture file;
+    reverse::CommandService service;
+    const auto imported = finished(service, service.submitCommandArguments({"cloud.import", file.utf8(), "--unit", "mm"}));
+    ASSERT_TRUE(imported.result.ok()) << imported.message;
+    ASSERT_NE(service.project().cloud, nullptr);
+    EXPECT_EQ(service.project().cloud->points.size(), 8);
+    EXPECT_EQ(finished(service, service.submitCommandArguments({"cloud.import", "--help"})).result.kind, rm::ResultKind::Help);
+    const auto invalid = finished(service, service.submitCommandArguments({"cloud.import", file.utf8(), "--unit", "wrong"}));
+    EXPECT_EQ(invalid.errorCode, "invalid_value");
+    EXPECT_NE(invalid.message.find("unit"), std::string::npos);
+    const auto python = finished(service, service.submitCommandArguments({"print('startup python')"}));
+    ASSERT_TRUE(python.result.ok()) << python.message;
+    EXPECT_EQ(python.output, "startup python\n");
+    const auto line = finished(service, service.submitCommandArguments({"help cloud.import"}));
+    EXPECT_EQ(line.result.kind, rm::ResultKind::Help);
+    EXPECT_EQ(imported.workerThread, python.workerThread);
+}
+TEST(ScriptArguments, ArgvAndFileAreIsolatedPerRunAndOnFailure)
+{
+    CloudFixture file;
+    const auto path = file.directory / std::filesystem::path(u8"参数 脚本.py");
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitPython(
+        "import sys\noriginal_argv = sys.argv\n__file__ = 'console-value'\n")).result.ok());
+    {
+        std::ofstream script(path, std::ios::binary);
+        script << "import sys, json\n"
+                  "assert __file__ == sys.argv[0]\n"
+                  "print(json.dumps(sys.argv, ensure_ascii=False))\n"
+                  "sys.argv = ['changed']\n__file__ = 'changed'\n";
+    }
+    const std::vector<std::string> arguments{"aa", "中文 空格", "", "--help", "-f", "-platform", "offscreen", "-2", "a'\"b", "D:\\末尾\\"};
+    const auto run = finished(service, service.submitScriptFile(path, arguments));
+    ASSERT_TRUE(run.result.ok()) << run.message;
+    const auto parsed = nlohmann::json::parse(run.output);
+    const auto utf8 = std::filesystem::absolute(path).u8string();
+    const std::string expectedPath(reinterpret_cast<const char *>(utf8.data()), utf8.size());
+    EXPECT_EQ(parsed.at(0), expectedPath);
+    for (std::size_t i = 0; i < arguments.size(); ++i) EXPECT_EQ(parsed.at(i + 1), arguments[i]);
+    EXPECT_TRUE(finished(service, service.submitPython(
+        "assert sys.argv is original_argv\nassert __file__ == 'console-value'\n")).result.ok());
+    const auto noArgs = finished(service, service.submitScriptFile(path));
+    ASSERT_TRUE(noArgs.result.ok()) << noArgs.message;
+    EXPECT_EQ(nlohmann::json::parse(noArgs.output).size(), 1);
+    {
+        std::ofstream script(path, std::ios::binary);
+        script << "import sys\nsys.argv = []\n__file__ = 'changed'\n1 / 0\n";
+    }
+    const auto failure = finished(service, service.submitScriptFile(path, {"x"}));
+    EXPECT_EQ(failure.errorCode, "python_error");
+    EXPECT_TRUE(failure.message.starts_with("第 4 行：ZeroDivisionError:")) << failure.message;
+    EXPECT_TRUE(finished(service, service.submitPython(
+        "assert sys.argv is original_argv\nassert __file__ == 'console-value'\n")).result.ok());
+    EXPECT_EQ(finished(service, service.submitScriptFile(file.directory / "missing.py", {"x"})).errorCode, "script_open_failed");
+}
+TEST(ScriptArguments, MixedCommandsInputAndCancellationKeepArgumentScope)
+{
+    CloudFixture file;
+    const auto path = file.directory / "interactive.py";
+    {
+        std::ofstream script(path);
+        script << "import sys\nprint(sys.argv[1])\nproject.snapshot\ninput('continue: ')\n";
+    }
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitPython("import sys\noriginal_argv = sys.argv\n")).result.ok());
+    const auto id = service.submitScriptFile(path, {"argument-value"});
+    const auto waiting = waitingForInput(service, id);
+    EXPECT_TRUE(waiting.output.starts_with("argument-value\n"));
+    EXPECT_NE(waiting.output.find("[脚本] rm> project.snapshot"), std::string::npos);
+    ASSERT_TRUE(service.cancel(id));
+    EXPECT_EQ(finished(service, id).state, reverse::TaskState::Cancelled);
+    EXPECT_TRUE(finished(service, service.submitPython(
+        "assert sys.argv is original_argv\nassert '__file__' not in globals()\n")).result.ok());
+}
