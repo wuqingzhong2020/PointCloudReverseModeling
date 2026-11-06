@@ -10,6 +10,8 @@ public:
     {
         bool mirror{};
         double end_tolerance{};
+        bool web_holes{};
+        double min_hole_radius{};
     };
     static constexpr const char *name() { return "model.reconstruct"; }
     static rm::CommandDefinition definition();

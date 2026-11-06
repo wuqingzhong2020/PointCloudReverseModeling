@@ -98,7 +98,7 @@ TEST(UiCommandEcho, QuotedPathsOptionAliasesAndNestedValuesRoundtrip)
     for (const auto &path : {std::string("D:\\目录 名\\O'Brien.pcd"), std::string("--help"),
                              std::string("D:\\trailing space\\"), std::string("a'\" b\\'\".pcd")})
     {
-        const auto text = reverse::commandText(definition, {path}, {{"unit", "mm"}});
+        const auto text = reverse::commandText(definition, {path}, {});
         const auto parsed = manager.validateLine(text.native);
         ASSERT_TRUE(parsed.command) << text.native << ": " << parsed.result.message;
         EXPECT_EQ(parsed.command->arguments.at("path").as<std::string>(), path);
@@ -137,7 +137,7 @@ TEST(UiCommandEcho, SelectionCropHistoryAndExportReplayInBothModes)
             expectedSelections.push_back(project.selection ? *project.selection : reverse::CloudSelection{});
             EXPECT_TRUE(completedUiCommands(service).empty());
         };
-        collect(service.submitImport(file.path, reverse::LengthUnit::Millimeter));
+        collect(service.submitImport(file.path));
         reverse::CloudSelectionRect rectangle;
         rectangle.viewProjection = {.01, 0, 0, 0, 0, .01, 0, 0, 0, 0, .01, 0, 0, 0, 0, 1};
         rectangle.maxX = 0;
@@ -185,7 +185,7 @@ TEST(UiCommandEcho, ParametricGeometryAndExportRetainActualParameters)
     frame.originMm = {50, 0, 0};
     {
         reverse::CommandService service;
-        ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+        ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
         const auto built = finished(service, service.submitReconstruct(parameters, service.project().revision, frame));
         ASSERT_TRUE(built.result.ok()) << built.message;
         solids = service.project().model->solidCount;
@@ -251,7 +251,7 @@ TEST(CloudEditCommands, UiCropAndDeleteReplayAloneWithNoOrDifferentLiveSelection
         {
             reverse::CommandService service;
             ASSERT_TRUE(
-                finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+                finished(service, service.submitImport(file.path)).result.ok());
             reverse::CloudSelectionRect rect;
             rect.viewProjection = {.01, 0, 0, 0, 0, .01, 0, 0, 0, 0, .01, 0, 0, 0, 0, 1};
             rect.maxX = 0;
@@ -288,6 +288,104 @@ TEST(CloudEditCommands, UiCropAndDeleteReplayAloneWithNoOrDifferentLiveSelection
         }
     }
 }
+TEST(CloudEditCommands, EditingRectangleReplacesItsContributionForEverySelectionMode)
+{
+    using namespace reverse;
+    CloudFixture file;
+    for (const auto mode : {CloudSelectionMode::Replace, CloudSelectionMode::Add, CloudSelectionMode::Remove})
+    {
+        CommandService service;
+        ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
+        const rm::Array seed = mode == CloudSelectionMode::Remove ? rm::Array{0, 1, 2, 3, 4, 5, 6, 7} : rm::Array{0};
+        ASSERT_TRUE(finished(service, service.submitCommand("cloud.select_indices", {}, {{"indices", seed}})).result.ok());
+        CloudSelectionRect rect;
+        rect.viewProjection = {.01, 0, 0, -.5, 0, .01, 0, -.2, 0, 0, .01, -.3, 0, 0, 0, 1};
+        rect.maxX = 0;
+        ASSERT_TRUE(finished(service, service.submitCloudSelection(rect, mode, service.project().revision)).result.ok());
+        rect.minX = 0;
+        rect.maxX = 1;
+        ASSERT_TRUE(finished(service, service.submitCloudSelection(rect, mode, service.project().revision, true)).result.ok());
+        const CloudSelection expected = mode == CloudSelectionMode::Remove ? CloudSelection{0, 1, 2, 3}
+            : mode == CloudSelectionMode::Add ? CloudSelection{0, 4, 5, 6, 7} : CloudSelection{4, 5, 6, 7};
+        EXPECT_EQ(*service.project().selection, expected);
+        // 将框缩到无点区域：恢复减选原本移除的点，撤回加选旧框贡献。
+        rect.minX = .7;
+        ASSERT_TRUE(finished(service, service.submitCloudSelection(rect, mode, service.project().revision, true)).result.ok());
+        const CloudSelection emptyRegionExpected = mode == CloudSelectionMode::Remove ? CloudSelection{0, 1, 2, 3, 4, 5, 6, 7}
+            : mode == CloudSelectionMode::Add ? CloudSelection{0} : CloudSelection{};
+        EXPECT_EQ(*service.project().selection, emptyRegionExpected);
+        ASSERT_EQ(service.project().selectionRecipe->regions.size(), 1u);
+        EXPECT_DOUBLE_EQ(service.project().selectionRecipe->regions.back().rectangle.minX, .7);
+    }
+}
+
+TEST(CloudEditCommands, EditedRectanglePreservesEarlierRegionsAndCropReplay)
+{
+    using namespace reverse;
+    CloudFixture file;
+    CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
+    CloudSelectionRect rect;
+    rect.viewProjection = {.01, 0, 0, -.5, 0, .01, 0, -.2, 0, 0, .01, -.3, 0, 0, 0, 1};
+    rect.maxX = 0;
+    ASSERT_TRUE(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Replace,
+                                                               service.project().revision)).result.ok());
+    rect.minX = 0;
+    rect.maxX = 1;
+    ASSERT_TRUE(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Add,
+                                                               service.project().revision)).result.ok());
+    rect.minY = 0;
+    ASSERT_TRUE(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Add,
+                                                               service.project().revision, true)).result.ok());
+    EXPECT_EQ(*service.project().selection, (CloudSelection{0, 1, 2, 3, 6, 7}));
+    ASSERT_EQ(service.project().selectionRecipe->regions.size(), 2u);
+    EXPECT_EQ(service.project().selectionRecipe->regions.front().mode, CloudSelectionMode::Replace);
+    const auto events = completedUiCommands(service);
+    ASSERT_FALSE(events.empty());
+    EXPECT_NE(events.back().commandLine.find("--edit-last true"), std::string::npos);
+    CommandService replay;
+    for (const auto &event : events)
+    {
+        const auto task = finished(replay, replay.submitLine(event.commandLine));
+        ASSERT_TRUE(task.result.ok()) << task.message;
+    }
+    EXPECT_EQ(*replay.project().selection, *service.project().selection);
+    ASSERT_TRUE(finished(service, service.submitCloudEdit(CloudEditMode::KeepSelection,
+                                                         service.project().revision)).result.ok());
+    const auto crop = completedUiCommands(service).back();
+    ASSERT_TRUE(finished(replay, replay.submitImport(file.path)).result.ok());
+    ASSERT_TRUE(finished(replay, replay.submitLine(crop.commandLine)).result.ok());
+    ASSERT_EQ(replay.project().cloud->points.size(), 6u);
+    for (std::size_t i = 0; i < 6; ++i)
+        EXPECT_EQ(replay.project().cloud->points[i].sourceIndex, service.project().cloud->points[i].sourceIndex);
+}
+
+TEST(CloudEditCommands, InvalidRectangleEditsPreserveCommittedSelection)
+{
+    using namespace reverse;
+    CloudFixture file;
+    CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
+    CloudSelectionRect rect;
+    rect.viewProjection = {.01, 0, 0, -.5, 0, .01, 0, -.2, 0, 0, .01, -.3, 0, 0, 0, 1};
+    const auto revision = service.project().revision;
+    EXPECT_EQ(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Replace, revision, true)).errorCode,
+              "invalid_selection");
+    EXPECT_EQ(service.project().revision, revision);
+    ASSERT_TRUE(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Replace, revision)).result.ok());
+    const auto before = service.project();
+    EXPECT_EQ(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Add, before.revision, true)).errorCode,
+              "invalid_selection");
+    EXPECT_EQ(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Replace, revision, true)).errorCode,
+              "stale_revision");
+    rect.maxX = rect.minX;
+    EXPECT_EQ(finished(service, service.submitCloudSelection(rect, CloudSelectionMode::Replace, before.revision, true)).errorCode,
+              "invalid_selection");
+    EXPECT_EQ(service.project().revision, before.revision);
+    EXPECT_EQ(service.project().selection, before.selection);
+    EXPECT_EQ(service.project().selectionRecipe, before.selectionRecipe);
+}
+
 TEST(CloudEditCommands, MultipleCameraRegionsRemainReplayableAfterUndoClearsSelection)
 {
     CloudFixture file;
@@ -295,7 +393,7 @@ TEST(CloudEditCommands, MultipleCameraRegionsRemainReplayableAfterUndoClearsSele
     std::vector<std::size_t> expectedCrop, expectedRemove;
     {
         reverse::CommandService service;
-        ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+        ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
         reverse::CloudSelectionRect rect;
         // Imported points are local to the first sample: x=0/100, y=0/40, z=0/60.
         rect.viewProjection = {.01, 0, 0, -.5, 0, .01, 0, -.2, 0, 0, .01, -.3, 0, 0, 0, 1};
@@ -352,7 +450,7 @@ TEST(CloudEditCommands, IndexSeedPlusRectangleAndClearDoNotReuseOldRegions)
     std::vector<std::size_t> expected;
     {
         reverse::CommandService service;
-        ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+        ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
         ASSERT_TRUE(finished(service, service.submitCommand("cloud.select_indices", {}, {{"indices", rm::Array{0, 0}}}))
                         .result.ok());
         reverse::CloudSelectionRect rect;
@@ -552,7 +650,7 @@ TEST(CommandMacros, GeometrySelectionIsCompactAndCropReplaysWithoutViewport)
     const auto path = file.directory / "selection.py";
     reverse::CommandService service;
     ASSERT_TRUE(finished(service, service.submitStartRecording(path)).result.ok());
-    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
     reverse::CloudSelectionRect rectangle;
     rectangle.viewProjection = {.01, 0, 0, 0, 0, .01, 0, 0, 0, 0, .01, 0, 0, 0, 0, 1};
     rectangle.maxX = 0;
@@ -591,7 +689,7 @@ TEST(CommandMacros, ControlsFollowFifoAndReplayAppendsCommands)
     const auto path = file.directory / "fifo.py";
     reverse::CommandService service;
     const auto start = service.submitStartRecording(path);
-    const auto import = service.submitImport(file.path, reverse::LengthUnit::Millimeter);
+    const auto import = service.submitImport(file.path);
     const auto stop = service.submitStopRecording();
     const auto after = service.submitLine("project.snapshot");
     ASSERT_TRUE(finished(service, after).result.ok());
@@ -622,7 +720,7 @@ TEST(CommandMacros, NativeScriptRecordsSuccessfulPrefixAndStopsAtInvalidParamete
     {
         std::ofstream script(input, std::ios::binary);
         script << "# 与命令窗口相同\ncloud.import \"" << file.utf8()
-               << "\" --unit mm\ncloud.select_indices --indices '[0,1]'\n"
+               << "\"\ncloud.select_indices --indices '[0,1]'\n"
                   "cloud.crop\nmodel.reconstruct --mirror wrong\ncloud.reset\n";
     }
     reverse::CommandService service;
@@ -871,7 +969,7 @@ TEST(MixedScripts, PythonBlocksStringsAndNativeCommandsRecordOnlyExecutedBusines
                   "def inspect_twice():\n    for i in range(2):\n        project.snapshot\n        print(i)\n"
                   "inspect_twice()\n"
                   "if False:\n    cloud.reset\n"
-                  "cloud.import \"" << file.utf8() << "\" --unit mm\n"
+                  "cloud.import \"" << file.utf8() << "\"\n"
                   "cloud.select_indices --indices '[0,1]'\ncloud.crop\n"
                   "print(values[1], literal.startswith('保留文字'))\n";
     }
@@ -1145,19 +1243,58 @@ TEST(CommandFeedback, PythonErrorsKeepInternalFramesOnlyInDiagnosticLog)
     EXPECT_NE(contents.find("ZeroDivisionError"), std::string::npos);
 }
 
+TEST(CloudImportCommands, UiAndStartupImportsRecordOnlyPathAndReplayInMillimeters)
+{
+    CloudFixture file;
+    for (const bool startup : {false, true})
+    {
+        reverse::CommandService service;
+        const auto recording = file.directory / (startup ? "startup-mm.py" : "ui-mm.py");
+        ASSERT_TRUE(finished(service, service.submitStartRecording(recording)).result.ok());
+        const auto task = finished(service, startup ? service.submitStartupImport(file.path)
+                                                   : service.submitImport(file.path));
+        ASSERT_TRUE(task.result.ok()) << task.message;
+        const auto cloud = service.project().cloud;
+        ASSERT_TRUE(cloud);
+        EXPECT_EQ(cloud->sourceUnit, reverse::LengthUnit::Millimeter);
+        EXPECT_DOUBLE_EQ(cloud->sourceScaleToMm, 1);
+        EXPECT_DOUBLE_EQ(cloud->points.back().position.x + cloud->originMm.x, 100);
+        bool sawImport = false;
+        for (const auto &event : completedUiCommands(service))
+        {
+            if (!event.commandLine.starts_with("cloud.import ")) continue;
+            sawImport = true;
+            EXPECT_EQ(event.commandLine.find("--unit"), std::string::npos);
+        }
+        EXPECT_TRUE(sawImport);
+        ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
+        std::ifstream input(recording);
+        const std::string contents((std::istreambuf_iterator<char>(input)), {});
+        EXPECT_NE(contents.find("cloud.import "), std::string::npos);
+        EXPECT_EQ(contents.find("--unit"), std::string::npos);
+        reverse::CommandService replay;
+        const auto result = finished(replay, replay.submitScriptFile(recording));
+        ASSERT_TRUE(result.result.ok()) << result.message;
+        ASSERT_TRUE(replay.project().cloud);
+        EXPECT_EQ(replay.project().cloud->sourceUnit, reverse::LengthUnit::Millimeter);
+        EXPECT_DOUBLE_EQ(replay.project().cloud->sourceScaleToMm, 1);
+        EXPECT_DOUBLE_EQ(replay.project().cloud->points.back().position.x + replay.project().cloud->originMm.x, 100);
+    }
+}
+
 TEST(StartupExecution, NativeArgvKeepsChinesePathAndCommandOptions)
 {
     CloudFixture file;
     reverse::CommandService service;
-    const auto imported = finished(service, service.submitCommandArguments({"cloud.import", file.utf8(), "--unit", "mm"}));
+    const auto imported = finished(service, service.submitCommandArguments({"cloud.import", file.utf8()}));
     ASSERT_TRUE(imported.result.ok()) << imported.message;
     ASSERT_NE(service.project().cloud, nullptr);
     EXPECT_EQ(service.project().cloud->points.size(), 8);
     EXPECT_TRUE(imported.output.starts_with(reverse::commandExecutionEcho(
-        reverse::commandArgumentsText({"cloud.import", file.utf8(), "--unit", "mm"}))));
+        reverse::commandArgumentsText({"cloud.import", file.utf8()}))));
     EXPECT_EQ(finished(service, service.submitCommandArguments({"cloud.import", "--help"})).result.kind, rm::ResultKind::Help);
     const auto invalid = finished(service, service.submitCommandArguments({"cloud.import", file.utf8(), "--unit", "wrong"}));
-    EXPECT_EQ(invalid.errorCode, "invalid_value");
+    EXPECT_EQ(invalid.errorCode, "unknown_option");
     EXPECT_NE(invalid.message.find("unit"), std::string::npos);
     const auto python = finished(service, service.submitCommandArguments({"print('startup python')"}));
     ASSERT_TRUE(python.result.ok()) << python.message;
@@ -1228,7 +1365,7 @@ TEST(CommandTranscript, UiStartDetailsAndResultFollowWorkerOrder)
 {
     CloudFixture file;
     reverse::CommandService service;
-    const auto imported = service.submitImport(file.path, reverse::LengthUnit::Millimeter);
+    const auto imported = service.submitImport(file.path);
     ASSERT_TRUE(finished(service, imported).result.ok());
     const auto exported = service.submitExportCloud(file.directory / "copy.pcd", service.project().revision);
     ASSERT_TRUE(finished(service, exported).result.ok());
@@ -1292,7 +1429,7 @@ TEST(CommandTranscript, ReconstructionWarningsDeviationAndStepReadbackAreInclude
 {
     CloudFixture file;
     reverse::CommandService service;
-    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
     const reverse::BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
     const auto model = finished(service, service.submitReconstruct(parameters, service.project().revision));
     ASSERT_TRUE(model.result.ok()) << model.message;
@@ -1317,7 +1454,7 @@ TEST(CommandTranscript, UiAndTypedReconstructionHaveIdenticalInputExecutionAndRe
     std::string uiTranscript;
     {
         reverse::CommandService service;
-        ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+        ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
         (void)service.takeUiCommandEvents();
         const reverse::BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
         const auto built = finished(service, service.submitReconstruct(parameters, service.project().revision));
@@ -1334,7 +1471,7 @@ TEST(CommandTranscript, UiAndTypedReconstructionHaveIdenticalInputExecutionAndRe
         }
     }
     reverse::CommandService service;
-    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
     const auto typed = finished(service, service.submitLine(command));
     ASSERT_TRUE(typed.result.ok()) << typed.message;
     const auto typedTranscript = "rm> " + command + '\n' + typed.output + reverse::commandFeedback(typed.result) + '\n';
@@ -1347,7 +1484,7 @@ TEST(ReferencePlaneCommands, ValidateAndCommitWithoutChangingGeometry)
 {
     CloudFixture cloud;
     reverse::CommandService service;
-    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path)).state,
               reverse::TaskState::Succeeded);
     const auto before = service.project();
     auto result = finished(service, service.submitLine("project.set_reference_plane --points '[[0,0,0],[10,0,0],[0,10,0]]'"));
@@ -1381,7 +1518,7 @@ TEST(ReferencePlaneCommands, RecordingReplayAndImportReset)
 {
     CloudFixture cloud;
     reverse::CommandService service;
-    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path)).state,
               reverse::TaskState::Succeeded);
     const auto recording = cloud.directory / "plane.py";
     ASSERT_EQ(finished(service, service.submitStartRecording(recording)).state, reverse::TaskState::Succeeded);
@@ -1395,7 +1532,7 @@ TEST(ReferencePlaneCommands, RecordingReplayAndImportReset)
     const std::string contents((std::istreambuf_iterator<char>(input)), {});
     EXPECT_NE(contents.find("project.set_reference_plane --points"), std::string::npos);
     EXPECT_NE(contents.find("project.section --enabled true"), std::string::npos);
-    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path)).state,
               reverse::TaskState::Succeeded);
     EXPECT_FALSE(service.project().referencePlane);
     EXPECT_FALSE(service.project().section.enabled);
@@ -1407,11 +1544,42 @@ TEST(ReferencePlaneCommands, RecordingReplayAndImportReset)
     EXPECT_TRUE(service.project().section.reversed);
 }
 
+TEST(ReferencePlaneCommands, BottomSectionRecordsReplaysAndDisablesWhenBottomIsDeleted)
+{
+    CloudFixture cloud;
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(cloud.path)).result.ok());
+    const reverse::BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
+    ASSERT_TRUE(finished(service, service.submitReconstruct(parameters, service.project().revision)).result.ok());
+    const auto before = service.project();
+    const auto recording = cloud.directory / "bottom-section.py";
+    ASSERT_TRUE(finished(service, service.submitStartRecording(recording)).result.ok());
+    const reverse::PlaneSection section{true, 2.5, true, reverse::SectionPlaneSource::Bottom};
+    const auto enabled = finished(service, service.submitSection(section, service.project().revision));
+    ASSERT_TRUE(enabled.result.ok()) << enabled.message;
+    EXPECT_EQ(service.project().section, section);
+    EXPECT_EQ(service.project().cloud, before.cloud);
+    EXPECT_EQ(service.project().model, before.model);
+    ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
+    std::ifstream input(recording);
+    const std::string contents((std::istreambuf_iterator<char>(input)), {});
+    EXPECT_NE(contents.find("--plane bottom"), std::string::npos);
+    ASSERT_TRUE(finished(service, service.submitLine("project.section --enabled false --plane bottom")).result.ok());
+    ASSERT_TRUE(finished(service, service.submitScriptFile(recording)).result.ok());
+    EXPECT_EQ(service.project().section, section);
+    ASSERT_TRUE(finished(service, service.submitDeleteModelParts({"web"}, service.project().revision)).result.ok());
+    EXPECT_FALSE(service.project().section.enabled);
+    const auto invalid = finished(service, service.submitLine("project.section --enabled true --plane bottom"));
+    EXPECT_EQ(invalid.errorCode, "no_bottom_plane");
+    EXPECT_FALSE(service.project().section.enabled);
+    EXPECT_TRUE(finished(service, service.submitLine("project.section --enabled false --plane bottom")).result.ok());
+}
+
 TEST(ReferencePlaneCommands, LegacyUndoUsesUnifiedPlaneAndGeometryHistory)
 {
     CloudFixture cloud;
     reverse::CommandService service;
-    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path)).state,
               reverse::TaskState::Succeeded);
     ASSERT_EQ(finished(service, service.submitLine("cloud.crop --indices '[0,1,2,3]' ")).state,
               reverse::TaskState::Succeeded);
@@ -1432,7 +1600,7 @@ TEST(ModelDeleteCommands, RecordsExplicitIdsReplaysAndExportsOnlyRemainingGeomet
 {
     CloudFixture file;
     reverse::CommandService service;
-    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
     const reverse::BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
     ASSERT_TRUE(finished(service, service.submitReconstruct(parameters, service.project().revision)).result.ok());
     ASSERT_TRUE(finished(service, service.submitLine(
@@ -1471,7 +1639,7 @@ TEST(ModelDeleteCommands, RecordsExplicitIdsReplaysAndExportsOnlyRemainingGeomet
     EXPECT_EQ(service.project().model->partIds, after.model->partIds);
     EXPECT_DOUBLE_EQ(service.project().model->volumeMm3, after.model->volumeMm3);
     // STEP 导入模型使用同一删除路径，全部删除后保留源文件但不可导出空模型。
-    ASSERT_TRUE(finished(service, service.submitImport(path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitImport(path)).result.ok());
     const auto ids = service.project().model->partIds;
     ASSERT_TRUE(finished(service, service.submitDeleteModelParts({ids.front()}, service.project().revision)).result.ok());
     EXPECT_EQ(service.project().model->solidCount, 4u);
@@ -1489,7 +1657,7 @@ TEST(ModelDeleteCommands, ValidatesArgumentsRevisionAndMissingPartsAtomically)
 {
     CloudFixture file;
     reverse::CommandService service;
-    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitImport(file.path)).result.ok());
     ASSERT_TRUE(finished(service, service.submitReconstruct({100, 40, 60, 4, 5, 3, {}, false, false},
         service.project().revision)).result.ok());
     const auto before = service.project();
@@ -1517,7 +1685,7 @@ TEST(EdgeTreatmentCommands, PreviewIsTransientAndApplicationsRecordReplayUndoRed
     CloudFixture files;
     const auto script = files.directory / "edges.py";
     reverse::CommandService service;
-    ASSERT_EQ(finished(service, service.submitImport(files.path, reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finished(service, service.submitImport(files.path)).state,
               reverse::TaskState::Succeeded);
     ASSERT_EQ(finished(service, service.submitReconstruct({100, 40, 60, 4, 5, 3, {25}, false, false},
                                                           service.project().revision))
@@ -1570,7 +1738,7 @@ TEST(EdgeTreatmentCommands, CrossPartPreviewApplyFailureUndoAndReplayAreAtomic)
 {
     CloudFixture files;
     reverse::CommandService service;
-    ASSERT_TRUE(finished(service, service.submitImport(files.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitImport(files.path)).result.ok());
     ASSERT_TRUE(finished(service, service.submitReconstruct({1000, 186.494, 627.8323, 6, 12, 8, {}, false, true},
         service.project().revision)).result.ok());
     const auto script = files.directory / "batch-edges.py";

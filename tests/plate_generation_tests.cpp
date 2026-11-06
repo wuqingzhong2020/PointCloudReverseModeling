@@ -459,7 +459,7 @@ TEST(PlateGeneration, PreviewCommitHistoryAndRecordedReplay)
     const auto file = files.dir / "source.step";
     (void)exportStep(*source, file);
     CommandService service;
-    ASSERT_EQ(wait(service, service.submitImport(file, LengthUnit::Millimeter)).state, TaskState::Succeeded);
+    ASSERT_EQ(wait(service, service.submitImport(file)).state, TaskState::Succeeded);
     const auto initial = service.project();
     const auto p = wait(service, service.submitPlateGenerationPreview(base(), initial.revision));
     ASSERT_EQ(p.state, TaskState::Succeeded) << p.message;
@@ -514,7 +514,7 @@ TEST(PlateGeneration, InvalidDirectionReportsActionableReasonToConsoleWithoutCha
     const auto path = files.dir / "source.step";
     (void)exportStep(*source, path);
     CommandService service;
-    ASSERT_EQ(wait(service, service.submitImport(path, LengthUnit::Millimeter)).state, TaskState::Succeeded);
+    ASSERT_EQ(wait(service, service.submitImport(path)).state, TaskState::Succeeded);
     (void)service.takeUiCommandEvents();
     const auto initial = service.project();
     auto request = base();
@@ -543,7 +543,7 @@ TEST(PlateGeneration, PairPreviewRecordingHistoryAndStepRoundTrip)
     const auto sourcePath = files.dir / "two-boards.step";
     (void)exportStep(*model(pairShape()), sourcePath);
     CommandService service;
-    ASSERT_EQ(wait(service, service.submitImport(sourcePath, LengthUnit::Millimeter)).state, TaskState::Succeeded);
+    ASSERT_EQ(wait(service, service.submitImport(sourcePath)).state, TaskState::Succeeded);
     const auto revision = service.project().revision;
     auto preview = wait(service, service.submitPlateGenerationPreview(pairBase(), revision));
     ASSERT_EQ(preview.state, TaskState::Succeeded) << preview.message;

@@ -12,5 +12,5 @@ namespace reverse::workbench
 {
 class WorkbenchActions;
 void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows, QMenu *recentFiles);
-QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions);
+QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions, QMenu *sectionMenu);
 } // namespace reverse::workbench

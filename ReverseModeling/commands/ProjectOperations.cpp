@@ -5,12 +5,14 @@
  */
 #include "commands/ProjectOperations.h"
 #include "commands/ProjectHistory.h"
+#include "commands/SectionPlane.h"
 #include "commands/TaskOutput.h"
 #include "geometry/CloudEditing.h"
 #include "geometry/Geometry.h"
 #include "geometry/ModelExchange.h"
 #include "geometry/ReferencePlane.h"
 #include <cctype>
+#include <cmath>
 
 #include <algorithm>
 #include <functional>
@@ -107,6 +109,8 @@ struct ProjectOperations::Impl
         next.lastCloudExport.reset();
         next.exportedPathUtf8.clear();
         next.exportedCloudPathUtf8.clear();
+        if (next.section.enabled && (!next.cloud || !selectedSectionPlane(next, next.section.source)))
+            next.section.enabled = false;
         history.push(ProjectContent::capture(project, model), ProjectContent::capture(next, geometry), std::move(label));
         project = std::move(next);
         model = std::move(geometry);
@@ -168,16 +172,22 @@ void ProjectOperations::setSection(PlaneSection section)
 {
     checkCancelled(impl_->context.stop);
     std::lock_guard lock(impl_->stateMutex);
-    if (!impl_->project.referencePlane)
-        throw GeometryError("no_reference_plane", "请先设置基准面，再使用剖视。");
-    (void)sectionEquation(*impl_->project.referencePlane, section);
+    const auto plane = selectedSectionPlane(impl_->project, section.source);
+    if (section.enabled && !plane)
+        throw GeometryError(section.source == SectionPlaneSource::Bottom ? "no_bottom_plane" : "no_reference_plane",
+            section.source == SectionPlaneSource::Bottom ? "尚未获得底板面，请先导入可识别的点云或设置基准面。"
+                                                        : "请先设置基准面，或在剖视下拉菜单中选择底板面。");
+    if (!std::isfinite(section.offsetMm))
+        throw GeometryError("invalid_section", "剖视偏移必须为有限的毫米数值。");
+    if (plane) (void)sectionEquation(*plane, section);
     if (section.enabled && !impl_->project.cloud)
         throw GeometryError("no_cloud", "剖视只过滤点云显示；当前没有点云。");
+    if (impl_->project.section == section) return;
     impl_->project.section = section;
     ++impl_->project.revision;
 }
 
-std::string ProjectOperations::submitImport(const std::filesystem::path &path, LengthUnit unit)
+std::string ProjectOperations::submitImport(const std::filesystem::path &path)
 {
     const auto version = project().revision;
     const auto absolutePath = std::filesystem::absolute(path);
@@ -205,8 +215,9 @@ std::string ProjectOperations::submitImport(const std::filesystem::path &path, L
             state->model = std::move(model);
         });
     }
-    return state->launch("ImportPointCloud", version, [state, absolutePath, unit](auto stop, const auto &progress) {
-        auto cloud = loadPointCloud(absolutePath, unit, stop, [&](double p, auto m) { progress(p * 0.65, m); });
+    return state->launch("ImportPointCloud", version, [state, absolutePath](auto stop, const auto &progress) {
+        auto cloud = loadPointCloud(absolutePath, LengthUnit::Millimeter, stop,
+                                   [&](double p, auto m) { progress(p * 0.65, m); });
         ProjectSnapshot next;
         next.cloud = std::move(cloud);
         analyzeCloud(next, stop, [&](double p, auto m) { progress(0.65 + p * 0.35, m); });
@@ -222,7 +233,7 @@ std::string ProjectOperations::submitImport(const std::filesystem::path &path, L
 }
 
 std::string ProjectOperations::submitCloudSelection(const CloudSelectionRect &rectangle, CloudSelectionMode mode,
-                                                    std::uint64_t expectedRevision)
+                                                    std::uint64_t expectedRevision, bool editLast)
 {
     const auto snapshot = project();
     if (snapshot.revision != expectedRevision)
@@ -233,28 +244,44 @@ std::string ProjectOperations::submitCloudSelection(const CloudSelectionRect &re
     {
         throw GeometryError("no_cloud", "请先导入点云。");
     }
+    if (editLast && (!snapshot.selectionRecipe || snapshot.selectionRecipe->regions.empty() ||
+                     mode == CloudSelectionMode::Clear || snapshot.selectionRecipe->regions.back().mode != mode))
+    {
+        throw GeometryError("invalid_selection", "原框选已失效或选择方式已变化，请重新框选。");
+    }
     auto *state = impl_.get();
     return state->launch(
-        "SelectCloud", expectedRevision, [state, snapshot, rectangle, mode](auto stop, const auto &progress) {
-            auto selected = std::make_shared<const CloudSelection>(selectCloudPoints(
-                *snapshot.cloud, rectangle, mode,
-                snapshot.selection ? std::span<const std::size_t>(*snapshot.selection) : std::span<const std::size_t>{},
-                stop, progress));
+        "SelectCloud", expectedRevision, [state, snapshot, rectangle, mode, editLast](auto stop, const auto &progress) {
+            std::shared_ptr<const CloudSelection> selected;
             auto recipe = std::make_shared<CloudSelectionRecipe>();
-            if (mode == CloudSelectionMode::Add || mode == CloudSelectionMode::Remove)
+            if (editLast)
             {
-                if (snapshot.selectionRecipe)
+                *recipe = *snapshot.selectionRecipe;
+                recipe->regions.back().rectangle = rectangle;
+                auto resolved = recipe->initialIndices ? *recipe->initialIndices : CloudSelection{};
+                for (std::size_t i = 0; i < recipe->regions.size(); ++i)
                 {
-                    *recipe = *snapshot.selectionRecipe;
+                    const auto &region = recipe->regions[i];
+                    resolved = selectCloudPoints(*snapshot.cloud, region.rectangle, region.mode, resolved, stop,
+                        [&](double p, auto message) { progress((i + p) / recipe->regions.size(), message); });
                 }
-                else
-                {
-                    recipe->initialIndices = snapshot.selection;
-                }
+                selected = std::make_shared<const CloudSelection>(std::move(resolved));
             }
-            if (mode != CloudSelectionMode::Clear)
+            else
             {
-                recipe->regions.push_back({rectangle, mode});
+                selected = std::make_shared<const CloudSelection>(selectCloudPoints(
+                    *snapshot.cloud, rectangle, mode,
+                    snapshot.selection ? std::span<const std::size_t>(*snapshot.selection) : std::span<const std::size_t>{},
+                    stop, progress));
+                if (mode == CloudSelectionMode::Add || mode == CloudSelectionMode::Remove)
+                {
+                    if (snapshot.selectionRecipe)
+                        *recipe = *snapshot.selectionRecipe;
+                    else
+                        recipe->initialIndices = snapshot.selection;
+                }
+                if (mode != CloudSelectionMode::Clear)
+                    recipe->regions.push_back({rectangle, mode});
             }
             checkCancelled(stop);
             std::lock_guard lock(state->stateMutex);
@@ -403,7 +430,7 @@ std::string ProjectOperations::submitReconstruct(const BeamParameters &parameter
 }
 
 std::string ProjectOperations::submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
-                                                           double endOverhangToleranceMm)
+                                                           double endOverhangToleranceMm, bool recognizeWebHoles, double minimumHoleRadiusMm)
 {
     const auto snapshot = project();
     if (snapshot.revision != expectedRevision)
@@ -418,7 +445,7 @@ std::string ProjectOperations::submitRecognizedReconstruct(bool mirrorSymmetry, 
     return state->launch(
         "ReconstructRecognized", expectedRevision,
         [state, cloud = snapshot.cloud, recognition = *snapshot.recognition,
-         options = PlateBuildOptions{mirrorSymmetry, endOverhangToleranceMm}](auto stop, const auto &progress) {
+         options = PlateBuildOptions{mirrorSymmetry, endOverhangToleranceMm, recognizeWebHoles, minimumHoleRadiusMm}](auto stop, const auto &progress) {
             auto model = buildRecognizedPlates(recognition, options, stop, progress);
             if (cloud) model = associateModelCloud(*model, *cloud, stop);
             checkCancelled(stop);

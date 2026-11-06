@@ -189,10 +189,10 @@ project.clear_reference_plane
 
 ## project.section
 
-设置基准面点云剖视
+按底板面或基准面设置点云剖视
 
 ```text
-project.section --enabled true|false [--offset <mm>] [--reverse true|false]
+project.section --enabled true|false [--plane bottom|reference] [--offset <mm>] [--reverse true|false]
 project.section --help
 ```
 
@@ -201,8 +201,9 @@ project.section --help
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | enabled | --enabled | bool |  | 必填 |  |  |
-| offset | --offset | float |  | 默认 0.0 |  | 沿基准面法线的偏移，单位 mm |
+| offset | --offset | float |  | 默认 0.0 |  | 沿所选剖视面法线的偏移，单位 mm |
 | reverse | --reverse | bool |  | 默认 False |  | 反转点云保留侧 |
+| plane | --plane | enum | ['bottom', 'reference'] | 默认 reference |  | bottom：识别底板面；reference：已确认的自定义基准面 |
 
 返回：object — 包含剖视状态的工程摘要。
 

@@ -6,11 +6,9 @@ namespace rmcmd::cloud
 class ImportCommand
 {
 public:
-    enum class UnitValue { Value0, Value1, Value2 };
     struct Args
     {
         std::string path{};
-        UnitValue unit{};
     };
     static constexpr const char *name() { return "cloud.import"; }
     static rm::CommandDefinition definition();

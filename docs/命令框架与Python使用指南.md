@@ -2,6 +2,8 @@
 
 `ReverseModeler` 的按钮、命令窗口和内建 Python 共用命令服务。入口为 **窗口 → 命令窗口**。窗口采用终端式交互，统一以 `rm>` 提示符输入和显示建模命令，没有模式切换。同一输入框自动识别建模命令和 Python 语句：`cloud.import 参数` 仍直接使用命令解析器，`print("aaaa")`、赋值、`import`、循环等交给 CPython。纯建模命令无需初始化解释器，两类输入都在同一常驻工作线程执行。
 
+PCD 点云导入统一按毫米处理，`cloud.import` 只接受文件路径，不再提供 `--unit`；Python 调用同样不传 `unit`。已有导入脚本需删去该参数。
+
 ## 1. 在界面中使用
 
 在提示符后输入，按 **Enter** 提交。上下键浏览命令历史，**Tab** 提供命令及参数的前缀补全，**Ctrl+L** 清屏。历史输出不可修改，可以选择复制；Ctrl+A 只选择当前输入。在 `rm>` 后可直接输入：
@@ -49,8 +51,8 @@ rm> cloud.crop --regions '[{"mode":"replace","rectangle":{"minX":-0.8,"minY":-0.
 命令参数对可以在位置参数前后混排：
 
 ```text
-cloud.import --unit mm "D:/data/中文点云.pcd"
-cloud.import "D:/data/中文点云.pcd" --unit=mm
+file.convert --spacing 2 "D:/data/model.step" "D:/data/model.pcd"
+file.convert "D:/data/model.step" "D:/data/model.pcd" --spacing=2
 ```
 
 两行含义相同。重复选项即使值相同也报错；`--` 终止选项识别。`--path=--help` 中的 `--help` 是值；独立的 `-h/--help`（且在 `--` 之前）请求帮助，不执行业务。Windows 路径的反斜杠保持原样；包含空格的路径用引号包裹。数组/对象文本采用 JSON，外层可用单引号避免内部双引号被命令词法器处理：
@@ -77,7 +79,7 @@ rm> import math
 rm> math.sqrt(9)
 3.0
 rm> help cloud.import
-rm> cloud.import "D:/data/中文 点云.pcd" --unit mm
+rm> cloud.import "D:/data/中文 点云.pcd"
 ```
 
 `help cloud.import` 查询建模命令，`help(str)` 使用 Python 自带帮助。`cloud.*`、`model.*`、`project.*` 的命令写法和参数校验保持不变，参数错误不会退回 Python 重新解释；其他 Python 表达式和语句交给 CPython。变量在当前程序会话内保留。多行语句出现 `...` 提示符，保持 Python 缩进，输入空行结束；Ctrl+C 可取消未完成的语句。
@@ -86,7 +88,7 @@ rm> cloud.import "D:/data/中文 点云.pcd" --unit mm
 
 ```text
 print("开始建模")
-cloud.import "D:/data/中文 点云.pcd" --unit mm
+cloud.import "D:/data/中文 点云.pcd"
 model.reconstruct --mirror false --end-tolerance 30
 for i in range(2):
     print("第", i + 1, "次查看工程")
@@ -126,7 +128,7 @@ print("结束")
 .\ReverseModeler.exe -h
 .\ReverseModeler.exe --help
 .\ReverseModeler.exe -c help cloud.import
-.\ReverseModeler.exe -c cloud.import "D:/data/中文 点云.pcd" --unit mm
+.\ReverseModeler.exe -c cloud.import "D:/data/中文 点云.pcd"
 .\ReverseModeler.exe -c "print('hello')"
 .\ReverseModeler.exe -f "D:/scripts/建模 脚本.py" aa "bb cc" --count 2
 ```
@@ -142,7 +144,7 @@ project.snapshot
 ```
 
 - `sys.argv[0]` 和 `__file__` 是本次脚本的绝对路径；后续参数均为字符串，可使用 Python 的 `argparse` 自行解析。
-- 启动入口先从全部参数中提取 **仅三个指定键** `--input_file`、`--output_dir`、`--record_file`（支持 `--键 值` 和 `--键=值`），再从剩余参数识别最前面的 `-c` 或 `-f`。不提取其他 `--` 选项：`--unit`、`--count`、`--help`、负数等保持原始顺序和参数边界，交给命令或脚本。例如 `-c cloud.import --help` 查询导入命令的帮助，`-f job.py --help` 则由脚本处理帮助参数。
+- 启动入口先从全部参数中提取 **仅三个指定键** `--input_file`、`--output_dir`、`--record_file`（支持 `--键 值` 和 `--键=值`），再从剩余参数识别最前面的 `-c` 或 `-f`。不提取其他 `--` 选项：`--spacing`、`--count`、`--help`、负数等保持原始顺序和参数边界，交给命令或脚本。例如 `-c cloud.import --help` 查询导入命令的帮助，`-f job.py --help` 则由脚本处理帮助参数。
 - 含空格的路径或单个参数须由启动终端正确引用。`-c` 的完整 Python 语句须作为一个参数传入；产品命令可按多个参数传入，也可把整条命令用引号包起来。命令参数不会插值为 Python 变量。
 - 相对路径按启动时工作目录解析，不自动切换到 EXE 或脚本目录；脚本可用 `__file__` 定位旁边的文件。
 - 缺少命令、缺少文件路径或未知启动选项，会向终端标准错误打印错误和用法，以状态码 2 退出，不打开 GUI；`-f` 指定的脚本不存在时，仍在工作台报告读取失败。错误不会触发其他命令。
@@ -163,7 +165,7 @@ project.snapshot
 
 ```text
 project.set_output_dir "D:/任务/001"
-cloud.import "D:/扫描/梁.pcd" --unit mm
+cloud.import "D:/扫描/梁.pcd"
 model.reconstruct --mirror false --end-tolerance 30
 project.export_and_exit
 ```
@@ -186,10 +188,10 @@ GUI“导出并退出”、直接输入 `project.export_and_exit`、`-c` 和脚�
 .\ReverseModeler.exe --input_file "D:/扫描/梁 点云.pcd"
 
 # 只指定输出目录：手动导入、建模，或用命令导入已有模型
-.\ReverseModeler.exe --output_dir "D:/任务/002" -c cloud.import "D:/模型/梁.step" --unit mm
+.\ReverseModeler.exe --output_dir "D:/任务/002" -c cloud.import "D:/模型/梁.step"
 
-# 指定键先提取；脚本只收到 aa、--unit、mm 三个参数
-.\ReverseModeler.exe -f "D:/脚本/建模.py" aa --unit mm --input_file "D:/扫描/梁.pcd" --output_dir "D:/任务/003"
+# 指定键先提取；脚本只收到 aa、--count、3 三个参数
+.\ReverseModeler.exe -f "D:/脚本/建模.py" aa --count 3 --input_file "D:/扫描/梁.pcd" --output_dir "D:/任务/003"
 ```
 
 这三个键是应用保留的全局选项，即使写在 `-f` 后面也不进入 `sys.argv`。重复指定、缺值、空字符串是启动参数错误；提示后退出。路径支持中文、空格，相对路径按启动工作目录转为绝对路径。`-h/--help` 不创建目录、不初始化结果、不自动导入。
@@ -252,7 +254,7 @@ GUI“导出并退出”、直接输入 `project.export_and_exit`、`-c` 和脚�
 录制只追加命令：撤销追加 `project.undo`，不删除之前已写入的编辑行；重做追加 `project.redo`，不重复录入原编辑命令。例如：
 
 ```text
-cloud.import "D:/projectWQZ/other-resource/cloud/test1.step" --unit mm
+cloud.import "D:/projectWQZ/other-resource/cloud/test1.step"
 model.delete --parts '["imported-part-1","imported-part-3"]'
 project.undo
 project.redo

@@ -65,7 +65,7 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     file->addLargeAction(actions.get(Open), QToolButton::MenuButtonPopup);
     file->actionToRibbonToolButton(actions.get(Open))->setMenu(openMenu);
     auto *exportMenu = menu(ribbon, QStringLiteral("导出"), actions,
-                            {ExportStep, ExportModel, ExportCloud, ExportModelCloud, ExportParameters}, QStringLiteral("export"));
+                            {ExportStep, ExportModel, ExportCloud, ExportModelCloud}, QStringLiteral("export"));
     setActionHelp(exportMenu->menuAction(), QStringLiteral("保存当前点云或三维模型。"),
                   QStringLiteral("点击展开菜单，选择导出 STEP/CWRM 模型、当前 PCD 点云或模型表面采样点云，再指定保存位置。"),
                   QStringLiteral("STEP/CWRM 和模型采样需要已有模型；当前点云导出需要已有点云。"));
@@ -134,7 +134,7 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     }
 }
 
-QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
+QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions, QMenu *sectionMenu)
 {
     using enum ActionId;
     auto *container = new QWidget(parent);
@@ -184,9 +184,13 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
     split(ShowCloud, {CloudHeight, CloudSolid});
     split(ShowModel, {ModelSolid, ModelWire});
     toolbar->addAction(actions.get(ShowThickness));
-    toolbar->addAction(actions.get(Section));
-    toolbar->addSeparator();
-    toolbar->addAction(actions.get(FitAll));
+    auto *sectionButton = new QToolButton(toolbar);
+    sectionButton->setObjectName(QStringLiteral("button.section"));
+    sectionButton->setDefaultAction(actions.get(Section));
+    sectionButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    sectionButton->setPopupMode(QToolButton::MenuButtonPopup);
+    sectionButton->setMenu(sectionMenu);
+    toolbar->addWidget(sectionButton);
     layout->addWidget(toolbar, 1);
     auto *bottomView = new QToolButton(container);
     bottomView->setObjectName(QStringLiteral("button.bottomView"));

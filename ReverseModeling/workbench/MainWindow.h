@@ -30,7 +30,6 @@ private:
     void importCloud();
     void importCloud(const QString& path);
     void restoreRecognition();
-    bool applyParameters();
     void cancelTask();
     void refreshProjectPanels();
     void restoreCommittedParameters();

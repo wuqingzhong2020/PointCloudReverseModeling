@@ -122,7 +122,7 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
     BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
     const BeamFrame frame;
     CommandService service;
-    success(service, service.submitImport(input, LengthUnit::Millimeter));
+    success(service, service.submitImport(input));
     const auto imported = service.project();
     ASSERT_TRUE(imported.revision == 1 && imported.cloud && imported.estimate) << "Import did not commit snapshot";
     const auto importJson = toJson(imported);
@@ -147,7 +147,7 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
     const auto beforeBytes = std::filesystem::file_size(output);
     ASSERT_TRUE(wait(service, service.submitExport(output, built.revision)).state == TaskState::Failed) << "Export unexpectedly overwrote existing STEP";
     ASSERT_TRUE(std::filesystem::file_size(output) == beforeBytes) << "Failed export changed file";
-    ASSERT_TRUE(wait(service, service.submitImport(temp.path / "missing.pcd", LengthUnit::Millimeter)).state == TaskState::Failed) << "Missing cloud must fail";
+    ASSERT_TRUE(wait(service, service.submitImport(temp.path / "missing.pcd")).state == TaskState::Failed) << "Missing cloud must fail";
     ASSERT_TRUE(service.project().modelId == built.modelId) << "Failed import discarded model";
     const auto json = toJson(service.project());
     ASSERT_TRUE(json.at("schemaVersion") == 1 && json.at("model").at("solidCount") == 7 && !json.at("cloud").contains("points")) << "Serializable summary contract failed";
@@ -158,7 +158,7 @@ TEST(CommandService, PreservesStateAndRoundTripsStepAndJson) {
         out << "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
                "WIDTH 3\nHEIGHT 1\nPOINTS 3\nDATA ascii\n0 0 0\n10 0 0\n0 10 0\n";
     }
-    success(service, service.submitImport(planar, LengthUnit::Millimeter));
+    success(service, service.submitImport(planar));
     const auto planarProject = service.project();
     ASSERT_TRUE(planarProject.cloud && !planarProject.estimate && !planarProject.recognition && !planarProject.model && !planarProject.warnings.empty()) << "Valid planar cloud must import even without a beam frame";
     EXPECT_EQ(wait(service, service.submitReconstruct(parameters, planarProject.revision)).errorCode, "no_frame");
@@ -187,7 +187,7 @@ TEST(CloudCommands, CropPreservesModelAndInvalidatesDeviationForLocalReconstruct
     writeCloud(input);
     const auto fileSize = std::filesystem::file_size(input);
     CommandService service;
-    success(service, service.submitImport(input, LengthUnit::Millimeter));
+    success(service, service.submitImport(input));
     const auto original = service.project();
     const BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
     success(service, service.submitReconstruct(parameters, original.revision));
@@ -243,7 +243,7 @@ TEST(CloudCommands, DeleteAllResetAndNoOpPreserveHistoryCorrectly)
     const auto input = temp.path / "cloud.pcd";
     writeCloud(input);
     CommandService service;
-    success(service, service.submitImport(input, LengthUnit::Millimeter));
+    success(service, service.submitImport(input));
     const auto original = service.project();
     EXPECT_EQ(wait(service, service.submitCloudEdit(CloudEditMode::DeleteSelection, original.revision)).errorCode, "empty_selection");
     success(service, service.submitCloudSelection(cloudRectangle(), CloudSelectionMode::Replace, original.revision));
@@ -275,11 +275,11 @@ TEST(CloudCommands, DeleteAllResetAndNoOpPreserveHistoryCorrectly)
     EXPECT_EQ(service.project().cloud->points.size(), 50u);
     EXPECT_FALSE(service.project().canRedoCloud); // 新分支丢弃旧重做。
     const auto edited = service.project();
-    EXPECT_EQ(wait(service, service.submitImport(temp.path / "missing.pcd", LengthUnit::Millimeter)).state,
+    EXPECT_EQ(wait(service, service.submitImport(temp.path / "missing.pcd")).state,
               TaskState::Failed);
     EXPECT_EQ(service.project().cloud, edited.cloud);
     EXPECT_TRUE(service.project().canUndoCloud);
-    success(service, service.submitImport(input, LengthUnit::Millimeter));
+    success(service, service.submitImport(input));
     EXPECT_FALSE(service.project().canUndoCloud);
     EXPECT_FALSE(service.project().canRedoCloud);
     EXPECT_FALSE(service.project().canResetCloud);
@@ -334,7 +334,7 @@ TEST(PointCloud, ImportsBinaryFromChineseDirectoryAndFullWidthFilename)
         EXPECT_EQ(a.sourceIndex, i);
     }
     CommandService service;
-    success(service, service.submitImport(unicodePath, LengthUnit::Millimeter));
+    success(service, service.submitImport(unicodePath));
     const auto project = service.project();
     ASSERT_TRUE(project.cloud);
     EXPECT_EQ(project.cloud->points.size(), pointCount);

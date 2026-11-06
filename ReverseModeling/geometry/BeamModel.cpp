@@ -7,6 +7,8 @@
 #include "geometry/PlateEditing.h"
 #include "geometry/ModelImport.h"
 #include "geometry/LocalReconstruction.h"
+#include "geometry/ScanProfile.h"
+#include "geometry/ObservedWebHoles.h"
 #include "geometry/PlateOutlineTreatment.h"
 #include "geometry/PlateHoles.h"
 #include "geometry/PlateThickness.h"
@@ -237,7 +239,7 @@ double boxSurfaceDistance(Vec3 point, const Plate& plate)
                      point.z - plate.minimum.z, plate.maximum.z - point.z});
 }
 
-TopoDS_Shape recognizedShape(const RecognizedPlate &plate)
+TopoDS_Shape recognizedShape(const RecognizedPlate &plate, std::stop_token stop)
 {
     const auto &low = plate.minimumMm;
     const auto &high = plate.maximumMm;
@@ -261,7 +263,9 @@ TopoDS_Shape recognizedShape(const RecognizedPlate &plate)
         {
             throw GeometryError("invalid_recognition", "识别板件的厚度与尺寸不一致。");
         }
-        return BRepPrimAPI_MakeBox(gp_Pnt(low.x, low.y, low.z), sizes[0], sizes[1], sizes[2]);
+        if (!plate.outline.empty()) return detail::buildScanProfile(plate);
+        TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(low.x, low.y, low.z), sizes[0], sizes[1], sizes[2]);
+        return detail::cutObservedWebHoles(box, plate, stop);
     }
     if (plate.normalAxis != 1 || high.y != low.y || high.x <= low.x || high.z <= low.z)
     {
@@ -280,6 +284,11 @@ std::vector<RecognizedPlate> modelPlates(const PlateRecognition &recognition, co
                                        std::vector<std::string> &warnings)
 {
     auto plates = recognition.plates;
+    for (auto &plate : plates)
+    {
+        if (!options.recognizeWebHoles) plate.holes.clear();
+        else std::erase_if(plate.holes, [&](const auto &hole) { return hole.radiusMm < options.minimumHoleRadiusMm; });
+    }
     const auto base = std::find_if(plates.begin(), plates.end(),
         [](const auto &plate) { return plate.id == "web"; });
     const auto first = std::find_if(plates.begin(), plates.end(),
@@ -336,6 +345,26 @@ std::vector<RecognizedPlate> modelPlates(const PlateRecognition &recognition, co
             // 两半翼板在底板中面接合，避免补齐底板厚度后镜像产生重叠实体。
             plates[index].minimumMm.y = middle;
             mirrored.maximumMm.y = middle;
+        }
+        const auto mirrorPoint = [&](Vec3 &p) { p.y = 2 * middle - p.y; };
+        for (auto &segment : mirrored.outline)
+        {
+            mirrorPoint(segment.firstMm);
+            mirrorPoint(segment.lastMm);
+            if (segment.arcMiddleMm) mirrorPoint(*segment.arcMiddleMm);
+        }
+        if (plate.normalAxis == 2)
+        {
+            const auto trimBase = [](std::vector<PlateBoundarySegment> &outline, double from, double to)
+            {
+                for (auto &segment : outline)
+                {
+                    for (auto *p : {&segment.firstMm, &segment.lastMm})
+                        if (std::abs(p->y - from) < 1e-6) p->y = to;
+                }
+            };
+            trimBase(plates[index].outline, plate.minimumMm.y, middle);
+            trimBase(mirrored.outline, 2 * middle - plate.minimumMm.y, middle);
         }
         mirrored.method = "explicit_mirror_of_" + plate.method;
         plates.push_back(std::move(mirrored));
@@ -1176,6 +1205,8 @@ std::shared_ptr<const Model> buildRecognizedPlates(const PlateRecognition &recog
     {
         throw GeometryError("invalid_parameters", "端部突出容差必须在 0–1000 mm 范围内。");
     }
+    if (!std::isfinite(options.minimumHoleRadiusMm) || options.minimumHoleRadiusMm < 0 || options.minimumHoleRadiusMm > 1000)
+        throw GeometryError("invalid_parameters", "忽略小孔半径必须在 0–1000 mm 范围内。");
     if (recognition.plates.empty())
     {
         throw GeometryError("no_recognized_plates", "当前没有可构建的点云识别结果。");
@@ -1184,6 +1215,7 @@ std::shared_ptr<const Model> buildRecognizedPlates(const PlateRecognition &recog
     auto &summary = implementation->summary;
     summary.frame = recognition.frame;
     summary.fromPointCloud = true;
+    summary.warnings = recognition.warnings;
     summary.parameters.mirrorSymmetry = options.mirrorSymmetry;
     summary.recognitionOptions = options;
     summary.plates = modelPlates(recognition, options, summary.warnings);
@@ -1200,7 +1232,7 @@ std::shared_ptr<const Model> buildRecognizedPlates(const PlateRecognition &recog
                    "生成已识别板件；未识别板厚保留观测面");
         const auto &low = observed.minimumMm;
         const auto &high = observed.maximumMm;
-        TopoDS_Shape shape = recognizedShape(observed);
+        TopoDS_Shape shape = recognizedShape(observed, stop);
         if (observed.thicknessMm)
         {
             summary.volumeMm3 += checkedVolume(shape);
@@ -1520,6 +1552,9 @@ StepExportResult exportStep(const Model& model, const std::filesystem::path& req
 DeviationResult evaluateDeviation(const CloudData& cloud, const Model& model,
     std::stop_token stop, const ProgressCallback& progress)
 {
+    if (std::any_of(model.summary().plates.begin(), model.summary().plates.end(),
+                    [](const auto &plate) { return !plate.outline.empty() || !plate.holes.empty(); }))
+        throw GeometryError("unsupported_deviation", "含识别孔或直线/圆弧轮廓的模型不适用矩形板件偏差算法；不能用包围盒代替真实轮廓计算。");
     if (!model.summary().mirrorCompletedParts.empty() || !model.summary().mirroredParts.empty())
         throw GeometryError("unsupported_deviation", "镜像补全后不再适用原矩形板件偏差算法。");
     if (!model.summary().contourExpandedParts.empty() || !model.summary().locallyReconstructedParts.empty())

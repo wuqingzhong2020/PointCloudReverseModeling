@@ -109,7 +109,7 @@ std::string startupUsage()
            "示例：\n"
            "  ReverseModeler.exe --input_file \"D:/data/中文 点云.pcd\" --output_dir \"D:/jobs/任务 1\"\n"
            "  ReverseModeler.exe --output_dir ./result -c help cloud.import\n"
-           "  ReverseModeler.exe -c cloud.import \"D:/data/点云.pcd\" --unit mm\n"
+           "  ReverseModeler.exe -c cloud.import \"D:/data/点云.pcd\"\n"
            "  ReverseModeler.exe -c \"print('hello')\"\n"
            "  ReverseModeler.exe -f \"D:/scripts/建模.py\" aa \"bb cc\" --count 2 --output_dir ./result\n\n"
            "先从全部参数提取 --input_file/--output_dir/--record_file（也支持 --键=值），再解析 -c/-f。\n"

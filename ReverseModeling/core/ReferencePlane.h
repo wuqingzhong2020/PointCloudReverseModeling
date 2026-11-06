@@ -12,11 +12,14 @@ struct ReferencePlane
     Vec3 xAxis;
 };
 
+enum class SectionPlaneSource { Reference, Bottom };
+
 struct PlaneSection
 {
     bool enabled{};
-    double offsetMm{}; // 沿基准面原始法线偏移，反向仅切换保留侧。
+    double offsetMm{}; // 沿所选剖视面原始法线偏移，反向仅切换保留侧。
     bool reversed{};
+    SectionPlaneSource source{SectionPlaneSource::Reference};
     bool operator==(const PlaneSection &) const = default;
 };
 }

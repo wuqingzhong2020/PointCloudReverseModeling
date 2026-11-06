@@ -1,5 +1,6 @@
 ﻿/* 文件描述：固定十步工程历史，重做直接恢复结果，不再次运行几何算法。 */
 #include "commands/ProjectHistory.h"
+#include "commands/SectionPlane.h"
 #include "geometry/Geometry.h"
 #include <set>
 #include <type_traits>
@@ -58,7 +59,7 @@ ProjectSnapshot ProjectContent::restore(const ProjectSnapshot &current, bool res
     auto result = snapshot;
     result.revision = current.revision + 1;
     result.historyRestoreRevision = result.revision;
-    result.section = !reset && result.referencePlane ? current.section : PlaneSection{};
+    result.section = !reset && selectedSectionPlane(result, current.section.source) ? current.section : PlaneSection{};
     return result;
 }
 void ProjectHistory::establishBaseline(ProjectContent content)

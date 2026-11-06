@@ -8,7 +8,8 @@
         {
           "name": "import",
           "summary": "导入 PCD 点云或 STEP/STP/CWRM 模型",
-          "usage": "cloud.import <path> [--unit mm|cm|m]",
+          "usage": "cloud.import <path>",
+          "description": "PCD 点云固定按毫米读取，不做单位缩放。STEP/STP 按文件单位转换到毫米，CWRM 按毫米读取。",
           "params": [
             {
               "name": "path",
@@ -17,20 +18,7 @@
               "type": "path",
               "required": true,
               "min_size": 1,
-              "description": "输入文件路径（支持中文）"
-            },
-            {
-              "name": "unit",
-              "binding": "option",
-              "option": "--unit",
-              "type": "enum",
-              "values": [
-                "mm",
-                "cm",
-                "m"
-              ],
-              "default": "mm",
-              "description": "仅点云使用，默认毫米"
+              "description": "输入文件路径（支持中文）；PCD 坐标单位为毫米"
             }
           ],
           "returns": {
@@ -39,14 +27,13 @@
           },
           "examples": [
             "cloud.import \"D:/data/中文点云.pcd\"",
-            "rm.execute(\"cloud.import\", \"D:/data/cloud.pcd\", unit=\"mm\")"
-          ],
-          "description": ""
+            "rm.execute(\"cloud.import\", \"D:/data/cloud.pcd\")"
+          ]
         },
         {
           "name": "select",
           "summary": "按视图矩形贯穿深度选择点云",
-          "usage": "cloud.select --rectangle <object> [--mode replace|add|subtract|clear]",
+          "usage": "cloud.select --rectangle <object> [--mode replace|add|subtract|clear] [--edit-last false]",
           "params": [
             {
               "name": "rectangle",
@@ -93,6 +80,14 @@
                 "clear"
               ],
               "default": "replace"
+            },
+            {
+              "name": "edit_last",
+              "binding": "option",
+              "option": "--edit-last",
+              "type": "bool",
+              "default": false,
+              "description": "调整最近一次框选，保留此前选区；mode须与该框原来的选择方式一致"
             }
           ],
           "returns": {
@@ -545,7 +540,7 @@
         {
           "name": "reconstruct",
           "summary": "按点云识别板厚重建",
-          "usage": "model.reconstruct [--mirror false] [--end-tolerance 30]",
+          "usage": "model.reconstruct [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]",
           "params": [
             {
               "name": "mirror",
@@ -569,6 +564,29 @@
               "default": 30.0,
               "unit": "mm",
               "description": "端部突出容差"
+            },
+            {
+              "name": "web_holes",
+              "binding": "option",
+              "option": "--web-holes",
+              "type": "bool",
+              "default": true,
+              "description": "保留俯视可见的腹板圆孔和长圆孔；关闭时生成无内孔腹板，不影响筋板可见顶边缺口。"
+            },
+            {
+              "name": "min_hole_radius",
+              "binding": "option",
+              "option": "--min-hole-radius",
+              "type": "float",
+              "ranges": [
+                [
+                  0,
+                  1000
+                ]
+              ],
+              "default": 5.0,
+              "unit": "mm",
+              "description": "忽略小于此半径的腹板孔。长圆孔按端圆半径（孔宽一半）过滤；0 仍受点云分辨率限制。"
             }
           ],
           "returns": {
@@ -2147,8 +2165,8 @@
         },
         {
           "name": "section",
-          "summary": "设置基准面点云剖视",
-          "usage": "project.section --enabled true|false [--offset <mm>] [--reverse true|false]",
+          "summary": "按底板面或基准面设置点云剖视",
+          "usage": "project.section --enabled true|false [--plane bottom|reference] [--offset <mm>] [--reverse true|false]",
           "description": "仅过滤点云显示，不删除点云，不影响框选、重建或导出。偏移沿原法线；默认保留正法线侧，reverse 仅反转保留侧。",
           "params": [
             {
@@ -2164,7 +2182,7 @@
               "option": "--offset",
               "type": "float",
               "default": 0.0,
-              "description": "沿基准面法线的偏移，单位 mm"
+              "description": "沿所选剖视面法线的偏移，单位 mm"
             },
             {
               "name": "reverse",
@@ -2173,6 +2191,18 @@
               "type": "bool",
               "default": false,
               "description": "反转点云保留侧"
+            },
+            {
+              "name": "plane",
+              "binding": "option",
+              "option": "--plane",
+              "type": "enum",
+              "values": [
+                "bottom",
+                "reference"
+              ],
+              "default": "reference",
+              "description": "bottom：识别底板面；reference：已确认的自定义基准面"
             }
           ],
           "returns": {

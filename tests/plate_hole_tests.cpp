@@ -247,7 +247,7 @@ TEST(PlateHoleCommands, PreviewIsTransientApplyRecordsUndoRedoAndReplay)
     const auto source = plate();
     (void)exportStep(*source, files.dir / "plate.step");
     CommandService service;
-    ASSERT_EQ(wait(service, service.submitImport(files.dir / "plate.step", LengthUnit::Millimeter)).state,
+    ASSERT_EQ(wait(service, service.submitImport(files.dir / "plate.step")).state,
               TaskState::Succeeded);
     const auto before = service.project();
     const auto inspect = wait(service, service.submitHoleInspection(before.model->partIds[0], before.revision));
@@ -284,7 +284,7 @@ TEST(PlateHoleCommands, PreviewIsTransientApplyRecordsUndoRedoAndReplay)
     ASSERT_EQ(lateResult.state, TaskState::Succeeded) << lateResult.message;
     ASSERT_TRUE(lateReplay.project().model);
     EXPECT_NEAR(lateReplay.project().model->volumeMm3, editedVolume, 1e-5);
-    ASSERT_EQ(wait(service, service.submitImport(files.dir / "plate.step", LengthUnit::Millimeter)).state,
+    ASSERT_EQ(wait(service, service.submitImport(files.dir / "plate.step")).state,
               TaskState::Succeeded);
     ASSERT_EQ(wait(service, service.submitScriptFile(files.dir / "holes.py")).state, TaskState::Succeeded);
     EXPECT_NEAR(service.project().model->volumeMm3, editedVolume, 1e-5);

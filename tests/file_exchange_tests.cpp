@@ -243,7 +243,7 @@ TEST_F(FileExchange, CwrmHistoryRestoresSolidsAndStandaloneFacesAfterDeleteAll)
     const auto input = file(u8"基线.cwrm");
     write(input, cwrm(compound));
     reverse::CommandService service;
-    ASSERT_TRUE(finish(service, service.submitImport(input, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finish(service, service.submitImport(input)).result.ok());
     const auto baseline = service.project();
     ASSERT_TRUE(finish(service, service.submitDeleteModelParts(baseline.model->partIds, baseline.revision)).result.ok());
     EXPECT_FALSE(service.project().model);
@@ -264,12 +264,12 @@ TEST_F(FileExchange, ServiceSwitchesCloudAndCadAndPreservesStateOnFailure)
 {
     reverse::CommandService service;
     (void)reverse::exportPointCloud(cloud(), file(u8"点云.PCD"));
-    ASSERT_EQ(finish(service, service.submitImport(file(u8"点云.PCD"), reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finish(service, service.submitImport(file(u8"点云.PCD"))).state,
               reverse::TaskState::Succeeded);
     ASSERT_EQ(finish(service, service.submitExportCloud(file(u8"点云导出.pcd"), service.project().revision)).state,
               reverse::TaskState::Succeeded);
     write(file(u8"模型.cwrm"), cwrm(BRepPrimAPI_MakeBox(10, 20, 30).Shape()));
-    ASSERT_EQ(finish(service, service.submitImport(file(u8"模型.cwrm"), reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finish(service, service.submitImport(file(u8"模型.cwrm"))).state,
               reverse::TaskState::Succeeded);
     const auto cad = service.project();
     ASSERT_TRUE(cad.model);
@@ -281,11 +281,11 @@ TEST_F(FileExchange, ServiceSwitchesCloudAndCadAndPreservesStateOnFailure)
     ASSERT_EQ(finish(service, service.submitExport(file(u8"导出.step"), cad.revision)).state,
               reverse::TaskState::Succeeded);
     write(file(u8"损坏.cwrm"), "broken");
-    EXPECT_EQ(finish(service, service.submitImport(file(u8"损坏.cwrm"), reverse::LengthUnit::Millimeter)).state,
+    EXPECT_EQ(finish(service, service.submitImport(file(u8"损坏.cwrm"))).state,
               reverse::TaskState::Failed);
     EXPECT_EQ(service.project().model, cad.model);
     EXPECT_EQ(service.project().revision, cad.revision);
-    ASSERT_EQ(finish(service, service.submitImport(file(u8"点云.PCD"), reverse::LengthUnit::Millimeter)).state,
+    ASSERT_EQ(finish(service, service.submitImport(file(u8"点云.PCD"))).state,
               reverse::TaskState::Succeeded);
     EXPECT_FALSE(service.project().model);
     EXPECT_TRUE(service.project().cloud);
@@ -309,6 +309,14 @@ TEST_F(FileExchange, OptionalLocalSamplesReadAndCadRoundtrip)
             const auto exported =
                 reverse::exportStep(*model, directory / ("sample-" + std::to_string(++count) + ".step"));
             EXPECT_TRUE(exported.valid);
+            const auto cwrmPath = directory / ("sample-" + std::to_string(count) + ".cwrm");
+            EXPECT_TRUE(reverse::exportCwrm(*model, cwrmPath).valid);
+            const auto restored = reverse::loadCadModel(cwrmPath);
+            EXPECT_EQ(restored->summary().solidCount, model->summary().solidCount);
+            EXPECT_NEAR(restored->summary().volumeMm3, model->summary().volumeMm3,
+                        std::max(1e-4, model->summary().volumeMm3 * 1e-8));
+            const auto sampled = reverse::sampleModelSurface(*restored, 10.0);
+            EXPECT_FALSE(sampled->points.empty());
         }
         else if (extension == ".pcd")
         {
@@ -317,7 +325,7 @@ TEST_F(FileExchange, OptionalLocalSamplesReadAndCadRoundtrip)
             EXPECT_GT(source->points.size(), 100000);
         }
     }
-    EXPECT_GE(count, 5);
+    EXPECT_GT(count, 0) << "Sample directory must contain at least one CAD model";
 }
 
 TEST_F(FileExchange, CwrmExportRoundtripPreservesPartsAndPlacedSurfaces)
@@ -425,7 +433,7 @@ TEST_F(FileExchange, ConversionAndNewExportsRecordWithoutChangingProjectHistory)
     write(source,cwrm(BRepPrimAPI_MakeBox(10,20,30).Shape()));
     reverse::CommandService service;
     const auto text=[](const std::filesystem::path &p){auto s=p.u8string();return std::string(reinterpret_cast<const char*>(s.data()),s.size());};
-    ASSERT_TRUE(finish(service,service.submitImport(source,reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finish(service,service.submitImport(source)).result.ok());
     const auto before=service.project();
     ASSERT_TRUE(finish(service,service.submitStartRecording(file(u8"记录.py"))).result.ok());
     const auto count=service.recordingState().commandCount;

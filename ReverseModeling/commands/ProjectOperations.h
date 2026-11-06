@@ -16,16 +16,17 @@ class ProjectOperations
 
     [[nodiscard]] PlateEditResult previewPlateEdit(const PlateEdit &request, std::uint64_t revision);
     void applyPlateEdit(const PlateEdit &request, std::uint64_t revision);
-    [[nodiscard]] std::string submitImport(const std::filesystem::path &path, LengthUnit unit);
+    [[nodiscard]] std::string submitImport(const std::filesystem::path &path);
     [[nodiscard]] std::string submitCloudSelection(const CloudSelectionRect &rectangle, CloudSelectionMode mode,
-                                                   std::uint64_t expectedRevision);
+                                                   std::uint64_t expectedRevision, bool editLast = false);
     [[nodiscard]] std::string submitCloudEdit(CloudEditMode mode, std::uint64_t expectedRevision,
                                              std::optional<CloudSelectionRecipe> selectionOverride = {});
     [[nodiscard]] std::string submitCloudHistory(CloudHistoryAction action, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitReconstruct(const BeamParameters &parameters, std::uint64_t expectedRevision,
                                                 std::optional<BeamFrame> frameOverride = {});
     [[nodiscard]] std::string submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
-                                                          double endOverhangToleranceMm = 30.0);
+                                                          double endOverhangToleranceMm = 30.0,
+                                                         bool recognizeWebHoles = true, double minimumHoleRadiusMm = 5.0);
     [[nodiscard]] std::shared_ptr<const Model> previewLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision);
     void applyLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision);
     [[nodiscard]] std::string submitExport(const std::filesystem::path &path, std::uint64_t expectedRevision);

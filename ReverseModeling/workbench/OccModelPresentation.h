@@ -29,6 +29,7 @@ public:
     std::vector<Handle(AIS_InteractiveObject)> objectsForParts(const std::vector<std::string> &ids) const;
     void rebuild(const std::vector<ModelDisplayPart> &parts);
     void setVisible(bool modelVisible, bool labelsVisible);
+    void setWireframe(bool wireframe);
     void setSelectable(bool enabled, ModelPickMode mode = ModelPickMode::Body);
     void selectOwner(const Handle(SelectMgr_EntityOwner) &owner);
     [[nodiscard]] ModelSelection detectedSelection(const Handle(SelectMgr_EntityOwner) &owner) const;

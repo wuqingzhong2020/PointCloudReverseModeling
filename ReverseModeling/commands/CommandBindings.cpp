@@ -356,11 +356,12 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
     bindBusiness(manager, operations, "cloud.import", [&operations](const rm::Arguments &args, auto) {
         // Typed descriptor conversion is separate from the business implementation.
         const auto input = rmcmd::cloud::ImportCommand::arguments(args);
-        (void)operations.submitImport(commandPath(input.path), parseLengthUnit(args.at("unit").as<std::string>()));
+        (void)operations.submitImport(commandPath(input.path));
     });
     bindBusiness(manager, operations, "cloud.select", [&operations](const rm::Arguments &args, auto revision) {
         const auto r = rectangleValue(args.at("rectangle"));
-        (void)operations.submitCloudSelection(r, selectionMode(args.at("mode").as<std::string>()), revision);
+        (void)operations.submitCloudSelection(r, selectionMode(args.at("mode").as<std::string>()), revision,
+                                             args.at("edit_last").as<bool>());
     });
     bindBusiness(manager, operations, "cloud.select_indices", [&operations](const rm::Arguments &args, auto) {
         operations.selectIndices(args.at("indices").as<rm::Array>(), selectionMode(args.at("mode").as<std::string>()));
@@ -387,7 +388,8 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
     });
     bindBusiness(manager, operations, "model.reconstruct", [&operations](const rm::Arguments &args, auto revision) {
         (void)operations.submitRecognizedReconstruct(args.at("mirror").as<bool>(), revision,
-                                                     args.at("end_tolerance").as<double>());
+                                                     args.at("end_tolerance").as<double>(),
+                                                     args.at("web_holes").as<bool>(), args.at("min_hole_radius").as<double>());
     });
     bindBusiness(manager, operations, "model.parametric", [&operations](const rm::Arguments &args, auto revision) {
         const auto json = commandJson(rm::Value(args));
@@ -421,7 +423,8 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
     });
     bindBusiness(manager, operations, "project.section", [&operations](const rm::Arguments &args, auto) {
         operations.setSection({args.at("enabled").as<bool>(), args.at("offset").as<double>(),
-                              args.at("reverse").as<bool>()});
+                              args.at("reverse").as<bool>(), args.at("plane").as<std::string>() == "bottom"
+                                  ? SectionPlaneSource::Bottom : SectionPlaneSource::Reference});
     });
     manager.bindHandler("project.snapshot", [&operations](const auto &, const auto &) {
         return rm::CommandResult{rm::ResultKind::Success, {}, {}, commandValue(toJson(operations.project())), false};

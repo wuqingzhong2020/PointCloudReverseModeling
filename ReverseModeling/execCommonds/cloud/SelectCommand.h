@@ -11,6 +11,7 @@ public:
     {
         rm::Arguments rectangle{};
         ModeValue mode{};
+        bool edit_last{};
     };
     static constexpr const char *name() { return "cloud.select"; }
     static rm::CommandDefinition definition();

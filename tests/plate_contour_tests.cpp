@@ -189,7 +189,7 @@ TEST(PlateContourCommands, PreviewApplyHistoryRecordingAndReplay)
     Files files;
     (void)exportStep(*plate(), files.dir / "plate.step");
     CommandService service;
-    ASSERT_EQ(wait(service, service.submitImport(files.dir / "plate.step", LengthUnit::Millimeter)).state,
+    ASSERT_EQ(wait(service, service.submitImport(files.dir / "plate.step")).state,
               TaskState::Succeeded);
     const auto before = service.project();
     const PlateContourExpansion request{before.model->partIds, 20};

@@ -31,9 +31,9 @@ TEST(StartupArguments, TailArgumentsRemainUntouched)
     const auto script = reverse::parseStartupArguments(args);
     EXPECT_EQ(script.mode, reverse::StartupMode::Script);
     EXPECT_EQ(script.arguments, tail);
-    const auto command = reverse::parseStartupArguments({"-c", "cloud.import", "D:/中文 点云.pcd", "--unit", "mm"});
+    const auto command = reverse::parseStartupArguments({"-c", "cloud.import", "D:/中文 点云.pcd"});
     EXPECT_EQ(command.mode, reverse::StartupMode::Command);
-    EXPECT_EQ(command.arguments, (std::vector<std::string>{"cloud.import", "D:/中文 点云.pcd", "--unit", "mm"}));
+    EXPECT_EQ(command.arguments, (std::vector<std::string>{"cloud.import", "D:/中文 点云.pcd"}));
     const auto expression = reverse::parseStartupArguments({"-c", "print('hello world')"});
     EXPECT_EQ(expression.arguments, (std::vector<std::string>{"print('hello world')"}));
 }
@@ -48,10 +48,10 @@ TEST(StartupArguments, ExtractsOnlyKnownPairsBeforeCommandOrScript)
 {
     using reverse::StartupMode;
     const auto request = reverse::parseStartupArguments({
-        "-c", "cloud.import", "中文 点云.pcd", "--unit", "mm", "--output_dir", "结果 目录",
+        "-c", "cloud.import", "中文 点云.pcd", "--output_dir", "结果 目录",
         "--input_file=另一份.pcd", "--help"});
     ASSERT_EQ(request.mode, StartupMode::Command) << request.error;
-    EXPECT_EQ(request.arguments, (std::vector<std::string>{"cloud.import", "中文 点云.pcd", "--unit", "mm", "--help"}));
+    EXPECT_EQ(request.arguments, (std::vector<std::string>{"cloud.import", "中文 点云.pcd", "--help"}));
     EXPECT_EQ(*request.outputDirectory, std::filesystem::absolute(std::filesystem::path(u8"结果 目录")));
     EXPECT_EQ(*request.inputFile, std::filesystem::absolute(std::filesystem::path(u8"另一份.pcd")));
     const auto script = reverse::parseStartupArguments({

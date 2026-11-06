@@ -8,7 +8,7 @@ rm::CommandDefinition SelectCommand::definition()
     d.name = name();
     d.module = "cloud";
     d.summary = "按视图矩形贯穿深度选择点云";
-    d.usage = "cloud.select --rectangle <object> [--mode replace|add|subtract|clear]";
+    d.usage = "cloud.select --rectangle <object> [--mode replace|add|subtract|clear] [--edit-last false]";
     d.description = "";
     d.returns = "object: 结果摘要；执行失败返回错误码";
     {
@@ -36,6 +36,19 @@ rm::CommandDefinition SelectCommand::definition()
         p.unit = "";
         d.parameters.push_back(std::move(p));
     }
+    {
+        rm::Parameter p;
+        p.name = "edit_last";
+        p.binding = rm::Binding::Option;
+        p.option = "--edit-last";
+        p.position = 0;
+        p.rule = [] { rm::Rule r; r.type = rm::ValueType::Boolean; return r; }();
+        p.required = false;
+        p.defaultValue = rm::Value{false};
+        p.description = "调整最近一次框选，保留此前选区；mode须与该框原来的选择方式一致";
+        p.unit = "";
+        d.parameters.push_back(std::move(p));
+    }
     d.examples = {  };
     return d;
 }
@@ -57,6 +70,11 @@ SelectCommand::Args SelectCommand::arguments(const rm::Arguments &values)
         else { throw std::invalid_argument("Unvalidated enum value"); }
     }
     else { throw std::invalid_argument("Missing normalized argument: mode"); }
+    if (const auto it = values.find("edit_last"); it != values.end())
+    {
+        args.edit_last = it->second.as<bool>();
+    }
+    else { throw std::invalid_argument("Missing normalized argument: edit_last"); }
     return args;
 }
 }

@@ -9,8 +9,6 @@
 
 class QLabel;
 class QPushButton;
-class QCheckBox;
-class QDoubleSpinBox;
 namespace reverse::workbench
 {
 class ReferencePlaneTool final : public QWidget
@@ -45,9 +43,5 @@ private:
     QPushButton *m_confirm;
     QPushButton *m_clear;
     QPushButton *m_front;
-    QPushButton *m_sectionApply;
-    QCheckBox *m_section;
-    QCheckBox *m_reverse;
-    QDoubleSpinBox *m_offset;
 };
 }

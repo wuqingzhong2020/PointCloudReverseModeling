@@ -280,7 +280,7 @@ TEST(CommandService, ImportsRecognitionAndBuildsWithoutPresetParameters)
         }
         EXPECT_EQ(service.task(task).state, expected) << service.task(task).message;
     };
-    wait(service.submitImport(file, LengthUnit::Millimeter));
+    wait(service.submitImport(file));
     std::filesystem::remove(file);
     const auto imported = service.project();
     ASSERT_TRUE(imported.recognition);

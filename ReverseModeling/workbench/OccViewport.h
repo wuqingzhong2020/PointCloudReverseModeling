@@ -30,7 +30,7 @@ public:
     void setCloudHeightColors(bool enabled);
     void setCloudEditingEnabled(bool enabled);
     void setCloudSelectionMode(CloudSelectionMode mode);
-    void setCloudSelection(std::shared_ptr<const CloudSelection> selection);
+    void setCloudSelection(std::shared_ptr<const CloudSelection> selection, bool preserveRectangle = false);
     void setModel(std::vector<ModelDisplayPart> parts);
     void setModelPickingEnabled(bool enabled);
     void setModelPickMode(ModelPickMode mode);
@@ -41,6 +41,7 @@ public:
     [[nodiscard]] const std::vector<ModelSelection> &selectedObjects() const;
     void setCloudVisible(bool visible);
     void setModelVisible(bool visible);
+    void setModelWireframe(bool wireframe);
     void setThicknessVisible(bool visible);
     void setThicknessEditingEnabled(bool enabled);
     std::function<bool(const std::string &)> onThicknessLabelEditRequested;
@@ -50,12 +51,14 @@ public:
     void setHolePreview(const PlateHoleBase &base, const PlateHole &request, const Vec3 &origin);
     void clearHolePreview();
     void setBatchHolePreview(const std::vector<std::pair<PlateHoleBase,PlateHole>> &items,const Vec3 &origin);
-    void setPlateCropEnabled(bool enabled);
+    void setPlateCropEnabled(bool enabled, bool preserveRectangle = false);
     void setPlateEditReference(const std::vector<ModelDisplayPart> &original,
         const std::vector<std::string> &sources, const std::string &target, bool removedMaterial);
     void clearPlateEditReference();
     std::function<void(const CloudSelectionRect &)> onPlateCrop;
-    void setReferencePlane(std::shared_ptr<const ReferencePlane> plane, PlaneSection section, const Vec3 &origin);
+    void setReferencePlane(std::shared_ptr<const ReferencePlane> plane, PlaneSection section, const Vec3 &origin,
+                           std::optional<ReferencePlane> sectionPlane);
+    void setSectionPreviewVisible(bool visible);
     void setReferencePlanePicking(ReferencePlanePickMode mode);
     void setReferencePreview(std::vector<Vec3> points);
     std::function<void(const std::vector<Vec3> &, const QString &)> onReferencePicked;
@@ -70,7 +73,7 @@ public:
     void fitAll();
     void showBottomView(const Vec3 &normal, const Vec3 &longitudinal);
     std::function<void(const QString&)> onError;
-    std::function<void(const CloudSelectionRect &, CloudSelectionMode)> onCloudSelection;
+    std::function<void(const CloudSelectionRect &, CloudSelectionMode, bool editLast)> onCloudSelection;
     std::function<void(const QPoint &)> onCloudContextMenu;
     std::function<void(const std::vector<ModelSelection> &)> onModelObjectsSelected;
     std::function<void(bool)> onMeasurementModeChanged;
@@ -111,8 +114,11 @@ public:
     void pickReference(const QPoint &pixel);
     void detectObject(const QPoint &pixel);
     std::optional<MeasurementPoint> measurementPoint(const QPoint &pixel) const;
-    void drawSelectionRectangle(const QPoint &current);
-    CloudSelectionRect selectionRectangle(const QPoint &current) const;
+    bool canSelectRectangle() const;
+    void updateSelectionCursor(const QPoint &current);
+    bool finishSelectionRectangle(const QPoint &current);
+    void drawSelectionRectangle();
+    CloudSelectionRect selectionRectangle() const;
 };
 
 } // namespace reverse::workbench

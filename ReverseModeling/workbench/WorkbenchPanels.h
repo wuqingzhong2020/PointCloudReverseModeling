@@ -4,8 +4,6 @@
  */
 #pragma once
 
-#include <array>
-
 #include <QWidget>
 
 #include "core/Types.h"
@@ -14,12 +12,9 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
-class QGroupBox;
 class QLabel;
-class QLineEdit;
 class QPushButton;
 class QStackedWidget;
-class QTableWidget;
 
 namespace reverse::workbench
 {
@@ -28,41 +23,22 @@ class ReconstructionPanel final : public QWidget
     Q_OBJECT
   public:
     explicit ReconstructionPanel(QWidget *parent = nullptr);
-    BeamParameters values() const;
-    void setValues(const BeamParameters &parameters);
-    void setModelValues(const ModelSummary &model);
+    PlateBuildOptions options() const;
+    void setOptions(const PlateBuildOptions &options);
     void acceptEdits();
     bool hasEdits() const;
-    void setEditable(bool editable, bool canRestore);
-    void setSourceText(const QString &text);
-    void setFrameText(const QString &text);
-    void setHint(const QString &text);
-    void setModelText(const QString &text);
-    void setRecognition(const std::optional<PlateRecognition> &recognition);
-    bool usePointCloud() const;
-    bool mirrorSymmetry() const;
-    double endOverhangToleranceMm() const;
+    void setEditable(bool editable);
 
   signals:
     void edited();
-    void applyRequested();
     void restoreRequested();
     void closeRequested();
 
   private:
-    std::array<QDoubleSpinBox *, 6> m_dimensions{};
-    QLineEdit *m_stations;
-    QCheckBox *m_swap;
     QCheckBox *m_mirror;
+    QCheckBox *m_webHoles;
+    QDoubleSpinBox *m_minimumHoleRadius;
     QDoubleSpinBox *m_endOverhangTolerance;
-    QComboBox *m_mode;
-    QTableWidget *m_recognition;
-    QGroupBox *m_basic;
-    QLabel *m_source;
-    QLabel *m_frame;
-    QLabel *m_hint;
-    QLabel *m_model;
-    QPushButton *m_apply;
     QPushButton *m_restore;
     bool m_hasEdits{};
     bool m_settingValues{};

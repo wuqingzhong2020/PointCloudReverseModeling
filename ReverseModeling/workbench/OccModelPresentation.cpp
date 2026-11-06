@@ -158,6 +158,7 @@ struct OccModelPresentation::State
     std::vector<ThicknessLabelTarget> labelTargets;
     std::unique_ptr<ModelLabelVisibility> visibility;
     bool modelVisible{true};
+    bool wireframe{};
     bool labelsVisible{true};
     bool selectable{};
     bool transformPreview{};
@@ -230,6 +231,7 @@ void OccModelPresentation::rebuild(const std::vector<ModelDisplayPart> &parts)
         PartPresentation presentation;
         presentation.id = part.id;
         presentation.mesh = makeMesh(part);
+        presentation.mesh->setWireframe(m_state->wireframe);
         presentation.faces = part.labelFaces;
         const auto &anchor = part.labelFaces.front().position;
         presentation.anchor = gp_Pnt(anchor.x, anchor.y, anchor.z);
@@ -255,6 +257,19 @@ std::vector<Handle(AIS_InteractiveObject)> OccModelPresentation::objectsForParts
         if (std::find(ids.begin(),ids.end(),part.id) != ids.end()) objects.push_back(part.mesh);
     return objects;
 }
+void OccModelPresentation::setWireframe(bool wireframe)
+{
+    if (m_state->wireframe == wireframe) return;
+    m_state->wireframe = wireframe;
+    m_state->context->ClearDetected(false);
+    for (const auto &part : m_state->parts)
+    {
+        part.mesh->setWireframe(wireframe);
+        m_state->context->Redisplay(part.mesh, false);
+    }
+    m_state->context->HilightSelected(false);
+}
+
 void OccModelPresentation::setVisible(bool modelVisible, bool labelsVisible)
 {
     m_state->labelTargets.clear();

@@ -220,7 +220,7 @@ TEST(PlateEditing, PreviewApplyUndoLateRecordingReplayAndStaleRevision)
     const auto source = model({perforated(), box(200, 0, 0, 100, 40, 6)});
     (void)exportStep(*source, folder / "source.step");
     CommandService service;
-    ASSERT_EQ(done(service, service.submitImport(folder / "source.step", LengthUnit::Millimeter)).state,
+    ASSERT_EQ(done(service, service.submitImport(folder / "source.step")).state,
               TaskState::Succeeded);
     const auto before = service.project();
     PlateEdit r;
@@ -339,7 +339,7 @@ TEST(PlateEditingSamples, RealHoleStepRepairExportAndPcdImport)
     std::filesystem::remove(path);
     CommandService service;
     const auto imported =
-        done(service, service.submitImport(folder / std::filesystem::path(L"孔.pcd"), LengthUnit::Millimeter));
+        done(service, service.submitImport(folder / std::filesystem::path(L"孔.pcd")));
     ASSERT_EQ(imported.state, TaskState::Succeeded) << imported.message;
     ASSERT_TRUE(service.project().cloud);
     EXPECT_GT(service.project().cloud->points.size(), 0u);

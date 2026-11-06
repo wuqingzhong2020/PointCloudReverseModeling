@@ -192,7 +192,7 @@ TEST(LocalReconstruction, ServiceCropPreservesModelPreviewHistoryAndReplay)
     (void)exportPointCloud(cloud, file);
     CommandService service;
     done(service, service.submitStartRecording(script));
-    done(service, service.submitImport(file, LengthUnit::Millimeter));
+    done(service, service.submitImport(file));
     done(service, service.submitRecognizedReconstruct(false, service.project().revision));
     auto built = service.project();
     ASSERT_TRUE(built.model);

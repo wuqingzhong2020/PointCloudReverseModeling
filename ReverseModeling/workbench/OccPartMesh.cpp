@@ -107,11 +107,24 @@ OccPartMesh::OccPartMesh(const Handle(Poly_Triangulation) & mesh, const ModelDis
     }
 }
 
+void OccPartMesh::setWireframe(bool wireframe)
+{
+    if (m_wireframe == wireframe) return;
+    m_wireframe = wireframe;
+    SetToUpdate();
+}
+
 void OccPartMesh::Compute(const Handle(PrsMgr_PresentationManager) &, const Handle(Prs3d_Presentation) & presentation,
                           int mode)
 {
     if (mode != 0)
         return;
+    if (m_wireframe)
+    {
+        // 深色视口上使用实体的浅色；实体模式的深色描边只适合叠在填充面上。
+        drawEdges(presentation, m_edges, srgb(ModelColors::surface), 1.0);
+        return;
+    }
     const auto mesh = GetTriangulation();
     if (mesh.IsNull() || mesh->NbTriangles() == 0)
         return;
@@ -228,6 +241,20 @@ void OccPartMesh::drawHighlight(const Handle(Prs3d_Presentation) & presentation,
     }
     else
     {
+        // 线框下保持面/体的边界高亮，不重新填充被隐藏的表面。
+        if (m_wireframe)
+        {
+            if (kind == ModelPickMode::Body)
+                drawEdges(presentation, m_edges, color, 1.5);
+            else if (const auto boundary = m_faceBoundaries.find(index); boundary != m_faceBoundaries.end())
+            {
+                std::vector<std::vector<Vec3>> edges;
+                edges.reserve(boundary->second.size());
+                for (const auto &edge : boundary->second) edges.push_back({edge[0], edge[1]});
+                drawEdges(presentation, edges, color, 1.5);
+            }
+            return;
+        }
         const auto found = m_faces.find(index);
         const auto mesh = kind == ModelPickMode::Body ? GetTriangulation()
                           : found != m_faces.end()    ? found->second

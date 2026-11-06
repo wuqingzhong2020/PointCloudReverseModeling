@@ -9,6 +9,8 @@
 #include <OpenGl_GraphicDriver.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Prs3d_Presentation.hxx>
+#include <PrsMgr_Presentation.hxx>
+#include <PrsMgr_PresentationManager.hxx>
 #include <SelectBasics_PickResult.hxx>
 #include <SelectMgr_SelectingVolumeManager.hxx>
 #include <SelectMgr_SensitiveEntity.hxx>
@@ -220,6 +222,43 @@ TEST(ViewportPicking, CaptureRejectsOccludedVertexButKeepsFrontSurface)
     EXPECT_TRUE(isMeasurementPointVisible(gp_Pnt(2, 2, 0), context, view, surface));
     context->RemoveAll(false);
     view->Remove();
+}
+
+TEST(ViewportPicking, WireframeKeepsTopologyAndSelectionWhenSwitchingBackToSolid)
+{
+    using namespace reverse::workbench;
+    const Handle(OpenGl_GraphicDriver) driver = new OpenGl_GraphicDriver(new Aspect_DisplayConnection(), false);
+    const Handle(V3d_Viewer) viewer = new V3d_Viewer(driver);
+    const Handle(AIS_InteractiveContext) context = new AIS_InteractiveContext(viewer);
+    const Handle(Poly_Triangulation) mesh = new Poly_Triangulation(4, 2, false);
+    mesh->SetNode(1, gp_Pnt(0, 0, 0)); mesh->SetNode(2, gp_Pnt(10, 0, 0));
+    mesh->SetNode(3, gp_Pnt(10, 10, 0)); mesh->SetNode(4, gp_Pnt(0, 10, 0));
+    mesh->SetTriangle(1, Poly_Triangle(1, 2, 3)); mesh->SetTriangle(2, Poly_Triangle(1, 3, 4));
+    ModelDisplayPart data;
+    data.edges = {{{0, 0, 0}, {10, 0, 0}}, {{10, 0, 0}, {10, 10, 0}},
+                  {{10, 10, 0}, {0, 10, 0}}, {{0, 10, 0}, {0, 0, 0}}};
+    data.triangleFaceIndices = {1, 1};
+    const Handle(OccPartMesh) part = new OccPartMesh(mesh, data);
+    context->Display(part, 0, -1, false);
+    part->setSelectable(context, true);
+    const auto owner = part->selectionOwner(ModelPickMode::Body, 0);
+    ASSERT_FALSE(owner.IsNull());
+    setSelectedMeshOwners(context, {owner});
+    const auto presentation = context->MainPrsMgr()->Presentation(part, 0);
+    ASSERT_FALSE(presentation.IsNull());
+    const auto solidGroups = presentation->NumberOfGroups();
+    for (const bool wireframe : {true, false, true})
+    {
+        part->setWireframe(wireframe);
+        context->Redisplay(part, false);
+        context->HilightSelected(false);
+        EXPECT_TRUE(context->IsSelected(owner));
+        EXPECT_EQ(part->GetTriangulation(), mesh);
+        // 四条拓扑边；切换线框时移除填充组，不能出现矩形的三角剖分对角线。
+        EXPECT_EQ(presentation->NumberOfGroups(), wireframe ? 4 : solidGroups);
+        EXPECT_FALSE(part->GetSelectPresentation({})->IsEmpty());
+    }
+    context->RemoveAll(false);
 }
 
 TEST(ViewportPicking, MultipleOwnersRetainIndependentHighlightsInEveryMode)

@@ -38,23 +38,20 @@ std::string CommandService::submitLocalReconstruction(const LocalReconstruction 
         {"tolerance", request.toleranceMm}, {"corner", request.cornerMm}}, revision);
 }
 
-std::string CommandService::submitImport(const std::filesystem::path &path, LengthUnit unit)
+std::string CommandService::submitImport(const std::filesystem::path &path)
 {
-    return submitUiCommand("cloud.import", {pathText(path)},
-                           {{"unit", unit == LengthUnit::Meter        ? "m"
-                                     : unit == LengthUnit::Centimeter ? "cm"
-                                                                      : "mm"}},
-                           project().revision);
+    return submitUiCommand("cloud.import", {pathText(path)}, {}, project().revision);
 }
 std::string CommandService::submitCloudSelection(const CloudSelectionRect &r, CloudSelectionMode mode,
-                                                 std::uint64_t revision)
+                                                 std::uint64_t revision, bool editLast)
 {
     if (mode == CloudSelectionMode::Clear)
     {
         return submitUiCommand("cloud.select_indices", {}, {{"indices", rm::Array{}}, {"mode", "clear"}}, revision);
     }
     return submitUiCommand("cloud.select", {},
-                           {{"rectangle", commandValue(rectangleJson(r))}, {"mode", selectionModeText(mode)}},
+                           {{"rectangle", commandValue(rectangleJson(r))}, {"mode", selectionModeText(mode)},
+                            {"edit_last", editLast}},
                            revision);
 }
 std::string CommandService::submitCloudEdit(CloudEditMode mode, std::uint64_t revision)
@@ -126,9 +123,11 @@ std::string CommandService::submitReconstruct(const BeamParameters &p, std::uint
     }
     return submitUiCommand("model.parametric", {}, std::move(options), revision);
 }
-std::string CommandService::submitRecognizedReconstruct(bool mirror, std::uint64_t revision, double tolerance)
+std::string CommandService::submitRecognizedReconstruct(bool mirror, std::uint64_t revision, double tolerance,
+                                                       bool webHoles, double minimumHoleRadius)
 {
-    return submitUiCommand("model.reconstruct", {}, {{"mirror", mirror}, {"end_tolerance", tolerance}}, revision);
+    return submitUiCommand("model.reconstruct", {}, {{"mirror", mirror}, {"end_tolerance", tolerance},
+        {"web_holes", webHoles}, {"min_hole_radius", minimumHoleRadius}}, revision);
 }
 std::string CommandService::submitExport(const std::filesystem::path &path, std::uint64_t revision)
 {
@@ -275,6 +274,6 @@ std::string CommandService::submitReferencePlane(std::optional<std::array<Vec3, 
 std::string CommandService::submitSection(PlaneSection section, std::uint64_t revision)
 {
     return submitUiCommand("project.section", {}, {{"enabled", section.enabled}, {"offset", section.offsetMm},
-        {"reverse", section.reversed}}, revision);
+        {"reverse", section.reversed}, {"plane", section.source == SectionPlaneSource::Bottom ? "bottom" : "reference"}}, revision);
 }
 } // namespace reverse

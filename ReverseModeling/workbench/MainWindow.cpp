@@ -32,6 +32,7 @@
 #include <SARibbonBar.h>
 
 #include "commands/CommandService.h"
+#include "commands/SectionPlane.h"
 #include "workbench/DockWorkspace.h"
 #include "workbench/CommandConsoleWidget.h"
 #include "workbench/MainWindow.h"
@@ -42,6 +43,7 @@
 #include "workbench/ModelInspector.h"
 #include "workbench/OccViewport.h"
 #include "workbench/ReferencePlaneTool.h"
+#include "workbench/SectionTool.h"
 #include "workbench/ModelTransformTool.h"
 #include "workbench/EdgeTreatmentTool.h"
 #include "workbench/HoleTool.h"
@@ -73,11 +75,6 @@ std::filesystem::path nativePath(const QString &value)
     const auto utf8 = value.toUtf8();
     return std::filesystem::path(std::string(utf8.constData(), static_cast<std::size_t>(utf8.size())));
 #endif
-}
-
-QString vectorText(const Vec3 &value)
-{
-    return QStringLiteral("(%1, %2, %3)").arg(value.x, 0, 'g', 8).arg(value.y, 0, 'g', 8).arg(value.z, 0, 'g', 8);
 }
 
 CommandEnvironment commandEnvironment()
@@ -134,7 +131,6 @@ struct MainWindow::State
     bool closing{};
     bool cancellationRequested{};
     bool parametersDirty{true};
-    std::optional<BeamParameters> appliedParameters;
     OccViewport *viewport{};
     WorkbenchActions *actions{};
     RecentFilesMenu *recentFiles{};
@@ -142,6 +138,7 @@ struct MainWindow::State
     ReconstructionPanel *parameters{};
     OperationPanel *operation{};
     ReferencePlaneTool *referenceTool{};
+    SectionTool *sectionTool{};
     ModelTransformTool *transformTool{};
     EdgeTreatmentTool *edgeTool{};
     HoleTool *holeTool{};
@@ -192,7 +189,8 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         appendLog(QStringLiteral("视图错误：") + error);
     };
     state_->workspace = new DockWorkspace(this, viewContainer);
-    viewLayout->addWidget(createViewToolbar(viewContainer, actions));
+    state_->sectionTool = new SectionTool(state_->service, viewContainer);
+    viewLayout->addWidget(createViewToolbar(viewContainer, actions, state_->sectionTool));
     viewLayout->addWidget(state_->viewport, 1);
     auto *hint =
         label(QStringLiteral("左键拾取 · Shift 点击追加/取消 · 拖动框选点云 · 右键旋转 · 中键平移 · 滚轮缩放 · Esc 清空"), viewContainer);
@@ -245,6 +243,9 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     state_->operation = new OperationPanel(actions, this);
     state_->referenceTool = new ReferencePlaneTool(state_->service, *state_->viewport, state_->operation);
     state_->referenceTool->hide();
+    state_->sectionTool->onChanged = [this] { updateActions(); };
+    connect(state_->sectionTool, &QMenu::aboutToShow, this, [this] { state_->viewport->setSectionPreviewVisible(true); });
+    connect(state_->sectionTool, &QMenu::aboutToHide, this, [this] { state_->viewport->setSectionPreviewVisible(false); });
     state_->transformTool = new ModelTransformTool(state_->service, *state_->viewport, state_->operation);
     state_->transformTool->hide();
     state_->transformTool->onChanged = [this] { updateActions(); };
@@ -364,7 +365,7 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         const bool historyRestored = project.historyRestoreRevision > state_->displayedHistoryRestoreRevision;
         if (!geometryChanged && !historyRestored)
         {
-            state_->viewport->setCloudSelection(project.selection);
+            state_->viewport->setCloudSelection(project.selection, state_->pending == State::Operation::SelectCloud);
             refreshProjectPanels();
             updateActions();
             return;
@@ -485,7 +486,7 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         actions.get(id)->setShortcutContext(Qt::WidgetShortcut);
         state_->viewport->addAction(actions.get(id));
     }
-    state_->viewport->onCloudSelection = [this](const CloudSelectionRect &rectangle, CloudSelectionMode mode)
+    state_->viewport->onCloudSelection = [this](const CloudSelectionRect &rectangle, CloudSelectionMode mode, bool editLast)
     {
         if (!state_->activeTask.empty() || state_->closing)
         {
@@ -498,7 +499,7 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         }
         try
         {
-            state_->activeTask = state_->service.submitCloudSelection(rectangle, mode, project.revision);
+            state_->activeTask = state_->service.submitCloudSelection(rectangle, mode, project.revision, editLast);
             state_->pending = State::Operation::SelectCloud;
             state_->cancellationRequested = false;
             state_->progress->setValue(0);
@@ -575,6 +576,22 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     connect(actions.get(CloudHeight), &QAction::toggled, state_->viewport, &OccViewport::setCloudHeightColors);
     connect(actions.get(ShowModel), &QAction::toggled, state_->viewport, &OccViewport::setModelVisible);
     connect(actions.get(ShowModel), &QAction::toggled, this, [this] { updateActions(); });
+    for (const auto id : {ModelSolid, ModelWire})
+    {
+        connect(actions.get(id), &QAction::triggered, this, [this, id] {
+            const bool wireframe = id == ActionId::ModelWire;
+            auto *action = state_->actions->get(ActionId::ShowModel);
+            state_->viewport->setModelWireframe(wireframe);
+            action->setText(wireframe ? QStringLiteral("线框") : QStringLiteral("实体"));
+            setActionHelp(action,
+                wireframe ? QStringLiteral("显示或隐藏模型线框，透过表面查看真实拓扑边。")
+                          : QStringLiteral("显示或隐藏模型实体表面。"),
+                QStringLiteral("点击图标/文字切换显隐，右侧箭头选择实体或线框。"),
+                QStringLiteral("只改变显示，不影响几何和导出；部分编辑期间锁定显示。"));
+            action->setChecked(true);
+            updateActions();
+        });
+    }
     for (const auto id : {SelectPoint, SelectEdge, SelectFace, SelectSolid})
     {
         connect(actions.get(id), &QAction::toggled, this, [this](bool checked)
@@ -588,25 +605,12 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         });
     }
     connect(actions.get(ShowThickness), &QAction::toggled, state_->viewport, &OccViewport::setThicknessVisible);
-    connect(actions.get(FitAll), &QAction::triggered, state_->viewport, &OccViewport::fitAll);
     connect(actions.get(BottomView), &QAction::triggered, this,
             [this]
             {
                 const auto project = state_->service.project();
-                if (project.referencePlane)
-                {
-                    state_->viewport->showBottomView(project.referencePlane->normal, project.referencePlane->xAxis);
-                }
-                else if (project.model)
-                {
-                    const auto &frame = project.model->frame;
-                    state_->viewport->showBottomView(frame.yAxis, frame.xAxis);
-                }
-                else if (project.recognition)
-                {
-                    const auto &frame = project.recognition->frame;
-                    state_->viewport->showBottomView(frame.yAxis, frame.xAxis);
-                }
+                if (const auto plane = positioningPlane(project))
+                    state_->viewport->showBottomView(plane->normal, plane->xAxis);
             });
     for (const auto id : {OuterPlate, BottomPlate})
     {
@@ -727,20 +731,13 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         state_->referenceTool->begin();
         updateActions();
     });
-    connect(actions.get(Section), &QAction::triggered, this, [this] {
-        state_->referenceTool->cancel();
-        state_->operation->showCustom(QStringLiteral("基准面 / 点云剖视"), state_->referenceTool);
-        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+    connect(actions.get(Section), &QAction::triggered, this, [this](bool enabled) {
+        state_->sectionTool->setSectionEnabled(enabled);
     });
     connect(state_->parameters, &ReconstructionPanel::edited, this,
             [this]
             {
                 updateActions();
-            });
-    connect(state_->parameters, &ReconstructionPanel::applyRequested, this,
-            [this]
-            {
-                applyParameters();
             });
     connect(state_->parameters, &ReconstructionPanel::restoreRequested, this,
             [this]
@@ -904,17 +901,26 @@ void MainWindow::updateActions()
         : QStringLiteral("没有可重做的工程编辑"));
 
     state_->recentFiles->menuAction()->setEnabled(idle);
-    actions.get(ActionId::BottomView)->setEnabled(idle && (project.referencePlane ||
-        (project.model && project.model->importedFormat.empty()) || project.recognition.has_value()));
-    actions.get(ActionId::BottomView)->setText(project.referencePlane ? QStringLiteral("基准面") : QStringLiteral("底板面"));
-    setActionHelpContext(actions.get(ActionId::BottomView), project.referencePlane
-        ? QStringLiteral("正对自定义基准面并适合视图") : QStringLiteral("正对底板观测面，长边横向放置并适合视图"));
+    const auto viewPlane = positioningPlane(project);
+    const auto viewKind = positioningView(project);
+    const QString viewName = viewKind == PositioningView::Section ? QStringLiteral("剖视面")
+        : viewKind == PositioningView::Bottom ? QStringLiteral("底板面") : QStringLiteral("上视图");
+    actions.get(ActionId::BottomView)->setEnabled(idle && viewPlane.has_value());
+    actions.get(ActionId::BottomView)->setText(viewName);
+    setActionHelpContext(actions.get(ActionId::BottomView), !viewPlane
+        ? QStringLiteral("当前没有对应的可用平面。")
+        : viewKind == PositioningView::Top ? QStringLiteral("尚未重建模型，按工程 Z 轴俯视，保持缩放。")
+        : QStringLiteral("正对当前%1，保持缩放。").arg(viewName));
     actions.get(ActionId::BasePlane)->setEnabled(cloudAvailable || modelAvailable);
-    actions.get(ActionId::Section)->setEnabled(idle && static_cast<bool>(project.referencePlane));
-    actions.get(ActionId::Reconstruct)->setEnabled(idle && project.cloud &&
-        (state_->parameters->usePointCloud() ? project.recognition.has_value() : project.estimate.has_value()));
-    state_->parameters->setEditable(idle && project.cloud && project.estimate.has_value(),
-                                    idle && project.recognition.has_value());
+    const bool sectionEditable = idle && !transformActive && !state_->referenceTool->picking();
+    const bool sectionAvailable = sectionEditable && project.cloud &&
+        (project.referencePlane || bottomSectionPlane(project));
+    actions.get(ActionId::Section)->setEnabled(sectionAvailable || (sectionEditable && project.section.enabled));
+    actions.get(ActionId::Section)->setChecked(project.section.enabled);
+    state_->sectionTool->sync(project, sectionEditable);
+    const bool canReconstruct = idle && project.cloud && project.recognition.has_value();
+    actions.get(ActionId::Reconstruct)->setEnabled(canReconstruct);
+    state_->parameters->setEditable(canReconstruct);
     const bool currentModel = idle && project.model && (!project.model->importedFormat.empty() ||
         (!state_->parametersDirty && !state_->parameters->hasEdits()));
     actions.get(ActionId::ExportStep)->setEnabled(currentModel);
@@ -952,7 +958,9 @@ void MainWindow::updateActions()
     }
     setActionHelpContext(deliver, reason);
     actions.get(ActionId::ExportCloud)->setEnabled(idle && project.cloud && !project.cloud->points.empty());
-    actions.get(ActionId::Deviation)->setEnabled(currentModel && project.cloud && project.model->importedFormat.empty() && project.model->edgeTreatedParts.empty() && project.model->holeEditedParts.empty() && project.model->thicknessOverrides.empty() && project.model->contourExpandedParts.empty() && project.model->mirroredParts.empty() && project.model->mirrorCompletedParts.empty() && project.model->locallyReconstructedParts.empty());
+    actions.get(ActionId::Deviation)->setEnabled(currentModel && project.cloud && project.model->importedFormat.empty() && project.model->edgeTreatedParts.empty() && project.model->holeEditedParts.empty() && project.model->thicknessOverrides.empty() && project.model->contourExpandedParts.empty() && project.model->mirroredParts.empty() && project.model->mirrorCompletedParts.empty() && project.model->locallyReconstructedParts.empty() &&
+        std::none_of(project.model->plates.begin(), project.model->plates.end(),
+                     [](const auto &plate) { return !plate.outline.empty() || !plate.holes.empty(); }));
     const bool cancellable = !state_->activeTask.empty() && !state_->closing && !state_->cancellationRequested;
     actions.get(ActionId::CancelTask)->setEnabled(cancellable);
     actions.get(ActionId::StopReconstruct)->setEnabled(cancellable && state_->pending == State::Operation::Reconstruct);
@@ -1048,7 +1056,7 @@ void MainWindow::importCloud(const QString &path)
     }
     try
     {
-        state_->activeTask = state_->service.submitImport(nativePath(path), LengthUnit::Millimeter);
+        state_->activeTask = state_->service.submitImport(nativePath(path));
         state_->pending = State::Operation::Import;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
@@ -1060,86 +1068,22 @@ void MainWindow::importCloud(const QString &path)
     }
 }
 
-bool MainWindow::applyParameters()
-{
-    try
-    {
-        const auto parameters = state_->parameters->values();
-        state_->appliedParameters = parameters;
-        state_->parameters->acceptEdits();
-        state_->parametersDirty = true;
-        state_->parameters->setHint(QStringLiteral("参数已应用。请开始重建以更新模型；板厚与肋板位置仍需核对。"));
-        if (state_->service.project().model)
-        {
-            state_->parameters->setModelText(
-                QStringLiteral("视图仍显示上一次模型，重建成功后才能导出新参数对应的结果。"));
-        }
-        appendLog(QStringLiteral("已应用建模参数。"));
-        updateActions();
-        return true;
-    }
-    catch (const std::exception &error)
-    {
-        reportError(text(error.what()));
-        return false;
-    }
-}
-
 void MainWindow::restoreRecognition()
 {
-    const auto project = state_->service.project();
-    state_->parameters->setRecognition(project.recognition);
-    state_->appliedParameters.reset();
+    state_->parameters->setOptions({});
     state_->parametersDirty = true;
-    if (project.model)
-    {
-        state_->parameters->setModelText(QStringLiteral("已恢复点云识别结果并关闭镜像，请重新生成模型。"));
-    }
-    appendLog(QStringLiteral("已恢复本次点云识别结果，未填入经验板厚。"));
+    appendLog(QStringLiteral("已恢复默认识别参数，请重新生成模型。"));
     updateActions();
 }
 
 void MainWindow::reconstruct()
 {
-    if (state_->parameters->usePointCloud())
-    {
-        try
-        {
-            state_->activeTask = state_->service.submitRecognizedReconstruct(
-                state_->parameters->mirrorSymmetry(), state_->service.project().revision,
-                state_->parameters->endOverhangToleranceMm());
-            state_->pending = State::Operation::Reconstruct;
-            state_->cancellationRequested = false;
-            state_->progress->setValue(0);
-            updateActions();
-        }
-        catch (const std::exception &error)
-        {
-            reportError(text(error.what()));
-        }
-        return;
-    }
-    if (state_->parameters->hasEdits())
-    {
-        QMessageBox question(QMessageBox::Question, QStringLiteral("应用参数"),
-                             QStringLiteral("参数面板有尚未应用的编辑。应用这些参数并开始重建？"),
-                             QMessageBox::NoButton, this);
-        auto *apply = question.addButton(QStringLiteral("应用并重建"), QMessageBox::AcceptRole);
-        question.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
-        question.exec();
-        if (question.clickedButton() != apply || !applyParameters())
-        {
-            return;
-        }
-    }
-    if (!state_->appliedParameters && !applyParameters())
-    {
-        return;
-    }
     try
     {
-        state_->activeTask =
-            state_->service.submitReconstruct(*state_->appliedParameters, state_->service.project().revision);
+        const auto options = state_->parameters->options();
+        state_->activeTask = state_->service.submitRecognizedReconstruct(
+            options.mirrorSymmetry, state_->service.project().revision, options.endOverhangToleranceMm,
+            options.recognizeWebHoles, options.minimumHoleRadiusMm);
         state_->pending = State::Operation::Reconstruct;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
@@ -1362,9 +1306,12 @@ void MainWindow::refreshDisplay(bool fitView)
         state_->viewport->setModel({});
         state_->actions->get(ActionId::SelectPoint)->setChecked(true);
     }
-    state_->viewport->setReferencePlane(project.referencePlane, project.section, origin);
+    state_->viewport->setReferencePlane(project.referencePlane, project.section, origin,
+                                      selectedSectionPlane(project, project.section.source));
     if (fitView)
     {
+        if (const auto plane = positioningPlane(project))
+            state_->viewport->showBottomView(plane->normal, plane->xAxis);
         state_->viewport->fitAll();
     }
     refreshProjectPanels();
@@ -1381,38 +1328,9 @@ void MainWindow::restoreCommittedParameters()
     state_->referenceTool->cancel();
     state_->viewport->setMeasurementEnabled(false);
     state_->actions->get(ActionId::Measure)->setChecked(false);
-    state_->parameters->setRecognition(project.recognition);
-    BeamParameters parameters;
-    if (project.estimate)
-    {
-        parameters.length = project.estimate->length;
-        parameters.width = project.estimate->width;
-        parameters.height = project.estimate->height;
-    }
-    state_->parameters->setValues(parameters);
-    ModelSummary settings;
-    if (project.committedParameters)
-    {
-        settings.parameters = *project.committedParameters;
-        state_->parameters->setModelValues(settings);
-    }
-    else if (project.committedRecognitionOptions)
-    {
-        settings.fromPointCloud = true;
-        settings.recognitionOptions = *project.committedRecognitionOptions;
-        state_->parameters->setModelValues(settings);
-    }
-    else if (project.model && project.model->importedFormat.empty()) state_->parameters->setModelValues(*project.model);
-    state_->appliedParameters = project.committedParameters;
+    state_->parameters->setOptions(project.committedRecognitionOptions.value_or(
+        project.model && project.model->fromPointCloud ? project.model->recognitionOptions : PlateBuildOptions{}));
     state_->parametersDirty = !project.model;
-    state_->parameters->acceptEdits();
-    state_->parameters->setSourceText(text(project.sourcePathUtf8));
-    state_->parameters->setFrameText(project.estimate
-        ? QStringLiteral("点云框架中心 %1 mm").arg(vectorText(project.estimate->frame.originMm))
-        : QStringLiteral("当前没有点云估计框架。"));
-    state_->parameters->setModelText(project.model
-        ? QStringLiteral("模型版本 %1；当前 %2 个部件。").arg(project.revision).arg(project.model->partIds.size())
-        : QStringLiteral("尚无模型。"));
 }
 
 void MainWindow::pollTask()
@@ -1465,9 +1383,9 @@ void MainWindow::pollTask()
             }
             if (operation == State::Operation::SelectCloud)
             {
-                state_->viewport->setCloudSelection(project.selection);
+                state_->viewport->setCloudSelection(project.selection, true);
                 const auto count = project.selection ? project.selection->size() : 0;
-                state_->status->setText(QStringLiteral("已选择 %1 个点；右键截取或删除，Esc 清空选区").arg(count));
+                state_->status->setText(QStringLiteral("已选择 %1 个点；拖边/角缩放，拖框内移动；右键截取或删除，Esc 清空").arg(count));
                 refreshProjectPanels();
             }
             else if (operation == State::Operation::History)
@@ -1483,10 +1401,6 @@ void MainWindow::pollTask()
             }
             else if (operation == State::Operation::DeleteModel)
             {
-                state_->parameters->setModelText(project.model
-                    ? QStringLiteral("删除后剩余 %1 个部件。重新重建将按点云/参数重新生成模型。")
-                        .arg(project.model->partIds.size())
-                    : QStringLiteral("模型部件已全部删除。"));
                 refreshDisplay(false);
             }
             else if (operation == State::Operation::EditCloud && project.cloudId == state_->cloudBeforeEdit)
@@ -1500,50 +1414,11 @@ void MainWindow::pollTask()
                 {
                     state_->recentFiles->recordOpened(text(project.sourcePathUtf8));
                 }
-                const auto &cloud = *project.cloud;
-                state_->appliedParameters.reset();
-                state_->parametersDirty = true;
-                BeamParameters parameters;
-                parameters.length = project.estimate ? project.estimate->length : 0.0;
-                parameters.width = project.estimate ? project.estimate->width : 0.0;
-                parameters.height = project.estimate ? project.estimate->height : 0.0;
-                state_->parameters->setValues(parameters);
-                state_->parameters->setRecognition(project.recognition);
-                state_->parameters->setSourceText(
-                    QStringLiteral("%1\n原始点 %2；无效点 %3；当前点 %6\n1 单位 = %4 mm\n显示原点 %5 mm")
-                        .arg(text(project.sourcePathUtf8))
-                        .arg(static_cast<qulonglong>(cloud.sourcePointCount))
-                        .arg(static_cast<qulonglong>(cloud.invalidPointCount))
-                        .arg(cloud.sourceScaleToMm)
-                        .arg(vectorText(cloud.originMm))
-                        .arg(static_cast<qulonglong>(cloud.points.size())));
-                if (project.estimate)
-                {
-                    const auto &estimate = *project.estimate;
-                    state_->parameters->setFrameText(
-                        QStringLiteral("PCA 原始框架（交换前），须核对：\n中心 %1 mm\n梁长轴 %2\n宽度轴 %3\n高度轴 %4")
-                            .arg(vectorText(estimate.frame.originMm), vectorText(estimate.frame.xAxis),
-                                 vectorText(estimate.frame.yAxis), vectorText(estimate.frame.zAxis)));
-                    state_->parameters->setModelText(QStringLiteral("点云已导入；请核对逐板识别结果，默认仅构建观测侧。"));
-                }
-                else
-                {
-                    state_->parameters->setFrameText(QStringLiteral("当前点云不能提供可靠的三维 PCA 梁框架。"));
-                    state_->parameters->setModelText(QStringLiteral("点云可查看，当前辅助建模需要可用的坐标框架。"));
-                }
+                state_->parameters->setOptions(project.committedRecognitionOptions.value_or(
+                    project.model && project.model->fromPointCloud ? project.model->recognitionOptions : PlateBuildOptions{}));
+                state_->parametersDirty = !project.model;
                 if (operation == State::Operation::EditCloud)
-                {
-                    state_->parameters->setModelText(
-                        project.model ? QStringLiteral("点云已更新，原模型保留；可选择部件进行局部重建。")
-                                      : QStringLiteral("点云已更新；请检查识别结果后重建。"));
-                    if (project.model)
-                    {
-                        state_->parameters->setModelValues(*project.model);
-                        state_->appliedParameters = project.model->parameters;
-                        state_->parametersDirty = false;
-                    }
-                    state_->status->setText(QStringLiteral("当前点数：%1").arg(cloud.points.size()));
-                }
+                    state_->status->setText(QStringLiteral("当前点数：%1").arg(project.cloud->points.size()));
                 refreshDisplay(operation == State::Operation::Import);
                 if (!state_->closing)
                 {
@@ -1553,17 +1428,8 @@ void MainWindow::pollTask()
             else if (operation == State::Operation::Import && project.model)
             {
                 state_->recentFiles->recordOpened(text(project.sourcePathUtf8));
-                state_->appliedParameters.reset();
                 state_->parametersDirty = false;
-                state_->parameters->setValues({});
-                state_->parameters->setRecognition(std::nullopt);
-                state_->parameters->acceptEdits();
-                state_->parameters->setSourceText(text(project.sourcePathUtf8));
-                state_->parameters->setFrameText(QStringLiteral("导入模型；显示及导出单位 mm。"));
-                const auto description = QStringLiteral("已导入 %1 模型：%2 个实体、%3 个独立曲面，可导出 STEP。")
-                    .arg(text(project.model->importedFormat).toUpper())
-                    .arg(project.model->solidCount).arg(project.model->surfaceCount);
-                state_->parameters->setModelText(description);
+                state_->parameters->setOptions({});
                 state_->actions->get(ActionId::ShowModel)->setChecked(true);
                 refreshDisplay(true);
             }
@@ -1571,13 +1437,6 @@ void MainWindow::pollTask()
             {
                 state_->parametersDirty = false;
                 state_->parameters->acceptEdits();
-                state_->parameters->setModelText(
-                    QStringLiteral("模型版本 %1\n%2 个板件实体，%3 个未识别厚度的观测面\n%4")
-                        .arg(static_cast<qulonglong>(project.revision))
-                        .arg(static_cast<qulonglong>(project.model->solidCount))
-                        .arg(static_cast<qulonglong>(project.model->surfaceCount))
-                        .arg(project.model->fromPointCloud ? QStringLiteral("双击板厚标签可修改，厚度来源可在属性中查看。")
-                            : QStringLiteral("手动参数模型，标签不是点云识别厚度。")));
                 refreshDisplay();
             }
             else if (operation == State::Operation::Deviation && !state_->closing)
@@ -1606,6 +1465,10 @@ void MainWindow::pollTask()
             {
                 reportError(message, !commandEchoed);
             }
+        }
+        if (operation == State::Operation::SelectCloud && task.state != TaskState::Succeeded)
+        {
+            state_->viewport->setCloudSelection(state_->service.project().selection);
         }
         if (operation == State::Operation::StartRecording && task.state != TaskState::Succeeded)
         {

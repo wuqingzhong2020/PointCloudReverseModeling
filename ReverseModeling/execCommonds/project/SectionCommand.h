@@ -6,11 +6,13 @@ namespace rmcmd::project
 class SectionCommand
 {
 public:
+    enum class PlaneValue { Value0, Value1 };
     struct Args
     {
         bool enabled{};
         double offset{};
         bool reverse{};
+        PlaneValue plane{};
     };
     static constexpr const char *name() { return "project.section"; }
     static rm::CommandDefinition definition();

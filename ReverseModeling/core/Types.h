@@ -112,6 +112,19 @@ struct BeamParameters {
     bool operator==(const BeamParameters &) const = default;
 };
 
+struct PlateBoundarySegment {
+    Vec3 firstMm, lastMm; // 识别框架内、板件法向最小坐标处的板面边界。
+    std::optional<Vec3> arcMiddleMm; // 有值时使用经过三点的圆弧，否则为直线。
+};
+
+struct ObservedWebHole {
+    Vec3 centerMm, direction{1, 0, 0}; // 识别坐标系；长轴位于腹板平面。
+    double radiusMm{}; // 圆孔半径；长圆孔两端圆弧半径，即宽度的一半。
+    double straightLengthMm{}; // 两端圆心距；0 为圆孔。
+    double fitErrorMm{};
+    std::uint64_t boundarySupport{};
+};
+
 struct RecognizedPlate {
     std::string id;
     Vec3 minimumMm; // 识别框架内的局部坐标。
@@ -121,17 +134,24 @@ struct RecognizedPlate {
     double thicknessSpreadMm{}; // 不同截面厚度估计的四分位差。
     std::uint64_t supportPoints{};
     std::string method;
+    std::vector<PlateBoundarySegment> outline; // 空表示矩形；非空为有观测依据的闭合直线/圆弧轮廓。
+    std::vector<ObservedWebHole> holes; // 俯视可见的腹板圆孔/长圆孔，不包含筋板角缺口。
 };
 
 struct PlateRecognition {
     BeamFrame frame;
     std::vector<RecognizedPlate> plates;
     std::vector<std::string> warnings;
+    double scanSpacingMm{}; // 腹板支持面面积/点数给出的等效采样间距，不等同相机标定精度。
+    double surfaceNoiseMm{}; // 腹板残差 MAD 的稳健尺度。
+    double contourToleranceMm{}; // 由采样间距和噪声自动估计的拟合容差。
 };
 
 struct PlateBuildOptions {
     bool mirrorSymmetry{};
     double endOverhangToleranceMm{30.0}; // 只收齐底板沿梁长方向的小突出；0 表示保留观测端部。
+    bool recognizeWebHoles{true};
+    double minimumHoleRadiusMm{5.0}; // 小于此半径的腹板孔忽略；0 仍受扫描分辨率限制。
     bool operator==(const PlateBuildOptions &) const = default;
 };
 

@@ -209,7 +209,7 @@ TEST(MirrorCompletion, PreviewRecordingUndoRedoAndStepRoundTrip)
     const auto source = model(assembly());
     (void)exportStep(*source, input);
     CommandService service;
-    ASSERT_EQ(mirrorWait(service, service.submitImport(input, LengthUnit::Millimeter)).state, TaskState::Succeeded);
+    ASSERT_EQ(mirrorWait(service, service.submitImport(input)).state, TaskState::Succeeded);
     const auto before = service.project();
     ASSERT_EQ(mirrorWait(service, service.submitStartRecording(script)).state, TaskState::Succeeded);
     const auto r = request({"imported-part-2", "imported-part-3"});

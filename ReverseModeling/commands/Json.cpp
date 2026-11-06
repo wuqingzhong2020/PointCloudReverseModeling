@@ -29,6 +29,17 @@ json platesJson(const std::vector<RecognizedPlate> &plates) {
             {"thicknessMm", plate.thicknessMm ? json(*plate.thicknessMm) : json(nullptr)},
             {"thicknessSpreadMm", plate.thicknessSpreadMm}, {"supportPoints", plate.supportPoints},
             {"method", plate.method}});
+        auto &holes = result.back()["holes"] = json::array();
+        for (const auto &hole : plate.holes)
+            holes.push_back({{"kind", hole.straightLengthMm > 0 ? "slot" : "circle"},
+                {"centerMm", vectorJson(hole.centerMm)}, {"direction", vectorJson(hole.direction)},
+                {"radiusMm", hole.radiusMm}, {"straightLengthMm", hole.straightLengthMm},
+                {"fitErrorMm", hole.fitErrorMm}, {"boundarySupport", hole.boundarySupport}});
+        auto &outline = result.back()["outline"] = json::array();
+        for (const auto &segment : plate.outline)
+            outline.push_back({{"kind", segment.arcMiddleMm ? "arc" : "line"},
+                {"firstMm", vectorJson(segment.firstMm)}, {"lastMm", vectorJson(segment.lastMm)},
+                {"arcMiddleMm", segment.arcMiddleMm ? vectorJson(*segment.arcMiddleMm) : json(nullptr)}});
     }
     return result;
 }
@@ -101,7 +112,8 @@ json toJson(const ProjectSnapshot& project) {
             vectorJson(plane.pointsMm[2])}}, {"normal", vectorJson(plane.normal)}, {"xAxis", vectorJson(plane.xAxis)}};
     }
     result["section"] = {{"enabled", project.section.enabled}, {"offsetMm", project.section.offsetMm},
-                         {"reversed", project.section.reversed}};
+                         {"reversed", project.section.reversed},
+                         {"plane", project.section.source == SectionPlaneSource::Bottom ? "bottom" : "reference"}};
     if (project.cloud) {
         const auto& c = *project.cloud;
         result["cloud"] = {{"sourcePath", project.sourcePathUtf8}, {"sourcePointCount", c.sourcePointCount},
@@ -147,13 +159,18 @@ json toJson(const ProjectSnapshot& project) {
         if (m.fromPointCloud) {
             result["model"]["recognitionOptions"] = {
                 {"mirrorSymmetry", m.recognitionOptions.mirrorSymmetry},
-                {"endOverhangToleranceMm", m.recognitionOptions.endOverhangToleranceMm}};
+                {"endOverhangToleranceMm", m.recognitionOptions.endOverhangToleranceMm},
+                {"recognizeWebHoles", m.recognitionOptions.recognizeWebHoles},
+                {"minimumHoleRadiusMm", m.recognitionOptions.minimumHoleRadiusMm}};
             result["model"]["warnings"] = m.warnings;
         }
     }
     if (project.recognition) {
         result["recognition"] = {{"frame", frameJson(project.recognition->frame)},
-            {"plates", platesJson(project.recognition->plates)}, {"warnings", project.recognition->warnings}};
+            {"plates", platesJson(project.recognition->plates)}, {"warnings", project.recognition->warnings},
+            {"scanSpacingMm", project.recognition->scanSpacingMm},
+            {"surfaceNoiseMm", project.recognition->surfaceNoiseMm},
+            {"contourToleranceMm", project.recognition->contourToleranceMm}};
     }
     if (project.lastExport) {
         const auto& e = *project.lastExport;

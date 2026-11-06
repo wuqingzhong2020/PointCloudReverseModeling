@@ -61,7 +61,7 @@ model.delete --parts '["imported-part-1","imported-part-3"]'
 按点云识别板厚重建
 
 ```text
-model.reconstruct [--mirror false] [--end-tolerance 30]
+model.reconstruct [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]
 model.reconstruct --help
 ```
 
@@ -71,6 +71,8 @@ model.reconstruct --help
 | --- | --- | --- | --- | --- | --- | --- |
 | mirror | --mirror | bool |  | 默认 False |  | 是否补建镜像侧 |
 | end_tolerance | --end-tolerance | float | [[0, 100000]] | 默认 30.0 | mm | 端部突出容差 |
+| web_holes | --web-holes | bool |  | 默认 True |  | 保留俯视可见的腹板圆孔和长圆孔；关闭时生成无内孔腹板，不影响筋板可见顶边缺口。 |
+| min_hole_radius | --min-hole-radius | float | [[0, 1000]] | 默认 5.0 | mm | 忽略小于此半径的腹板孔。长圆孔按端圆半径（孔宽一半）过滤；0 仍受点云分辨率限制。 |
 
 返回：object — 结果摘要；执行失败返回错误码。
 

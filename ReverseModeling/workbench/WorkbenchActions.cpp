@@ -45,7 +45,6 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {ExportCloud, "exportCloud", "导出点云 (*.pcd)", "cloud", Available},
                                 {ExportModel, "exportModel", "导出模型 (*.cwrm)", "cube", Available},
                                 {ExportModelCloud, "exportModelCloud", "模型采样导出 (*.pcd)", "cloud", Available},
-                                {ExportParameters, "exportParameters", "导出重建参数", "parameters", Pending},
                                 {Undo, "undo", "撤销", "undo", Available},
                                 {Redo, "redo", "重做", "redo", Available},
                                 {Reset, "reset", "重置", "reset", Available},
@@ -82,10 +81,9 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {ShowModel, "showModel", "实体", "cube", Available},
                                 {ShowThickness, "showThickness", "板厚", "parameters", Available},
                                 {ModelSolid, "modelSolid", "实体", "", Available},
-                                {ModelWire, "modelWire", "线框（待接入）", "", Pending},
+                                {ModelWire, "modelWire", "线框", "", Available},
                                 {Section, "section", "剖视", "plane", Available},
-                                {FitAll, "fitAll", "适合视图", "fit", Available},
-                                {BottomView, "bottomView", "底板面", "home", Available},
+                                {BottomView, "bottomView", "上视图", "home", Available},
                                 {CancelTask, "cancelTask", "取消任务", "stop", Available},
                                 {StartRecording, "startRecording", "开始录制", "record", Available},
                                 {StopRecording, "stopRecording", "停止录制", "stop", Available},
@@ -103,6 +101,7 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
         m_actions[static_cast<std::size_t>(spec.id)] = action;
     }
     get(Measure)->setCheckable(true);
+    get(Section)->setCheckable(true);
     const auto exclusive = [this](std::initializer_list<ActionId> ids, ActionId selected)
     {
         auto *group = new QActionGroup(this);
@@ -125,7 +124,6 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
     get(Open)->setShortcut(QKeySequence::Open);
     get(ExportStep)->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+E")));
     get(Parameters)->setShortcut(QKeySequence(QStringLiteral("Ctrl+P")));
-    get(FitAll)->setShortcut(QKeySequence(QStringLiteral("F")));
     initializeActionHelp(*this);
 }
 

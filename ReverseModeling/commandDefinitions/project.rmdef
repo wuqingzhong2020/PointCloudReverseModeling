@@ -60,14 +60,17 @@ rm_define(
 )
 
 rm_define(
-    name='section', summary='设置基准面点云剖视',
-    usage='project.section --enabled true|false [--offset <mm>] [--reverse true|false]',
+    name='section', summary='按底板面或基准面设置点云剖视',
+    usage='project.section --enabled true|false [--plane bottom|reference] [--offset <mm>] [--reverse true|false]',
     description='仅过滤点云显示，不删除点云，不影响框选、重建或导出。偏移沿原法线；默认保留正法线侧，reverse 仅反转保留侧。',
     params=[{'name': 'enabled', 'binding': 'option', 'option': '--enabled', 'type': 'bool', 'required': True},
             {'name': 'offset', 'binding': 'option', 'option': '--offset', 'type': 'float', 'default': 0.0,
-             'description': '沿基准面法线的偏移，单位 mm'},
+             'description': '沿所选剖视面法线的偏移，单位 mm'},
             {'name': 'reverse', 'binding': 'option', 'option': '--reverse', 'type': 'bool', 'default': False,
-             'description': '反转点云保留侧'}],
+             'description': '反转点云保留侧'},
+            {'name': 'plane', 'binding': 'option', 'option': '--plane', 'type': 'enum',
+             'values': ['bottom', 'reference'], 'default': 'reference',
+             'description': 'bottom：识别底板面；reference：已确认的自定义基准面'}],
     returns={'type': 'object', 'description': '包含剖视状态的工程摘要'},
     examples=['project.section --enabled true --offset 10 --reverse false', 'project.section --enabled false'],
 )

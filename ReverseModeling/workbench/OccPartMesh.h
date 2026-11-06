@@ -31,6 +31,7 @@ class OccPartMesh final : public AIS_Triangulation
 {
   public:
     explicit OccPartMesh(const Handle(Poly_Triangulation) & mesh, const ModelDisplayPart &part = {});
+    void setWireframe(bool wireframe);
     void setSelectable(const Handle(AIS_InteractiveContext) & context, bool enabled,
                        ModelPickMode mode = ModelPickMode::Body);
     Handle(SelectMgr_EntityOwner) selectionOwner(ModelPickMode mode, std::size_t index) const;
@@ -51,6 +52,7 @@ class OccPartMesh final : public AIS_Triangulation
     std::map<std::size_t, Handle(Poly_Triangulation)> m_faces;
     std::map<std::size_t, std::vector<std::array<Vec3, 2>>> m_faceBoundaries;
     bool m_selectable{};
+    bool m_wireframe{};
     ModelPickMode m_mode{ModelPickMode::Body};
     void drawHighlight(const Handle(Prs3d_Presentation) & presentation, const Handle(SelectMgr_EntityOwner) & owner,
                        bool selected);

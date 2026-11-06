@@ -10,16 +10,15 @@
 导入 PCD 点云或 STEP/STP/CWRM 模型
 
 ```text
-cloud.import <path> [--unit mm|cm|m]
+cloud.import <path>
 cloud.import --help
 ```
 
-
+PCD 点云固定按毫米读取，不做单位缩放。STEP/STP 按文件单位转换到毫米，CWRM 按毫米读取。
 
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| path | 位置 1 | path |  | 必填 |  | 输入文件路径（支持中文） |
-| unit | --unit | enum | ['mm', 'cm', 'm'] | 默认 mm |  | 仅点云使用，默认毫米 |
+| path | 位置 1 | path |  | 必填 |  | 输入文件路径（支持中文）；PCD 坐标单位为毫米 |
 
 返回：object — 结果摘要；执行失败返回错误码。
 
@@ -30,7 +29,7 @@ cloud.import "D:/data/中文点云.pcd"
 ```
 
 ```
-rm.execute("cloud.import", "D:/data/cloud.pcd", unit="mm")
+rm.execute("cloud.import", "D:/data/cloud.pcd")
 ```
 
 ## cloud.select
@@ -38,7 +37,7 @@ rm.execute("cloud.import", "D:/data/cloud.pcd", unit="mm")
 按视图矩形贯穿深度选择点云
 
 ```text
-cloud.select --rectangle <object> [--mode replace|add|subtract|clear]
+cloud.select --rectangle <object> [--mode replace|add|subtract|clear] [--edit-last false]
 cloud.select --help
 ```
 
@@ -48,6 +47,7 @@ cloud.select --help
 | --- | --- | --- | --- | --- | --- | --- |
 | rectangle | --rectangle | object |  {'viewProjection': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 16, 'max_size': 16}, 'minX': {'type': 'float'}, 'minY': {'type': 'float'}, 'maxX': {'type': 'float'}, 'maxY': {'type': 'float'}, 'zeroToOneDepth': {'type': 'bool'}} | 必填 |  | 视图投影矩阵和 NDC 矩形，供视图适配器使用 |
 | mode | --mode | enum | ['replace', 'add', 'subtract', 'clear'] | 默认 replace |  |  |
+| edit_last | --edit-last | bool |  | 默认 False |  | 调整最近一次框选，保留此前选区；mode须与该框原来的选择方式一致 |
 
 返回：object — 结果摘要；执行失败返回错误码。
 

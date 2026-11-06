@@ -4,10 +4,127 @@
 #include <gtest/gtest.h>
 
 #include "geometry/Geometry.h"
+#include "commands/CommandService.h"
+#include "commands/ProjectHistory.h"
+#include "commands/SectionPlane.h"
+#include "geometry/ModelTransform.h"
 #include "geometry/ReferencePlane.h"
 #include "workbench/ReferencePlanePicking.h"
 
 using namespace reverse;
+
+TEST(SectionPlane, PositioningUsesSectionThenReconstructedBottomOtherwiseTop)
+{
+    ProjectSnapshot project;
+    project.referencePlane = std::make_shared<const ReferencePlane>(
+        makeReferencePlane({Vec3{0, 0, 20}, {10, 0, 20}, {0, 10, 20}}));
+    ASSERT_TRUE(positioningPlane(project));
+    EXPECT_EQ(positioningView(project), PositioningView::Top);
+    EXPECT_DOUBLE_EQ(positioningPlane(project)->pointsMm[0].z, 0); // 不使用自定义基准面。
+    project.section = {true, 5, false, SectionPlaneSource::Reference};
+    ASSERT_TRUE(positioningPlane(project));
+    EXPECT_DOUBLE_EQ(positioningPlane(project)->normal.z, 1);
+    project.recognition.emplace();
+    RecognizedPlate web;
+    web.id = "web"; web.normalAxis = 1;
+    web.minimumMm = {0, 10, -20}; web.maximumMm = {100, 14, 20};
+    project.recognition->plates.push_back(web);
+    project.section.source = SectionPlaneSource::Bottom;
+    const auto bottom = positioningPlane(project);
+    ASSERT_TRUE(bottom);
+    EXPECT_DOUBLE_EQ(bottom->normal.y, 1);
+    EXPECT_DOUBLE_EQ(bottom->pointsMm[0].y, 12);
+    const auto clipped = sectionEquation(*bottom, project.section);
+    EXPECT_DOUBLE_EQ(clipped[3], -17);
+    project.section.enabled = false;
+    project.section.source = SectionPlaneSource::Reference;
+    EXPECT_EQ(positioningView(project), PositioningView::Top); // 仅识别出底板不等于已重建。
+    EXPECT_DOUBLE_EQ(positioningPlane(project)->normal.z, 1);
+    auto model = std::make_shared<ModelSummary>();
+    model->partIds = {"web"};
+    model->plates = project.recognition->plates;
+    project.model = model;
+    EXPECT_EQ(positioningView(project), PositioningView::Bottom);
+    EXPECT_DOUBLE_EQ(positioningPlane(project)->normal.y, 1);
+    project.section.enabled = true;
+    EXPECT_EQ(positioningView(project), PositioningView::Section);
+    EXPECT_DOUBLE_EQ(positioningPlane(project)->pointsMm[0].z, 20);
+}
+
+TEST(SectionPlane, TopViewDoesNotDependOnImportExportOrCustomReferencePlane)
+{
+    ProjectSnapshot project;
+    const auto expectTop = [&] {
+        EXPECT_EQ(positioningView(project), PositioningView::Top);
+        const auto plane = positioningPlane(project);
+        ASSERT_TRUE(plane);
+        EXPECT_DOUBLE_EQ(plane->normal.z, 1);
+        EXPECT_DOUBLE_EQ(plane->normal.x, 0);
+        EXPECT_DOUBLE_EQ(plane->normal.y, 0);
+        EXPECT_DOUBLE_EQ(plane->xAxis.x, 1);
+    };
+    expectTop(); // 空工程也可使用上视图。
+    project.cloud = std::make_shared<CloudData>();
+    project.sourcePathUtf8 = "input.pcd";
+    project.exportedCloudPathUtf8 = "output.pcd";
+    project.exportedPathUtf8 = "output.step";
+    project.lastExport.emplace();
+    project.lastCloudExport.emplace();
+    expectTop();
+    auto model = std::make_shared<ModelSummary>();
+    model->partIds = {"web"};
+    project.model = model;
+    for (const auto *format : {"step", "cwrm"})
+    {
+        model->importedFormat = format;
+        expectTop(); // 导入 CAD 文件本身不算本地重建。
+    }
+    model->importedFormat.clear();
+    EXPECT_EQ(positioningView(project), PositioningView::Bottom);
+    project.model.reset();
+    expectTop(); // 回到无重建模型状态。
+}
+
+TEST(SectionPlane, ModelBottomFollowsPartTransformInsteadOfOldRecognition)
+{
+    ProjectSnapshot project;
+    project.recognition.emplace();
+    RecognizedPlate web;
+    web.id = "web"; web.normalAxis = 1;
+    project.recognition->plates.push_back(web);
+    auto model = std::make_shared<ModelSummary>();
+    model->partIds = {"web"};
+    model->frame.originMm = {1000000, 2000000, 3000000};
+    model->partTransforms["web"] = modelTransformFrame(
+        {ModelTransformKind::Rotate, {}, RotationAxis::Z, 90, model->frame.originMm});
+    project.model = model;
+    const auto bottom = bottomSectionPlane(project);
+    ASSERT_TRUE(bottom);
+    EXPECT_NEAR(bottom->normal.x, -1, 1e-8);
+    EXPECT_NEAR(bottom->normal.y, 0, 1e-8);
+    EXPECT_NEAR(bottom->pointsMm[0].x, 1000000, 1e-8);
+    const auto local = localReferencePlane(*bottom, model->frame.originMm);
+    EXPECT_NEAR(sectionEquation(local, {true, 3, false, SectionPlaneSource::Bottom})[3], -3, 1e-8);
+    model->partIds.clear();
+    EXPECT_FALSE(bottomSectionPlane(project)); // 底板删除后不能复用旧识别结果。
+    model->partIds = {"web"};
+    model->importedFormat = "step";
+    EXPECT_FALSE(bottomSectionPlane(project)); // 导入文件没有语义底板时不能猜测。
+}
+
+TEST(SectionPlane, HistoryKeepsAvailableSourceAndDisablesMissingSource)
+{
+    ProjectSnapshot project;
+    auto model = std::make_shared<ModelSummary>();
+    model->partIds = {"web"};
+    project.model = model;
+    const auto saved = ProjectContent::capture(project, {});
+    project.section = {true, 8, true, SectionPlaneSource::Bottom};
+    EXPECT_EQ(saved.restore(project, false).section, project.section);
+    EXPECT_FALSE(saved.restore(project, true).section.enabled);
+    project.section.source = SectionPlaneSource::Reference;
+    EXPECT_FALSE(saved.restore(project, false).section.enabled);
+}
 
 TEST(ReferencePlane, ThreePointsDefineOrthonormalFrameAndOrder)
 {

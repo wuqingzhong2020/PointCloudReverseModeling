@@ -44,7 +44,7 @@ QString partName(QString id)
     else if (id.startsWith(QStringLiteral("rib-")))
     {
         const auto fields = id.split(QLatin1Char('-'));
-        name = QStringLiteral("肋板 %1").arg(fields.value(1));
+        name = QStringLiteral("肋板 %1 / 筋板").arg(fields.value(1));
         if (fields.value(2) == QStringLiteral("left")) name += QStringLiteral("（左侧）");
         if (fields.value(2) == QStringLiteral("right")) name += QStringLiteral("（右侧）");
     }
@@ -199,6 +199,15 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
             {
                 rows.insert(6, {QStringLiteral("支持点数"), QString::number(plate->supportPoints)});
                 rows.insert(7, {QStringLiteral("板厚离散度 mm"), QString::number(plate->thicknessSpreadMm, 'f', 1)});
+                if (model.fromPointCloud)
+                {
+                    rows.append({QStringLiteral("可见轮廓"), plate->outline.empty() ? QStringLiteral("直板近似")
+                        : QStringLiteral("点云直线/圆弧拟合")});
+                    if (plate->normalAxis == 1)
+                        rows.append({QStringLiteral("识别腹板孔"), QString::number(plate->holes.size())});
+                    if (plate->normalAxis == 0)
+                        rows.append({QStringLiteral("根部连接"), QStringLiteral("假设落在腹板面；遮挡孔洞/缺口未确认")});
+                }
             }
             item->setToolTip(2, basis);
             if(const auto reason=model.localSourceUnavailable.find(part.id);reason!=model.localSourceUnavailable.end())

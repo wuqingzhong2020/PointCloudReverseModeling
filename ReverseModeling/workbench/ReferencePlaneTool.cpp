@@ -5,17 +5,13 @@
 #include <algorithm>
 
 #include <QButtonGroup>
-#include <QCheckBox>
-#include <QDoubleSpinBox>
-#include <QFormLayout>
-#include <QGroupBox>
 #include <QHideEvent>
 #include <QLabel>
 #include <QPushButton>
-#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include "geometry/ReferencePlane.h"
+#include "commands/SectionPlane.h"
 #include "workbench/ReferencePlaneTool.h"
 #include "workbench/WorkbenchTheme.h"
 
@@ -84,38 +80,9 @@ ReferencePlaneTool::ReferencePlaneTool(CommandService &service, OccViewport &vie
         if (m_project.referencePlane)
             m_viewport.showBottomView(m_project.referencePlane->normal, m_project.referencePlane->xAxis);
     });
-    auto *sectionGroup = new QGroupBox(QStringLiteral("点云剖视"), this);
-    auto *sectionForm = new QFormLayout(sectionGroup);
-    m_section = new QCheckBox(QStringLiteral("启用剖视"), sectionGroup);
-    m_reverse = new QCheckBox(QStringLiteral("反向保留"), sectionGroup);
-    m_offset = new QDoubleSpinBox(sectionGroup);
-    m_offset->setRange(-1e9, 1e9);
-    m_offset->setDecimals(3);
-    m_offset->setSuffix(QStringLiteral(" mm"));
-    sectionForm->addRow(m_section);
-    sectionForm->addRow(QStringLiteral("法线偏移"), m_offset);
-    sectionForm->addRow(m_reverse);
-    auto *sectionHint = new QLabel(QStringLiteral("保留法线 N 一侧。只过滤显示；框选仍贯穿深度，重建和导出使用完整点云。"), sectionGroup);
+    auto *sectionHint = new QLabel(QStringLiteral("在视图工具栏的“剖视”下拉菜单中选择底板面或此基准面。"), this);
     sectionHint->setWordWrap(true);
-    sectionForm->addRow(sectionHint);
-    m_sectionApply = new QPushButton(QStringLiteral("应用剖视"), sectionGroup);
-    sectionForm->addRow(m_sectionApply);
-    connect(m_sectionApply, &QPushButton::clicked, this, [this] {
-        if (!m_idle || picking()) return;
-        try
-        {
-            m_task = m_service.submitSection({m_section->isChecked(), m_offset->value(), m_reverse->isChecked()},
-                                            m_project.revision);
-            m_idle = false;
-            updateControls();
-        }
-        catch (const std::exception &error)
-        {
-            m_hint->setText(QString::fromUtf8(error.what()));
-            m_service.reportUiFailure("点云剖视", error.what());
-        }
-    });
-    layout->addWidget(sectionGroup);
+    layout->addWidget(sectionHint);
     layout->addStretch();
     m_viewport.onReferencePicked = [this](const auto &points, const auto &error) { picked(points, error); };
     m_viewport.onReferenceCancelled = [this] { cancel(); };
@@ -211,10 +178,8 @@ void ReferencePlaneTool::sync(const ProjectSnapshot &project, bool idle, bool cl
     }
     if (changed)
     {
-        m_viewport.setReferencePlane(project.referencePlane, project.section, m_origin);
-        m_section->setChecked(project.section.enabled);
-        m_offset->setValue(project.section.offsetMm);
-        m_reverse->setChecked(project.section.reversed);
+        m_viewport.setReferencePlane(project.referencePlane, project.section, m_origin,
+                                    selectedSectionPlane(project, project.section.source));
         if (onChanged) onChanged();
     }
     if (!m_task.empty())
@@ -237,10 +202,5 @@ void ReferencePlaneTool::updateControls()
     const bool plane = m_idle && static_cast<bool>(m_project.referencePlane);
     m_clear->setEnabled(plane);
     m_front->setEnabled(plane && !picking());
-    const bool section = plane && !picking() && static_cast<bool>(m_project.cloud);
-    m_sectionApply->setEnabled(section);
-    m_section->setEnabled(section);
-    m_offset->setEnabled(section);
-    m_reverse->setEnabled(section);
 }
 }

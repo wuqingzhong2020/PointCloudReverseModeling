@@ -56,7 +56,7 @@ class ProjectHistoryTest : public testing::Test
         std::error_code ignored;
         std::filesystem::remove_all(directory, ignored);
     }
-    void import(CommandService &s) { ok(s, s.submitImport(input, LengthUnit::Millimeter)); }
+    void import(CommandService &s) { ok(s, s.submitImport(input)); }
     void build(CommandService &s) { ok(s, s.submitReconstruct(parameters, s.project().revision, BeamFrame{})); }
     void run(CommandService &s, const std::string &line) { ok(s, s.submitLine(line)); }
 };
@@ -109,7 +109,7 @@ TEST_F(ProjectHistoryTest, ImportedCadAndDeleteAllResetRemainUndoableWithoutSour
     const auto path = directory / "import.step";
     (void)exportStep(*model, path);
     CommandService s;
-    ok(s, s.submitImport(path, LengthUnit::Millimeter));
+    ok(s, s.submitImport(path));
     const auto baseline = s.project();
     ok(s, s.submitDeleteModelParts(baseline.model->partIds, baseline.revision));
     EXPECT_FALSE(s.project().model);
@@ -132,7 +132,7 @@ TEST_F(ProjectHistoryTest, ImportedCadAndDeleteAllResetRemainUndoableWithoutSour
     run(s, "project.redo");
     ok(s, s.submitExport(directory / "roundtrip.step", s.project().revision));
     EXPECT_EQ(s.project().lastExport->solidCount, baseline.model->solidCount);
-    EXPECT_EQ(finish(s, s.submitImport(path, LengthUnit::Millimeter)).state, TaskState::Failed);
+    EXPECT_EQ(finish(s, s.submitImport(path)).state, TaskState::Failed);
     EXPECT_TRUE(s.project().canUndo);
     import(s);
     EXPECT_FALSE(s.project().canUndo);
@@ -265,7 +265,7 @@ TEST_F(ProjectHistoryTest, EmptyProjectParametricHistoryAndCancelledOperationAre
     run(s, "project.redo");
     EXPECT_TRUE(s.project().model);
     ProjectOperations operations;
-    (void)operations.submitImport(input, LengthUnit::Millimeter);
+    (void)operations.submitImport(input);
     const auto before = operations.project();
     std::stop_source stop;
     stop.request_stop();

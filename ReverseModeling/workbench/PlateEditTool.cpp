@@ -404,7 +404,7 @@ void PlateEditTool::updateInputs()
     m_apply->setEnabled(ready && bool(m_preview));
     m_original->setEnabled(ready && bool(m_preview));
     if (m_active && m_operation == "crop")
-        m_viewport.setPlateCropEnabled(ready);
+        m_viewport.setPlateCropEnabled(ready, true);
 }
 void PlateEditTool::fail(const QString &message)
 {

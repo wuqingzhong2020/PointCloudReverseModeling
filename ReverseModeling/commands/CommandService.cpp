@@ -538,7 +538,7 @@ std::string CommandService::submitStartupImport(const std::filesystem::path &req
     const auto path = std::filesystem::absolute(requestedPath).lexically_normal();
     const auto bytes = path.u8string();
     const std::string value(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-    auto echo = commandText(state->manager.definitions().at("cloud.import"), {value}, {{"unit", "mm"}});
+    auto echo = commandText(state->manager.definitions().at("cloud.import"), {value}, {});
     return state->submit("StartupImport", {}, [state, path, value](const auto &context, auto &) {
         auto extension = path.extension().string();
         std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -552,7 +552,7 @@ std::string CommandService::submitStartupImport(const std::filesystem::path &req
         {
             return rm::CommandResult::error("unsupported_format", "--input_file 仅接受 PCD 点云：" + value);
         }
-        auto result = state->executeStartup("cloud.import", {value}, {{"unit", "mm"}}, context);
+        auto result = state->executeStartup("cloud.import", {value}, {}, context);
         if (!result.ok())
         {
             result.message = "--input_file " + value + "：" + result.message;

@@ -268,6 +268,7 @@ TEST(CommandGeneration, ModulesTypedDescriptorsAndHelp)
     ASSERT_TRUE(parsed.command);
     const auto args = rmcmd::cloud::ImportCommand::arguments(parsed.command->arguments);
     EXPECT_EQ(args.path, "中文.pcd");
-    EXPECT_EQ(args.unit, rmcmd::cloud::ImportCommand::UnitValue::Value0);
+    EXPECT_EQ(parsed.command->arguments.size(), 1);
+    EXPECT_EQ(m.validateLine("cloud.import '中文.pcd' --unit mm").result.code, "unknown_option");
     EXPECT_EQ(m.help("model.reconstruct").kind, rm::ResultKind::Help);
 }
