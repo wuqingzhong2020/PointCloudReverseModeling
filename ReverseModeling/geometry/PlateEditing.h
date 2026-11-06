@@ -14,6 +14,8 @@ struct PlateEditResult
     std::vector<std::string> reports;
     bool changed{};
 };
+PlateEdit prepareDirectPlateEdit(const Model &model, PlateEdit request, bool all, std::stop_token stop,
+                            const std::function<void(std::string_view)> &output = {});
 PlateEditResult editModelPlates(const Model &model, PlateEdit request, std::stop_token stop = {},
                                 const ProgressCallback &progress = {});
 namespace detail
@@ -31,5 +33,8 @@ std::vector<TopoDS_Shape> plateSolids(const TopoDS_Shape &shape);
 double plateVolume(const TopoDS_Shape &shape);
 TopoDS_Shape plateHalf(const TopoDS_Shape &shape, const PlateCut &cut);
 void resolvePlateCrop(const std::map<std::string, TopoDS_Shape> &shapes, PlateEdit &request);
+void prepareDirectPlateEdit(const std::map<std::string, TopoDS_Shape> &shapes, PlateEdit &request,
+                            bool all, std::stop_token stop,
+                            const std::function<void(std::string_view)> &output = {});
 } // namespace detail
 } // namespace reverse

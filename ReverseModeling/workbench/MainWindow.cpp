@@ -13,14 +13,18 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QFileDialog>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QInputDialog>
 #include <QMenu>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QPainter>
 #include <QPushButton>
 #include <QSettings>
+#include <QShortcut>
 #include <QStatusBar>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -37,6 +41,7 @@
 #include "workbench/CommandConsoleWidget.h"
 #include "workbench/MainWindow.h"
 #include "workbench/PlateEditTool.h"
+#include "workbench/PlateEditHelp.h"
 #include "commands/PlateEditCommands.h"
 #include <QTreeWidget>
 #include "workbench/ModelDisplayData.h"
@@ -93,6 +98,20 @@ CommandEnvironment commandEnvironment()
     return result;
 }
 
+// 原生 OCCT 窗口旁的提示条主动铺底，避免文字更新后保留旧字形。
+class ViewportHint final : public QLabel
+{
+  public:
+    using QLabel::QLabel;
+  protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor("#071722"));
+        painter.end();
+        QLabel::paintEvent(event);
+    }
+};
 QLabel *label(const QString &value, QWidget *parent)
 {
     auto *result = new QLabel(value, parent);
@@ -191,10 +210,30 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     state_->workspace = new DockWorkspace(this, viewContainer);
     state_->sectionTool = new SectionTool(state_->service, viewContainer);
     viewLayout->addWidget(createViewToolbar(viewContainer, actions, state_->sectionTool));
+    auto *platePrompt = new QFrame(viewContainer);
+    platePrompt->setObjectName(QStringLiteral("plateInteractionPrompt"));
+    platePrompt->setStyleSheet(QStringLiteral(
+        "QFrame#plateInteractionPrompt { background: #0e2634; border: 1px solid #00a9db; border-radius: 4px; }"
+        "QLabel { color: #e2f4ff; border: 0; }"));
+    auto *promptLayout = new QHBoxLayout(platePrompt);
+    promptLayout->setContentsMargins(12, 7, 10, 7);
+    auto *promptText = new QLabel(platePrompt);
+    promptText->setWordWrap(true);
+    promptText->setTextFormat(Qt::PlainText);
+    promptLayout->addWidget(promptText, 1);
+    auto *cancelPlate = new QToolButton(platePrompt);
+    cancelPlate->setText(QStringLiteral("取消 (Esc)"));
+    promptLayout->addWidget(cancelPlate);
+    platePrompt->hide();
+    viewLayout->addWidget(platePrompt);
     viewLayout->addWidget(state_->viewport, 1);
     auto *hint =
-        label(QStringLiteral("左键拾取 · Shift 点击追加/取消 · 拖动框选点云 · 右键旋转 · 中键平移 · 滚轮缩放 · Esc 清空"), viewContainer);
+        new ViewportHint(QStringLiteral("左键拾取 · Shift 点击追加/取消 · 点模式拖框选择点云 · 右键旋转 · 中键平移 · 滚轮缩放 · Esc 清空"), viewContainer);
     hint->setProperty("muted", true);
+    hint->setAutoFillBackground(true);
+    hint->setAttribute(Qt::WA_OpaquePaintEvent);
+    hint->setStyleSheet(QStringLiteral("background-color: #071722; color: #a9c8da;"));
+    hint->setWordWrap(true);
     hint->setContentsMargins(12, 5, 6, 5);
     viewLayout->addWidget(hint);
     state_->inspector = new ModelInspector(this);
@@ -272,8 +311,24 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     state_->mirrorTool->onCommitted = [this] { refreshDisplay(false); };
     state_->plateEditTool = new PlateEditTool(state_->service,*state_->viewport,state_->operation);
     state_->plateEditTool->hide();
-    state_->plateEditTool->onChanged=[this]{updateActions();};
+    auto *plateEscape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    plateEscape->setEnabled(false);
+    connect(plateEscape, &QShortcut::activated, this, [this] { state_->plateEditTool->cancel(); });
+    connect(cancelPlate, &QToolButton::clicked, this, [this] { state_->plateEditTool->cancel(); });
+    state_->plateEditTool->onChanged = [this, plateEscape, platePrompt, hint] {
+        const bool editing = state_->plateEditTool->active() && state_->plateEditTool->direct();
+        plateEscape->setEnabled(editing);
+        platePrompt->setVisible(editing);
+        hint->setVisible(!editing);
+        updateActions();
+    };
     state_->plateEditTool->onCommitted=[this]{refreshDisplay(false);};
+    state_->plateEditTool->onHint = [this, hint, promptText](const QString &message) {
+        hint->setText(message);
+        promptText->setText(message);
+        if (state_->status)
+            state_->status->setText(message);
+    };
     state_->viewport->onPlateCrop=[this](const auto &rectangle){state_->plateEditTool->crop(rectangle);};
     state_->inspector->onContextMenu=[this](const QPoint &point){modelContextMenu(point);};
     state_->localTool = new LocalReconstructionTool(state_->service, *state_->viewport, state_->operation);
@@ -331,7 +386,7 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
             appendLog(text(error.what()));
         }
     };
-    state_->viewport->hasEditContextMenu = [this] { return state_->localTool->active() || state_->edgeTool->active() || state_->holeTool->active() || state_->thicknessTool->active() || (state_->contourTool->active() || state_->mirrorTool->active()) || state_->generationTool->active(); };
+    state_->viewport->hasEditContextMenu = [this] { return state_->plateEditTool->active() || state_->localTool->active() || state_->edgeTool->active() || state_->holeTool->active() || state_->thicknessTool->active() || (state_->contourTool->active() || state_->mirrorTool->active()) || state_->generationTool->active(); };
     state_->viewport->onEditEscape = [this] {
         if (state_->plateEditTool->active()) {state_->plateEditTool->cancel();return true;}
         if (state_->generationTool->active()) { state_->generationTool->cancel(); return true; }
@@ -564,7 +619,7 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         state_->actions->get(ActionId::Measure)->setChecked(enabled);
         hint->setText(enabled
             ? QStringLiteral("测量：依次左键选两点，第三次点击开始下一组 · 右键菜单 / Esc 退出 · 单位 mm")
-            : QStringLiteral("左键拾取 · Shift 点击追加/取消 · 拖动框选点云 · 右键旋转 · 中键平移 · 滚轮缩放 · Esc 清空"));
+            : QStringLiteral("左键拾取 · Shift 点击追加/取消 · 点模式拖框选择点云 · 右键旋转 · 中键平移 · 滚轮缩放 · Esc 清空"));
     };
     state_->viewport->onMeasurementCompleted = [this](const PointMeasurementResult &result)
     {
@@ -876,10 +931,10 @@ void MainWindow::updateActions()
         : actions.get(ActionId::SelectEdge)->isChecked() ? ModelPickMode::Edge
         : actions.get(ActionId::SelectFace)->isChecked() ? ModelPickMode::Face : ModelPickMode::Body);
     state_->viewport->setModelPickingEnabled(modelAvailable && !transformActive);
-    state_->viewport->setThicknessEditingEnabled(modelAvailable && !transformActive &&
+    state_->viewport->setThicknessEditingEnabled(modelAvailable && !transformActive && !state_->plateEditTool->active() &&
         !state_->referenceTool->picking() && !actions.get(ActionId::Measure)->isChecked() &&
         actions.get(ActionId::ShowThickness)->isChecked());
-    state_->inspector->tree()->setEnabled(!transformActive && ((!state_->thicknessTool->active() && !(state_->contourTool->active() || state_->mirrorTool->active())) || idle));
+    state_->inspector->tree()->setEnabled(!state_->plateEditTool->cropping() && !transformActive && ((!state_->thicknessTool->active() && !(state_->contourTool->active() || state_->mirrorTool->active())) || idle));
     actions.get(ActionId::Select)->setEnabled(cloudEditable || modelAvailable);
     actions.get(ActionId::SelectPoint)->setEnabled(cloudAvailable || modelAvailable);
     actions.get(ActionId::SelectEdge)->setEnabled(modelAvailable);
@@ -1024,6 +1079,11 @@ void MainWindow::updateActions()
         for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace,
             ActionId::Measure, ActionId::Move, ActionId::Rotate, ActionId::BasePlane, ActionId::DeleteModel,
             ActionId::ShowModel, ActionId::ExportStep, ActionId::ExportModel, ActionId::ExportModelCloud, ActionId::ExportAndExit}) actions.get(id)->setEnabled(false);
+    }
+    if (state_->plateEditTool->active() && state_->plateEditTool->direct())
+    {
+        for (const auto id : {ActionId::AddSelection, ActionId::RemoveSelection})
+            actions.get(id)->setEnabled(false);
     }
     if (state_->referenceTool->picking())
     {
@@ -1517,23 +1577,47 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::beginPlateEdit(const std::string &operation,bool all)
 {
     if(!state_->service.isIdle()||state_->closing) return;
+    state_->plateEditTool->sync(state_->service.project(), true);
     const auto ids=state_->viewport->selectedParts();
     state_->plateEditTool->cancel();state_->localTool->cancel();state_->generationTool->cancel();
     state_->contourTool->cancel();state_->mirrorTool->cancel();state_->thicknessTool->cancel();
     state_->holeTool->cancel();state_->edgeTool->cancel();state_->transformTool->cancel();state_->referenceTool->cancel();
     state_->actions->get(ActionId::Measure)->setChecked(false);state_->actions->get(ActionId::SelectSolid)->setChecked(true);
-    state_->operation->showCustom(text(plateEditTitle(operation)),state_->plateEditTool);
-    state_->workspace->showPanel(QStringLiteral("dock.operation"));state_->plateEditTool->begin(operation,ids,all);
+    state_->actions->get(ActionId::Select)->setChecked(true);
+    state_->viewport->setCloudSelectionMode(CloudSelectionMode::Replace);
+    if (operation == "holes")
+    {
+        state_->operation->showCustom(text(plateEditTitle(operation)),state_->plateEditTool);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+    }
+    else
+        state_->operation->showOperation(ActionId::Count, QStringLiteral("操作"));
+    state_->plateEditTool->begin(operation,ids,all);
+    state_->viewport->setFocus();
 }
 void MainWindow::modelContextMenu(const QPoint &position)
 {
+    if (state_->plateEditTool->active())
+    {
+        QMenu menu(this);
+        menu.addAction(QStringLiteral("退出板件编辑"), this, [this] { state_->plateEditTool->cancel(); });
+        menu.exec(position);
+        return;
+    }
     QMenu menu(this);const auto project=state_->service.project();const auto ids=state_->viewport->selectedParts();
     auto *title=menu.addAction(QStringLiteral("已选 %1 个部件").arg(ids.size()));title->setEnabled(false);
     const bool ready=state_->service.isIdle()&&project.model&&state_->actions->get(ActionId::SelectSolid)->isChecked();
     const auto add=[&](ActionId id) {auto *source=state_->actions->get(id);auto *action=menu.addAction(source->icon(),source->text());
         action->setEnabled(ready&&!ids.empty()&&source->isEnabled());connect(action,&QAction::triggered,source,&QAction::trigger);};
-    const auto operation=[&](const char *op,bool all=false) {auto *a=menu.addAction(all?QStringLiteral("修复全部板件孔洞…"):text(plateEditTitle(op))+QStringLiteral("…"));
-        a->setEnabled(ready&&(all||!ids.empty()));connect(a,&QAction::triggered,this,[this,op,all]{beginPlateEdit(op,all);});};
+    const auto operation=[&](const char *op,bool all=false) {
+        const bool batch = std::string_view(op) == "holes";
+        auto *a = menu.addAction(all ? QStringLiteral("修复全部板件孔洞") : text(plateEditTitle(op)) +
+            (batch ? QStringLiteral("…") : QString()));
+        a->setEnabled(ready && (all || (batch ? !ids.empty() : ids.size() == 1)));
+        if (!batch)
+            addPlateEditHelp(menu, *a, op, all);
+        connect(a,&QAction::triggered,this,[this,op,all]{beginPlateEdit(op,all);});
+    };
     add(ActionId::DeleteModel);menu.addSeparator();
     for(const auto *op:{"extend","trim","merge","split","crop"}) operation(op);
     menu.addSeparator();operation("repair");operation("repair",true);operation("holes");

@@ -47,3 +47,5 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PlateEditing.h" "${CMAKE_CURR
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ModelExchange.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ModelExchange.h")
+
+include("${CMAKE_CURRENT_LIST_DIR}/assembly/assembly.cmake")

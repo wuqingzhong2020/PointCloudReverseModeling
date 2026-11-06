@@ -1,4 +1,4 @@
-﻿/* 文件描述：批量板件编辑的完整输入，所有坐标为工程坐标 mm，不依赖当前选择或相机。 */
+﻿/* 文件描述：直接与批量板件编辑的完整输入，所有坐标为工程坐标 mm，不依赖当前选择或相机。 */
 #pragma once
 #include "core/Types.h"
 
@@ -23,9 +23,11 @@ struct PlateEdit
     std::vector<PlateContact> contacts;
     std::vector<PlateCut> cuts;
     std::vector<PlateHole> holes;
-    std::optional<CloudSelectionRect> rectangle; // 仅预览准备使用；应用录制为 cuts。
+    std::optional<CloudSelectionRect> rectangle; // 仅框选解析使用；提交和录制使用 cuts。
     double tolerance{0.15}, maxDistance{50}, clearance{}, normalAngle{1}, inplaneAngle{1}, maxGap{5};
     double maxHoleArea{}, notchWidth{35}, notchDepth{20}, simplifyTolerance{0.01};
     bool boundary{};
+    bool direct{}, all{}; // 菜单直接操作采用 CamAssemblyWelding 的固定规则。
+    int viewportWidth{}, viewportHeight{}; // 仅框选解析使用，不进入回放。
 };
 } // namespace reverse

@@ -1,4 +1,4 @@
-﻿/* 文件描述：固定源板集合、显式目标/保留侧，整批预览成功后才提交命令。 */
+﻿/* 文件描述：管理单板直接拾取/框选与批量过焊孔面板，计算完成后通过统一命令提交。 */
 #include "workbench/PlateEditTool.h"
 #include "commands/PlateEditCommands.h"
 #include <QCheckBox>
@@ -150,7 +150,8 @@ PlateEditTool::PlateEditTool(CommandService &s, OccViewport &v, QWidget *parent)
 }
 void PlateEditTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (!direct())
+        cancel();
     QWidget::hideEvent(event);
 }
 void PlateEditTool::begin(const std::string &operation, const std::vector<std::string> &ids, bool all)
@@ -162,6 +163,33 @@ void PlateEditTool::begin(const std::string &operation, const std::vector<std::s
     m_revision = m_service.project().revision;
     m_rectangle.reset();
     m_bases.clear();
+    m_all = all;
+    if (direct())
+    {
+        if (!all && ids.size() != 1)
+        {
+            fail(QStringLiteral("请只选择一个源板件。"));
+            cancel();
+            return;
+        }
+        m_viewport.setSelectedParts(ids);
+        const auto project = m_service.project();
+        if (project.model && project.mesh)
+        {
+            const auto origin = project.cloud ? project.cloud->originMm : project.model->frame.originMm;
+            m_viewport.setPlateEditReference(makeModelDisplayParts(*project.mesh, *project.model, origin), ids, {}, false);
+        }
+        m_viewport.setPlateCropEnabled(operation == "crop");
+        if (operation == "repair")
+            executeDirect();
+        else if (onHint)
+            onHint(q(plateEditTitle(operation)) + (operation == "crop"
+                ? QStringLiteral("：请按住左键拖框选择当前板件待切除的一端，松开即切除；Esc 取消。")
+                : QStringLiteral("：左键点选另一个目标板，立即执行；Esc 取消。")));
+        if (onChanged)
+            onChanged();
+        return;
+    }
     setup(m_service.project(), all);
     updateInputs();
     if (operation == "repair" || operation == "holes")
@@ -295,6 +323,20 @@ void PlateEditTool::targetChanged()
 }
 void PlateEditTool::selectionChanged(const std::vector<ModelSelection> &selection)
 {
+    if (direct())
+    {
+        if (cropping())
+        {
+            m_viewport.setSelectedParts(m_sources);
+            return;
+        }
+        if (!m_active || !m_applyTask.empty() || !m_service.isIdle() || selection.size() != 1 ||
+            m_operation == "crop" || m_operation == "repair" || selection.front().kind != ModelPickMode::Body)
+            return;
+        if (selection.front().partId != m_sources.front())
+            executeDirect(selection.front().partId);
+        return;
+    }
     if (!m_active || m_loading || !m_target->isVisible() || !m_service.isIdle() || m_showing || selection.empty())
         return;
     const auto &last = selection.back();
@@ -391,6 +433,8 @@ void PlateEditTool::invalidate()
 }
 void PlateEditTool::updateInputs()
 {
+    if (direct())
+        return;
     const bool ready =
         m_active && m_service.isIdle() && m_previewTask.empty() && m_applyTask.empty() && m_reviewTask.empty();
     m_target->setEnabled(ready);
@@ -409,6 +453,8 @@ void PlateEditTool::updateInputs()
 void PlateEditTool::fail(const QString &message)
 {
     m_hint->setText(message);
+    if (direct() && onHint)
+        onHint(message);
     m_service.reportUiFailure(plateEditTitle(m_operation), message.toUtf8().toStdString());
 }
 void PlateEditTool::updateGuide()
@@ -500,11 +546,74 @@ void PlateEditTool::crop(const CloudSelectionRect &rectangle)
     auto &m = m_rectangle->viewProjection;
     for (int row = 0; row < 4; ++row)
         m[row * 4 + 3] -= m[row * 4] * origin.x + m[row * 4 + 1] * origin.y + m[row * 4 + 2] * origin.z;
-    preview();
+    if (direct())
+        executeDirect();
+    else
+        preview();
+}
+void PlateEditTool::executeDirect(const std::string &target)
+{
+    if (!m_active || !m_applyTask.empty() || !m_service.isIdle())
+        return;
+    PlateEdit request;
+    request.operation = m_operation;
+    request.parts = m_sources;
+    request.target = target;
+    request.rectangle = m_rectangle;
+    request.viewportWidth = qRound(m_viewport.width() * m_viewport.devicePixelRatioF());
+    request.viewportHeight = qRound(m_viewport.height() * m_viewport.devicePixelRatioF());
+    request.boundary = m_operation == "repair";
+    try
+    {
+        m_applyTask = m_service.submitDirectPlateEdit(request, m_revision, m_all);
+        m_viewport.setPlateCropEnabled(false);
+        if (onHint)
+            onHint(q(plateEditTitle(m_operation)) + QStringLiteral("：正在处理…"));
+    }
+    catch (const std::exception &error)
+    {
+        fail(q(error.what()));
+    }
+    if (onChanged)
+        onChanged();
+}
+void PlateEditTool::syncDirect(const ProjectSnapshot &project)
+{
+    if (m_applyTask.empty())
+    {
+        if (m_active && project.revision != m_revision)
+            cancel();
+        return;
+    }
+    const auto task = m_service.task(m_applyTask);
+    if (!task.finished())
+        return;
+    m_applyTask.clear();
+    if (m_active && m_operation == "crop" && task.state == TaskState::Failed && project.revision == m_revision)
+    {
+        m_rectangle.reset();
+        m_viewport.setSelectedParts(m_sources);
+        m_viewport.setPlateCropEnabled(true);
+        if (onHint)
+            onHint(q(task.message) + QStringLiteral(" 请重新拖框，Esc 退出。"));
+        if (onChanged)
+            onChanged();
+        return;
+    }
+    cancel();
+    if (task.result.committed && onCommitted)
+        onCommitted();
+    if (onHint)
+        onHint(q(task.message) + (task.result.committed ? QStringLiteral(" 可按 Ctrl+Z 撤销。") : QString()));
 }
 void PlateEditTool::cancel()
 {
+    const bool wasActive = m_active;
     m_active = false;
+    if (direct() && !m_applyTask.empty())
+        (void)m_service.cancel(m_applyTask);
+    if (wasActive && direct() && onHint)
+        onHint(QStringLiteral("已退出板件编辑。"));
     if (!m_previewTask.empty())
         (void)m_service.cancel(m_previewTask);
     if (!m_reviewTask.empty())
@@ -518,6 +627,11 @@ void PlateEditTool::cancel()
 }
 void PlateEditTool::sync(const ProjectSnapshot &project, bool)
 {
+    if (direct())
+    {
+        syncDirect(project);
+        return;
+    }
     if (m_loading)
         return;
     if (m_active && project.revision != m_revision && m_applyTask.empty())

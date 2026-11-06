@@ -5,6 +5,7 @@
  */
 #include "geometry/Geometry.h"
 #include "geometry/PlateEditing.h"
+#include "geometry/assembly/AssemblyPlateEditing.h"
 #include "geometry/ModelImport.h"
 #include "geometry/LocalReconstruction.h"
 #include "geometry/ScanProfile.h"
@@ -968,6 +969,16 @@ std::shared_ptr<const Model> transformModelParts(const Model &model, const std::
     return std::make_shared<const Model>(std::move(result));
 }
 
+PlateEdit prepareDirectPlateEdit(const Model &model, PlateEdit request, bool all, std::stop_token stop,
+                                 const std::function<void(std::string_view)> &output)
+{
+    std::map<std::string, TopoDS_Shape> shapes;
+    for (const auto &part : model.implementation_->plates)
+        shapes.emplace(part.id, part.shape);
+    detail::prepareDirectPlateEdit(shapes, request, all, stop, output);
+    return request;
+}
+
 PlateEditResult editModelPlates(const Model &model, PlateEdit request,
     std::stop_token stop, const ProgressCallback &progress)
 {
@@ -997,7 +1008,7 @@ PlateEditResult editModelPlates(const Model &model, PlateEdit request,
             result->plates.push_back(part);
             if (std::find(summary.contourExpandedParts.begin(),summary.contourExpandedParts.end(),part.id)==summary.contourExpandedParts.end())
                 summary.contourExpandedParts.push_back(part.id);
-            summary.thicknessOverrides[part.id] = request.operation=="repair" ?
+            summary.thicknessOverrides[part.id] = request.direct ? detail::assemblyPlateThickness(shape) : request.operation=="repair" ?
                 detail::inspectRepairPlateThickness(shape) : detail::inspectPlateThickness(shape);
             summary.editSources[part.id] = {old.id};
             if (request.operation=="merge" && part.id==request.target)

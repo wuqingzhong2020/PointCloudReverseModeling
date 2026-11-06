@@ -25,6 +25,7 @@
 #include "model/AddHolesCommand.h"
 #include "model/ExportCwrmCommand.h"
 #include "model/ExportPcdCommand.h"
+#include "model/EditPlateCommand.h"
 namespace rmcmd::model
 {
 void registerModelModule(rm::CommandManager &manager)
@@ -54,5 +55,6 @@ void registerModelModule(rm::CommandManager &manager)
     AddHolesCommand::registerDefinition(manager);
     ExportCwrmCommand::registerDefinition(manager);
     ExportPcdCommand::registerDefinition(manager);
+    EditPlateCommand::registerDefinition(manager);
 }
 }

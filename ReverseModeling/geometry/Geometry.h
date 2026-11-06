@@ -39,6 +39,7 @@ public:
 private:
     std::shared_ptr<const Impl> implementation_;
     friend PlateEditResult editModelPlates(const Model&, PlateEdit, std::stop_token, const ProgressCallback&);
+    friend PlateEdit prepareDirectPlateEdit(const Model&, PlateEdit, bool, std::stop_token, const std::function<void(std::string_view)>&);
     friend std::shared_ptr<const Model> associateModelCloud(const Model&, const CloudData&, std::stop_token);
     friend std::shared_ptr<const Model> reconstructLocalParts(const Model&, const CloudData&,
         const LocalReconstruction&, std::stop_token, const ProgressCallback&);

@@ -464,6 +464,20 @@ std::string ProjectOperations::submitRecognizedReconstruct(bool mirrorSymmetry, 
         });
 }
 
+PlateEdit ProjectOperations::prepareDirectPlateEdit(const PlateEdit &request, bool all, std::uint64_t revision)
+{
+    std::shared_ptr<const Model> source;
+    {
+        std::lock_guard lock(impl_->stateMutex);
+        if (impl_->project.revision != revision)
+            throw GeometryError("stale_revision", "工程已变化，请重新选择模型。");
+        source = impl_->model;
+    }
+    if (!source)
+        throw GeometryError("no_model", "当前没有模型。");
+    return reverse::prepareDirectPlateEdit(*source, request, all, impl_->context.stop, impl_->context.output);
+}
+
 PlateEditResult ProjectOperations::previewPlateEdit(const PlateEdit &request, std::uint64_t revision)
 {
     std::shared_ptr<const Model> source;

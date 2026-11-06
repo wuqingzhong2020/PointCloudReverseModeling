@@ -626,6 +626,43 @@ std::string CommandService::submitMirrorCompletionPreview(const MirrorCompletion
         return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；点击应用才修改模型。", {}, false};
     }, {}, false, "镜像补全预览");
 }
+std::string CommandService::submitDirectPlateEdit(const PlateEdit &request, std::uint64_t revision, bool all)
+{
+    auto *state = impl_.get();
+    const auto name = std::string("model.edit_plate");
+    return state->submit(name, revision, [state, request, revision, all, name](const auto &context, auto &) {
+        state->operations.setContext(context);
+        {
+            std::lock_guard lock(state->mutex);
+            state->activeUiTask = state->active;
+        }
+        PlateEdit prepared;
+        try
+        {
+            prepared = state->operations.prepareDirectPlateEdit(request, all, revision);
+        }
+        catch (const GeometryError &error)
+        {
+            if (error.code() != "cancelled")
+                state->reportFailure(plateEditTitle(request.operation), error.what(), state->active);
+            throw;
+        }
+        const auto args = plateEditArguments(prepared);
+        const auto echo = commandText(state->manager.definitions().at(name), {}, args);
+        {
+            std::lock_guard lock(state->mutex);
+            state->activeUiTask = state->active;
+            state->uiEvents.push_back({state->active, echo.native, echo.python, {}, false, UiCommandEventKind::Started});
+        }
+        const auto result = state->manager.execute(name, {}, args, context);
+        {
+            std::lock_guard lock(state->mutex);
+            state->uiEvents.push_back({state->active, echo.native, echo.python, commandFeedback(result), result.ok()});
+        }
+        return result;
+    });
+}
+
 std::string CommandService::submitPlateEditPreview(const PlateEdit &request,std::uint64_t revision)
 {
     auto *s=impl_.get();

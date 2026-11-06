@@ -12,6 +12,7 @@
 #include <STEPControl_Reader.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -121,6 +122,255 @@ TEST(PlateEditing, MergeUnifiesThicknessAndUsesOriginalTarget)
     EXPECT_NEAR(detail::plateVolume(result.replacements.at("b")[0]), 182 * 40 * 6, 1e-5);
     r.maxGap = 1;
     EXPECT_THROW(detail::editPlateShapes({{"a", a}, {"b", b}}, r, {}), GeometryError);
+}
+TEST(PlateEditing, DirectRelationsResolveParametersWithoutPreview)
+{
+    const auto source = box(0, 0, 0, 100, 40, 6);
+    const auto target = box(180, -10, -10, 6, 60, 30);
+    const std::map<std::string, TopoDS_Shape> shapes{{"a", source}, {"b", target}};
+    PlateEdit request;
+    request.operation = "extend";
+    request.parts = {"a"};
+    request.target = "b";
+    detail::prepareDirectPlateEdit(shapes, request, false, {});
+    EXPECT_TRUE(request.direct);
+    EXPECT_TRUE(request.contacts.empty()); // 目标接触面由原算法直接确定。
+    const auto extended = detail::editPlateShapes(shapes, request, {});
+    EXPECT_NEAR(detail::plateVolume(extended.replacements.at("a").front()), 180 * 40 * 6, 1e-5);
+    request.parts.push_back("b");
+    EXPECT_THROW(detail::prepareDirectPlateEdit(shapes, request, false, {}), GeometryError);
+    request.parts = {"a"};
+    request.target = "a";
+    EXPECT_THROW(detail::prepareDirectPlateEdit(shapes, request, false, {}), GeometryError);
+}
+
+TEST(PlateEditing, DirectTrimKeepsLargestReferenceSplitPart)
+{
+    for (double x : {45.0, 80.0})
+    {
+        const std::map<std::string, TopoDS_Shape> shapes{
+            {"a", box(0, 0, 0, 100, 40, 6)}, {"b", box(x, -10, -10, 10, 60, 30)}};
+        PlateEdit request;
+        request.operation = "trim";
+        request.parts = {"a"};
+        request.target = "b";
+        detail::prepareDirectPlateEdit(shapes, request, false, {});
+        EXPECT_TRUE(request.cuts.empty());
+        const auto trimmed = detail::editPlateShapes(shapes, request, {});
+        ASSERT_EQ(trimmed.replacements.size(), 1u);
+        EXPECT_NEAR(detail::plateVolume(trimmed.replacements.at("a").front()), x * 40 * 6, 1e-5);
+    }
+}
+
+TEST(PlateEditing, DirectExtendUsesPhysicalGapDirectionAtTargetBoundary)
+{
+    // 目标侧面与接触面都到源板距离 10；仅真正朝向间隙的面用于延长。
+    const std::map<std::string, TopoDS_Shape> shapes{
+        {"a", box(0, 0, 0, 100, 40, 6)}, {"b", box(110, -20, -20, 6, 60, 50)}};
+    PlateEdit request;
+    request.operation = "extend";
+    request.parts = {"a"};
+    request.target = "b";
+    detail::prepareDirectPlateEdit(shapes, request, false, {});
+    const auto result = detail::editPlateShapes(shapes, request, {});
+    ASSERT_EQ(result.replacements.size(), 1u);
+    EXPECT_NEAR(detail::plateVolume(result.replacements.at("a").front()), 110 * 40 * 6, 1e-5);
+}
+
+TEST(PlateEditing, DirectExtendAlreadyIntersectingOrTouchingIsNoOp)
+{
+    for (double x : {45.0, 100.0, 100.1})
+    {
+        const auto source = model({box(0, 0, 0, 100, 40, 6), box(x, -20, -20, 6, 60, 50)});
+        for (bool reversed : {false, true})
+        {
+            PlateEdit request;
+            request.operation = "extend";
+            request.parts = {source->summary().partIds[reversed ? 1 : 0]};
+            request.target = source->summary().partIds[reversed ? 0 : 1];
+            const auto prepared = prepareDirectPlateEdit(*source, request, false, {});
+            EXPECT_TRUE(prepared.contacts.empty());
+            const auto result = editModelPlates(*source, prepared);
+            EXPECT_FALSE(result.changed);
+            EXPECT_DOUBLE_EQ(result.model->summary().volumeMm3, source->summary().volumeMm3);
+            ASSERT_EQ(result.reports.size(), 1u);
+            EXPECT_NE(result.reports.front().find("无需延长"), std::string::npos);
+        }
+    }
+}
+
+TEST(PlateEditing, DirectMergeAndSplitUseReferenceRules)
+{
+    PlateEdit request;
+    request.operation = "merge";
+    request.parts = {"a"};
+    request.target = "b";
+    const std::map<std::string, TopoDS_Shape> adjacent{
+        {"a", box(0, 0, 0, 100, 40, 4)}, {"b", box(110, 0, -1, 80, 40, 6)}};
+    detail::prepareDirectPlateEdit(adjacent, request, false, {});
+    const auto merged = detail::editPlateShapes(adjacent, request, {});
+    EXPECT_TRUE(merged.replacements.at("a").empty());
+    ASSERT_EQ(merged.replacements.at("b").size(), 1u);
+    EXPECT_NEAR(detail::plateVolume(merged.replacements.at("b").front()), 190 * 40 * 6, 1e-5);
+    EXPECT_NEAR(detail::plateVolume(adjacent.at("b")), 80 * 40 * 6, 1e-5);
+
+    // 参考实现按目标板厚两侧的延展面切割，不要求目标覆盖源板整个宽度。
+    request.operation = "split";
+    const std::map<std::string, TopoDS_Shape> crossing{
+        {"a", box(0, 0, 0, 100, 40, 6)}, {"b", box(45, 10, -10, 10, 20, 30)}};
+    detail::prepareDirectPlateEdit(crossing, request, false, {});
+    const auto split = detail::editPlateShapes(crossing, request, {});
+    ASSERT_EQ(split.replacements.at("a").size(), 2u);
+    for (const auto &part : split.replacements.at("a"))
+        EXPECT_NEAR(detail::plateVolume(part), 45 * 40 * 6, 1e-5);
+    EXPECT_FALSE(split.replacements.contains("b"));
+}
+
+TEST(PlateEditing, DirectCropCornerAndSideReplayWithoutCamera)
+{
+    const std::map<std::string, TopoDS_Shape> shapes{{"a", box(0, 0, 0, 100, 40, 6)}};
+    for (bool side : {false, true})
+    {
+        PlateEdit request;
+        request.operation = "crop";
+        request.parts = {"a"};
+        request.viewportWidth = 1000;
+        request.viewportHeight = 700;
+        CloudSelectionRect rectangle;
+        rectangle.viewProjection = {.01,0,0,0, 0,.02,0,0, 0,0,.01,0, 0,0,0,1};
+        rectangle.minX = -.1;
+        rectangle.maxX = side ? 1.1 : .2;
+        rectangle.minY = -.1;
+        rectangle.maxY = .2;
+        request.rectangle = rectangle;
+        detail::prepareDirectPlateEdit(shapes, request, false, {});
+        ASSERT_EQ(request.cuts.size(), 1u);
+        EXPECT_FALSE(request.rectangle);
+        request.viewportWidth = request.viewportHeight = 0;
+        const auto cropped = detail::editPlateShapes(shapes, request, {});
+        ASSERT_EQ(cropped.replacements.at("a").size(), 1u);
+        const double expected = side ? 100 * 30 * 6 : 80 * 40 * 6;
+        EXPECT_NEAR(detail::plateVolume(cropped.replacements.at("a").front()), expected, 1e-5);
+    }
+}
+
+TEST(PlateEditing, DirectRepairFillsHoleAndSimplifiesNotch)
+{
+    const auto source = BRepAlgoAPI_Cut(perforated(), box(60, -1, -1, 10, 11, 8)).Shape();
+    const std::map<std::string, TopoDS_Shape> shapes{{"a", source}};
+    PlateEdit request;
+    request.operation = "repair";
+    request.parts = {"a"};
+    detail::prepareDirectPlateEdit(shapes, request, false, {});
+    const auto repaired = detail::editPlateShapes(shapes, request, {});
+    ASSERT_EQ(repaired.replacements.at("a").size(), 1u);
+    EXPECT_NEAR(detail::plateVolume(repaired.replacements.at("a").front()), 100 * 60 * 6, 1e-5);
+    EXPECT_LT(detail::plateVolume(source), 100 * 60 * 6);
+}
+
+TEST(PlateEditingSamples, DirectExtendReconstructedWebAndRibs)
+{
+    const auto directory = std::getenv("RM_PLATE_SAMPLE_DIR");
+    if (!directory)
+        GTEST_SKIP() << "Set RM_PLATE_SAMPLE_DIR to verify a real reconstructed assembly";
+    CommandService service;
+    const auto imported = done(service, service.submitImport(std::filesystem::path(directory) / std::filesystem::path(u8"孔.pcd")));
+    ASSERT_EQ(imported.state, TaskState::Succeeded) << imported.message;
+    const auto built = done(service, service.submitRecognizedReconstruct(false, service.project().revision));
+    ASSERT_EQ(built.state, TaskState::Succeeded) << built.message;
+    const auto before = service.project();
+    ASSERT_TRUE(before.model);
+    std::size_t checked = 0;
+    for (const auto &id : before.model->partIds)
+    {
+        if (!id.starts_with("rib-"))
+            continue;
+        for (bool reversed : {false, true})
+        {
+            PlateEdit request;
+            request.operation = "extend";
+            request.parts = {reversed ? "web" : id};
+            request.target = reversed ? id : "web";
+            const auto result = done(service, service.submitDirectPlateEdit(request, before.revision));
+            ASSERT_EQ(result.state, TaskState::Succeeded) << id << " reversed=" << reversed << ": " << result.message;
+            EXPECT_FALSE(result.result.committed);
+            EXPECT_EQ(service.project().revision, before.revision);
+            ++checked;
+        }
+    }
+    EXPECT_GE(checked, 2u);
+}
+
+TEST(PlateEditing, DirectCommandsCommitUndoRedoAndReplayResolvedCrop)
+{
+    const auto folder = std::filesystem::temp_directory_path() /
+        ("rm-direct-plate-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directory(folder);
+    (void)exportStep(*model({box(0, 0, 0, 100, 40, 6), box(180, -10, -10, 6, 60, 30)}), folder / "source.step");
+    CommandService service;
+    ASSERT_EQ(done(service, service.submitImport(folder / "source.step")).state, TaskState::Succeeded);
+    const auto before = service.project();
+    PlateEdit request;
+    request.operation = "extend";
+    request.parts = {before.model->partIds.front()};
+    request.target = before.model->partIds.back();
+    (void)service.takeUiCommandEvents();
+    const auto extended = done(service, service.submitDirectPlateEdit(request, before.revision));
+    ASSERT_EQ(extended.state, TaskState::Succeeded) << extended.message;
+    EXPECT_TRUE(extended.result.committed);
+    EXPECT_EQ(service.project().revision, before.revision + 1);
+    EXPECT_FALSE(service.takeEdgePreview(extended.id));
+    const auto events = service.takeUiCommandEvents();
+    EXPECT_EQ(std::count_if(events.begin(), events.end(), [](const auto &event) {
+        return event.kind == UiCommandEventKind::Started;
+    }), 1);
+    ASSERT_EQ(done(service, service.submitLine("project.undo")).state, TaskState::Succeeded);
+    EXPECT_DOUBLE_EQ(service.project().model->volumeMm3, before.model->volumeMm3);
+    ASSERT_EQ(done(service, service.submitLine("project.redo")).state, TaskState::Succeeded);
+    EXPECT_GT(service.project().model->volumeMm3, before.model->volumeMm3);
+    const auto revision = service.project().revision;
+    EXPECT_EQ(done(service, service.submitDirectPlateEdit(request, before.revision)).state, TaskState::Failed);
+    EXPECT_EQ(service.project().revision, revision);
+    request = {};
+    request.operation = "crop";
+    request.parts = {before.model->partIds.front()};
+    CloudSelectionRect rectangle;
+    rectangle.viewProjection = {.01,0,0,0, 0,.02,0,0, 0,0,.01,0, 0,0,0,1};
+    rectangle.minX = -.1; rectangle.maxX = .2; rectangle.minY = -.1; rectangle.maxY = 1;
+    request.rectangle = rectangle;
+    request.viewportWidth = request.viewportHeight = 1000;
+    const auto cropped = done(service, service.submitDirectPlateEdit(request, revision));
+    ASSERT_EQ(cropped.state, TaskState::Succeeded) << cropped.message;
+    EXPECT_TRUE(cropped.result.committed);
+    const auto volume = service.project().model->volumeMm3;
+    const auto recording = done(service, service.submitStartRecording(folder / "replay.py"));
+    ASSERT_EQ(recording.state, TaskState::Succeeded) << recording.message;
+    ASSERT_EQ(done(service, service.submitStopRecording()).state, TaskState::Succeeded);
+    CommandService replay;
+    const auto replayed = done(replay, replay.submitScriptFile(folder / "replay.py"));
+    ASSERT_EQ(replayed.state, TaskState::Succeeded) << replayed.message;
+    EXPECT_NEAR(replay.project().model->volumeMm3, volume, 1e-5);
+    std::filesystem::remove_all(folder);
+}
+
+TEST(PlateEditing, DirectRepairAllSkipsUnsupportedPartsAndHonorsCancellation)
+{
+    const auto solid = box(200, 0, 0, 100, 40, 6);
+    const auto face = TopExp_Explorer(solid, TopAbs_FACE).Current();
+    const std::map<std::string, TopoDS_Shape> shapes{{"a", perforated()}, {"surface", face}};
+    PlateEdit request;
+    request.operation = "repair";
+    std::string diagnostic;
+    detail::prepareDirectPlateEdit(shapes, request, true, {},
+        [&](std::string_view text) { diagnostic += text; });
+    EXPECT_EQ(request.parts, (std::vector<std::string>{"a", "surface"}));
+    auto result = detail::editPlateShapes(shapes, request, {});
+    ASSERT_EQ(result.replacements.size(), 1u);
+    EXPECT_TRUE(std::any_of(result.reports.begin(), result.reports.end(), [](const auto &s) { return s.find("surface：跳过") != std::string::npos; }));
+    EXPECT_NEAR(detail::plateVolume(result.replacements.at("a").front()), 100 * 60 * 6, 1e-5);
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    EXPECT_THROW(detail::prepareDirectPlateEdit(shapes, request, true, cancellation.get_token()), GeometryError);
 }
 TEST(PlateEditing, RepairPreservesBoundaryAndHonorsAreaLimit)
 {

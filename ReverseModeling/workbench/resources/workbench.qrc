@@ -2,5 +2,15 @@
   <qresource prefix="/workbench">
     <file>workbench.qss</file>
     <file>app/ReverseModeler.ico</file>
+    <file>plate-edit/plate_extend.png</file>
+    <file>plate-edit/preview_extend.png</file>
+    <file>plate-edit/plate_merge.png</file>
+    <file>plate-edit/preview_merge.png</file>
+    <file>plate-edit/plate_split.png</file>
+    <file>plate-edit/preview_split.png</file>
+    <file>plate-edit/plate_crop.png</file>
+    <file>plate-edit/preview_crop.png</file>
+    <file>plate-edit/plate_repair.png</file>
+    <file>plate-edit/preview_repair.png</file>
   </qresource>
 </RCC>

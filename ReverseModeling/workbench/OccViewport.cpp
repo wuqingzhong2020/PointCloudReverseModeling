@@ -178,7 +178,7 @@ OccViewport::OccViewport(QWidget* parent) : QWidget(parent), state_(std::make_un
     setAttribute(Qt::WA_NoSystemBackground);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
-    setToolTip(QStringLiteral("双击板厚标签修改；左键按点/线/面/体拾取模型；Shift 追加/取消；点模式拖动框选点云，拖边/角缩放、拖框内移动；右键旋转，中键平移，Esc 清空"));
+    setToolTip(QStringLiteral("双击板厚标签修改；左键按点/线/面/体拾取模型；Shift 追加/取消；点模式框选点云；右键进入框选切割后拖框切除板件端部；右键旋转，中键平移，Esc 清空"));
     state_->thicknessEditor = new ThicknessLabelEditor(this);
     state_->thicknessEditor->onSubmitted = [this](const std::string &id, double thickness)
     {
@@ -436,7 +436,8 @@ void OccViewport::updateMeasurementPicking()
     }
     if (state_->model)
     {
-        state_->model->setSelectable(state_->modelPickingEnabled || pointPick || referencePick, mode);
+        state_->model->setSelectable(!state_->plateCropEnabled &&
+            (state_->modelPickingEnabled || pointPick || referencePick), mode);
     }
     state_->context->SetPixelTolerance(state_->measurementEnabled
         ? qRound(6 * devicePixelRatioF()) : qRound(5 * devicePixelRatioF()));
@@ -590,7 +591,15 @@ void OccViewport::setPlateCropEnabled(bool enabled, bool preserveRectangle)
     if (state_->plateCropEnabled == enabled && preserveRectangle) return;
     state_->plateCropEnabled = enabled;
     if (!preserveRectangle) clearSelectionRectangle();
-    updateSelectionCursor(state_->lastMouse);
+    // 与参考实现一致：切割时固定源板，关闭模型拾取，只接收切割框。
+    try
+    {
+        updateMeasurementPicking();
+        if (!state_->context.IsNull()) state_->context->ClearDetected(false);
+        updateSelectionCursor(state_->lastMouse);
+        update();
+    }
+    catch (const Standard_Failure &error) { fail(QString::fromUtf8(error.what())); }
 }
 void OccViewport::rebuildHolePreview()
 {
@@ -1223,7 +1232,7 @@ void OccViewport::fitAll() {
 void OccViewport::setCloudEditingEnabled(bool enabled)
 {
     state_->cloudEditingEnabled = enabled;
-    if (!enabled && !state_->plateCropEnabled)
+    if (!enabled && !canSelectRectangle())
     {
         state_->rectangle.finish();
         state_->selectionDragged = false;
@@ -1286,7 +1295,8 @@ void OccViewport::updateSelectionCursor(const QPoint &current)
     if (state_->measurementEnabled || state_->referencePickMode != ReferencePlanePickMode::None) return;
     const auto handle = canSelectRectangle()
         ? state_->rectangle.hitTest(current, 6.0 * devicePixelRatioF()) : RectangleHandle::None;
-    setCursor(SelectionRectangle::cursor(handle));
+    setCursor(state_->plateCropEnabled && handle == RectangleHandle::None
+        ? Qt::CrossCursor : SelectionRectangle::cursor(handle));
 }
 
 void OccViewport::drawSelectionRectangle()
@@ -1358,7 +1368,7 @@ bool OccViewport::finishSelectionRectangle(const QPoint &current)
     }
     if (editing) return true; // 单击框内或边缘保留选区，不穿透拾取模型。
     clearSelectionRectangle();
-    if (dragged) return true;
+    if (dragged || state_->plateCropEnabled) return true;
     if (!state_->modelPickingEnabled)
     {
         if (state_->selectionMode == CloudSelectionMode::Replace && onCloudSelection)
@@ -1393,7 +1403,7 @@ void OccViewport::mousePressEvent(QMouseEvent *event)
                 return;
             }
             clearSelectionRectangle();
-            if (state_->thicknessEditingEnabled && state_->model &&
+            if (!state_->plateCropEnabled && state_->thicknessEditingEnabled && state_->model &&
                 state_->model->labelAt(event->position(), ratio))
             {
                 state_->pressedThicknessLabel = true;
@@ -1512,7 +1522,7 @@ void OccViewport::mouseReleaseEvent(QMouseEvent *event)
     {
         if (!state_->rightDragged && (state_->pickMode==ModelPickMode::Body || state_->transform || state_->cloudEditingEnabled || state_->measurementEnabled || state_->referencePickMode != ReferencePlanePickMode::None || (hasEditContextMenu && hasEditContextMenu())) && onCloudContextMenu)
         {
-            if (state_->selectedObjects.empty() && state_->modelPickingEnabled && state_->pickMode==ModelPickMode::Body && state_->model) {
+            if (state_->selectedObjects.empty() && state_->modelPickingEnabled && state_->pickMode==ModelPickMode::Body && state_->model && !(hasEditContextMenu && hasEditContextMenu())) {
                 detectObject(current);
                 const auto hit=state_->model->detectedSelection(state_->context->DetectedOwner());
                 if (!hit.partId.empty()) { setSelectedObjects({hit});if(onModelObjectsSelected) onModelObjectsSelected(state_->selectedObjects); }
@@ -1646,6 +1656,11 @@ void OccViewport::leaveEvent(QEvent *event)
 
 void OccViewport::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    if (state_->plateCropEnabled)
+    {
+        mousePressEvent(event);
+        return;
+    }
     if (event->button() == Qt::LeftButton && canSelectRectangle())
     {
         const double ratio = devicePixelRatioF();

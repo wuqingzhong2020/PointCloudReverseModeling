@@ -15,6 +15,7 @@ class ProjectOperations
     ProjectOperations &operator=(const ProjectOperations &) = delete;
 
     [[nodiscard]] PlateEditResult previewPlateEdit(const PlateEdit &request, std::uint64_t revision);
+    [[nodiscard]] PlateEdit prepareDirectPlateEdit(const PlateEdit &request, bool all, std::uint64_t revision);
     void applyPlateEdit(const PlateEdit &request, std::uint64_t revision);
     [[nodiscard]] std::string submitImport(const std::filesystem::path &path);
     [[nodiscard]] std::string submitCloudSelection(const CloudSelectionRect &rectangle, CloudSelectionMode mode,

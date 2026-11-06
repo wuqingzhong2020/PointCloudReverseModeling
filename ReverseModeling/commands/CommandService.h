@@ -119,6 +119,7 @@ public:
     CommandService& operator=(const CommandService&) = delete;
 
     [[nodiscard]] std::string submitPlateEdit(const PlateEdit &request, std::uint64_t revision);
+    [[nodiscard]] std::string submitDirectPlateEdit(const PlateEdit &request, std::uint64_t revision, bool all = false);
     [[nodiscard]] std::string submitPlateEditPreview(const PlateEdit &request, std::uint64_t revision);
     [[nodiscard]] std::string submitPlateReview(const std::vector<std::string> &parts, const PlateEdit &request, std::uint64_t revision);
     [[nodiscard]] std::string submitImport(const std::filesystem::path& path);

@@ -1,5 +1,6 @@
 ﻿/* 文件描述：多个源板相对明确目标板的延长、截取、分割与目标厚度主导的合并。 */
 #include "geometry/PlateEditing.h"
+#include "geometry/assembly/AssemblyPlateEditing.h"
 #include "geometry/PlateHoles.h"
 #include "geometry/PlateOutlineTreatment.h"
 #include "geometry/PlateThickness.h"
@@ -250,8 +251,18 @@ TopoDS_Shape alignSource(const TopoDS_Shape &source, const TopoDS_Shape &target,
     return BRepBuilderAPI_Transform(shape, shift, true).Shape();
 }
 } // namespace
+void prepareDirectPlateEdit(const std::map<std::string, TopoDS_Shape> &shapes, PlateEdit &request,
+                            bool all, std::stop_token stop, const std::function<void(std::string_view)> &)
+{
+    request.direct = true;
+    request.all = all;
+    prepareAssemblyPlateEdit(shapes, request, stop);
+}
+
 PlateShapeEdit editPlateShapes(const std::map<std::string, TopoDS_Shape> &shapes, PlateEdit &r, std::stop_token stop)
 {
+    if (r.direct)
+        return editAssemblyPlateShapes(shapes, r, stop);
     if (r.parts.empty())
         throw GeometryError("missing_parts", "请选择至少一个实体板件。");
     std::set<std::string> ids(r.parts.begin(), r.parts.end());

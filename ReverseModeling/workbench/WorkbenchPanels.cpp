@@ -287,7 +287,7 @@ void OperationPanel::showCustom(const QString &title, QWidget *content, ActionId
 void OperationPanel::showOperation(ActionId id, const QString &title)
 {
     m_intro->show();
-    m_footer->show();
+    m_footer->setVisible(id != ActionId::Count);
     using enum ActionId;
     setOperationTitle(id, title);
     if (m_form)

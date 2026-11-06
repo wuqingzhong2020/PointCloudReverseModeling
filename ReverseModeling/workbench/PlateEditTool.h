@@ -30,6 +30,9 @@ class PlateEditTool final : public QWidget
     {
         return m_showing;
     }
+    bool direct() const { return m_operation != "holes"; }
+    bool cropping() const { return m_active && m_operation == "crop"; }
+    std::function<void(const QString &)> onHint;
     std::function<void()> onChanged, onCommitted;
 
   protected:
@@ -47,9 +50,11 @@ class PlateEditTool final : public QWidget
     void updateGuide();
     PlateEdit request() const;
     void fail(const QString &message);
+    void executeDirect(const std::string &target = {});
+    void syncDirect(const ProjectSnapshot &project);
     CommandService &m_service;
     OccViewport &m_viewport;
-    bool m_active{}, m_loading{}, m_showing{};
+    bool m_active{}, m_loading{}, m_showing{}, m_all{};
     std::uint64_t m_revision{};
     std::string m_operation, m_previewTask, m_applyTask, m_reviewTask;
     std::vector<std::string> m_sources;

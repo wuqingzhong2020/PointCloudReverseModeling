@@ -35,6 +35,12 @@ PlateEdit plateEditRequest(const std::string &command, const rm::Arguments &args
             r.operation = key;
     const auto j = commandJson(rm::Value(args));
     r.parts = j.value("parts", std::vector<std::string>{});
+    if (command == "model.edit_plate")
+    {
+        r.direct = true;
+        r.operation = j.at("operation").get<std::string>();
+        r.all = j.value("all", false);
+    }
     r.target = j.value("target", std::string{});
     r.tolerance = j.value("tolerance", r.tolerance);
     r.maxDistance = j.value("max_distance", r.maxDistance);
@@ -51,7 +57,7 @@ PlateEdit plateEditRequest(const std::string &command, const rm::Arguments &args
         r.contacts.push_back({c.at("part"), c.at("face")});
     for (const auto &c : j.value("cuts", nlohmann::json::array()))
         r.cuts.push_back({c.at("part"), vector(c.at("origin")), vector(c.at("normal")), c.at("keep") == "positive"});
-    if (r.operation == "crop")
+    if (r.operation == "crop" && !r.direct)
         for (const auto &c : r.cuts)
             r.parts.push_back(c.part);
     for (const auto &h : j.value("targets", nlohmann::json::array()))
@@ -72,6 +78,15 @@ PlateEdit plateEditRequest(const std::string &command, const rm::Arguments &args
 rm::Arguments plateEditArguments(const PlateEdit &r)
 {
     nlohmann::json j = nlohmann::json::object();
+    if (r.direct)
+    {
+        j = {{"operation", r.operation}, {"parts", r.parts}, {"target", r.target}, {"all", r.all},
+             {"cuts", nlohmann::json::array()}};
+        for (const auto &c : r.cuts)
+            j["cuts"].push_back({{"part", c.part}, {"origin", vector(c.origin)}, {"normal", vector(c.normal)},
+                                 {"keep", c.positive ? "positive" : "negative"}});
+        return commandValue(j).as<rm::Arguments>();
+    }
     if (r.operation != "holes" && r.operation != "crop")
         j["parts"] = r.parts;
     if (r.operation == "extend" || r.operation == "trim" || r.operation == "merge" || r.operation == "split")

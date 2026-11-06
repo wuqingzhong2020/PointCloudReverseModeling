@@ -219,6 +219,9 @@ void bindBusiness(rm::CommandManager &manager, ProjectOperations &operations, co
                                        name == "cloud.export" || name == "model.export_step" || name == "model.export_cwrm" ||
                                        name == "model.export_pcd" || name == "file.convert";
                 auto message = successMessage(name, after);
+                if (name == "model.edit_plate")
+                    message = plateEditTitle(args.at("operation").template as<std::string>()) +
+                        (committed ? "完成。" : "：无需修改。");
                 if (!committed && (name == "model.move" || name == "model.rotate")) message = "位移或角度为零，模型保持不变。";
                 if (name == "project.undo" || name == "cloud.undo") message = "已撤销：" + before.undoLabel + "。";
                 if (name == "project.redo" || name == "cloud.redo") message = "已重做：" + before.redoLabel + "。";
@@ -236,6 +239,9 @@ void bindBusiness(rm::CommandManager &manager, ProjectOperations &operations, co
 } // namespace
 void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOperations &operations)
 {
+    bindBusiness(manager, operations, "model.edit_plate", [&operations](const auto &args, auto revision) {
+        operations.applyPlateEdit(plateEditRequest("model.edit_plate", args), revision);
+    });
     for (const auto op : {"extend","trim","merge","split","crop","repair","holes"})
     {
         const auto name=plateEditCommand(op);

@@ -629,3 +629,26 @@ model.export_pcd --help
 
 失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
 
+## model.edit_plate
+
+按右键菜单的固定规则直接编辑板件
+
+```text
+model.edit_plate --operation extend|trim|merge|split|crop|repair --parts <array> [--target <id>] [--cuts <array>] [--all false]
+model.edit_plate --help
+```
+
+
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| operation | --operation | enum | ['extend', 'trim', 'merge', 'split', 'crop', 'repair'] | 必填 |  | 与菜单一致的板件操作 |
+| parts | --parts | array |  {'type': 'string', 'min_size': 1} | 必填 |  | 单个源板；修复全部时记录实际范围 |
+| target | --target | string |  | 默认  |  | 目标板 ID |
+| cuts | --cuts | array |  {'type': 'object', 'properties': {'part': {'type': 'string', 'min_size': 1}, 'origin': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'normal': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'keep': {'type': 'enum', 'values': ['positive', 'negative']}}} | 默认 [] |  | 框选操作解析后的工程坐标截断面 |
+| all | --all | bool |  | 默认 False |  | 修复全部时跳过不支持或无需修复的板件 |
+
+返回：object — 实际几何、统一撤销重做与录制回放。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
