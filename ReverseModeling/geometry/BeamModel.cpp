@@ -1,14 +1,27 @@
-/*
+﻿/*
  * 文件描述：
  * 根据提交的 H 型钢及肋板参数创建独立 OCCT 实体、显示网格和 XCAF 装配。
  * 实现 STEP 临时写出、独立回读核验及不覆盖提交，并计算点到有限矩形板件表面的距离。
  */
 #include "geometry/Geometry.h"
+#include "geometry/PlateEditing.h"
 #include "geometry/ModelImport.h"
+#include "geometry/LocalReconstruction.h"
+#include "geometry/PlateOutlineTreatment.h"
+#include "geometry/PlateHoles.h"
+#include "geometry/PlateThickness.h"
+#include "geometry/PlateContour.h"
+#include "geometry/PlateGeneration.h"
+#include "geometry/MirrorCompletion.h"
 #include "geometry/StagedFile.h"
 
+#include <Message_ProgressIndicator.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -21,6 +34,7 @@
 #include <Bnd_Box.hxx>
 #include <DESTEP_Parameters.hxx>
 #include <GProp_GProps.hxx>
+#include <GCPnts_QuasiUniformDeflection.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Quantity_Color.hxx>
 #include <STEPCAFControl_Reader.hxx>
@@ -29,6 +43,9 @@
 #include <TDataStd_Name.hxx>
 #include <TDocStd_Document.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopExp.hxx>
+#include <NCollection_IndexedMap.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <XCAFDoc_ColorTool.hxx>
@@ -36,6 +53,7 @@
 #include <XCAFDoc_ShapeTool.hxx>
 #include <gp_Trsf.hxx>
 
+#include "geometry/ModelExchange.h"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -43,6 +61,7 @@
 #include <numeric>
 #include <random>
 #include <sstream>
+#include <set>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -147,10 +166,45 @@ std::array<double, 6> bounds(const TopoDS_Shape& shape)
 
 void appendMesh(const TopoDS_Shape& shape, std::uint32_t partIndex, MeshData& mesh)
 {
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> vertices;
+    TopExp::MapShapes(shape, TopAbs_VERTEX, vertices);
+    for (int index = 1; index <= vertices.Extent(); ++index)
+    {
+        const auto point = BRep_Tool::Pnt(TopoDS::Vertex(vertices(index)));
+        mesh.keyPoints.push_back({{point.X(), point.Y(), point.Z()}, partIndex});
+    }
     BRepMesh_IncrementalMesh triangulate(shape, 0.1, false, 0.5, false);
     if (!triangulate.IsDone()) throw GeometryError("mesh_failed", "OCCT 显示三角化失败");
-    for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edges;
+    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+    for (int index = 1; index <= edges.Extent(); ++index)
+    {
+        const auto edge = TopoDS::Edge(edges(index));
+        if (BRep_Tool::Degenerated(edge))
+        {
+            continue;
+        }
+        const BRepAdaptor_Curve curve(edge);
+        GCPnts_QuasiUniformDeflection samples(curve, 0.1);
+        if (!samples.IsDone() || samples.NbPoints() < 2)
+        {
+            continue;
+        }
+        ModelEdge displayEdge;
+        displayEdge.topologyIndex = static_cast<std::uint32_t>(index);
+        displayEdge.partIndex = partIndex;
+        for (int pointIndex = 1; pointIndex <= samples.NbPoints(); ++pointIndex)
+        {
+            const auto point = samples.Value(pointIndex);
+            displayEdge.pointsMm.push_back({point.X(), point.Y(), point.Z()});
+        }
+        mesh.edges.push_back(std::move(displayEdge));
+    }
+    std::uint32_t faceIndex = 0;
+    for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next(), ++faceIndex) {
         const auto face = TopoDS::Face(faces.Current());
+        if (BRepAdaptor_Surface(face).GetType() == GeomAbs_Plane)
+            mesh.planarFaces.push_back({partIndex, faceIndex});
         TopLoc_Location location;
         const auto triangulation = BRep_Tool::Triangulation(face, location);
         if (triangulation.IsNull()) throw GeometryError("mesh_failed", "实体面缺少显示三角网格");
@@ -167,6 +221,7 @@ void appendMesh(const TopoDS_Shape& shape, std::uint32_t partIndex, MeshData& me
                                       base + static_cast<std::uint32_t>(b - 1),
                                       base + static_cast<std::uint32_t>(c - 1)});
             mesh.trianglePartIndices.push_back(partIndex);
+            mesh.triangleFaceIndices.push_back(faceIndex);
         }
     }
 }
@@ -291,6 +346,7 @@ std::vector<RecognizedPlate> modelPlates(const PlateRecognition &recognition, co
 } // namespace
 
 struct Model::Impl {
+    std::map<std::string, std::shared_ptr<const detail::LocalPlateSource>> cloudSources;
     ModelSummary summary;
     MeshData mesh;
     std::vector<Plate> plates;
@@ -347,6 +403,706 @@ Model::Model(std::shared_ptr<const Impl> implementation)
 
 const ModelSummary& Model::summary() const noexcept { return implementation_->summary; }
 const MeshData& Model::mesh() const noexcept { return implementation_->mesh; }
+
+namespace
+{
+class EdgeProgress final : public Message_ProgressIndicator
+{
+  public:
+    explicit EdgeProgress(std::stop_token stop) : m_stop(stop)
+    {
+    }
+    bool UserBreak() override
+    {
+        return m_stop.stop_requested();
+    }
+    void Show(const Message_ProgressScope &, bool) override
+    {
+    }
+
+  private:
+    std::stop_token m_stop;
+};
+
+TopoDS_Shape treatSolidEdges(const TopoDS_Shape &source, const EdgeTreatmentTarget &target,
+                            EdgeTreatmentKind kind, double sizeMm, std::stop_token stop)
+{
+    if (source.ShapeType() != TopAbs_SOLID)
+        throw GeometryError("not_solid", "圆角 / 倒角需要实体部件，观测面或开放曲面不支持此操作。");
+    if (target.edges.empty())
+        throw GeometryError("empty_edges", "参数 --edges 至少需要一条边。");
+    // 在当前实体副本上处理，任何失败都不会触碰预览源和撤销快照。
+    auto shape = BRepBuilderAPI_Copy(source, true, false).Shape();
+    const auto selected = detail::plateOutlineCornerEdges(shape, target.edges);
+    Handle(EdgeProgress) indicator = new EdgeProgress(stop);
+    const auto build = [&](auto &operation) {
+        for (const auto &edge : selected) operation.Add(sizeMm, edge);
+        operation.Build(indicator->Start());
+        checkpoint(stop, {}, 0, {});
+        if (!operation.IsDone() || operation.Shape().IsNull())
+        {
+            std::ostringstream message;
+            message << "板件轮廓" << (kind == EdgeTreatmentKind::Fillet ? "圆角 R=" : "倒角 D=")
+                    << sizeMm << " mm 构建失败；所选板角的轮廓空间不足或相邻圆角相交，整批未应用。";
+            throw GeometryError("edge_treatment_failed", message.str());
+        }
+        shape = operation.Shape();
+        (void)checkedVolume(shape);
+        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> solids;
+        TopExp::MapShapes(shape, TopAbs_SOLID, solids);
+        if (solids.Extent() != 1 || TopExp_Explorer(shape, TopAbs_FACE, TopAbs_SOLID).More())
+            throw GeometryError("invalid_solid", "未生成单个完整实体，整批未应用。");
+        shape = solids(1);
+    };
+    if (kind == EdgeTreatmentKind::Fillet)
+    {
+        BRepFilletAPI_MakeFillet operation(shape);
+        build(operation);
+    }
+    else
+    {
+        BRepFilletAPI_MakeChamfer operation(shape);
+        build(operation);
+    }
+    return shape;
+}
+} // namespace
+
+std::shared_ptr<const Model> treatModelEdges(const Model &model, const EdgeTreatment &request, std::stop_token stop,
+                                           const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查圆角 / 倒角参数");
+    if (!std::isfinite(request.sizeMm) || request.sizeMm <= 0)
+        throw GeometryError("invalid_size", "参数 --size 必须为大于 0 的有限毫米值。");
+    if (request.kind != EdgeTreatmentKind::Fillet && request.kind != EdgeTreatmentKind::Chamfer)
+        throw GeometryError("invalid_kind", "仅支持圆角和等距倒角。");
+    if (request.targets.empty())
+        throw GeometryError("empty_selection", "请先选择实体边线。");
+    const auto &source = *model.implementation_;
+    auto result = std::make_shared<Model::Impl>(source);
+    std::set<std::string> processed;
+    std::string currentPart;
+    try
+    {
+        for (const auto &target : request.targets)
+        {
+            currentPart = target.partId;
+            checkpoint(stop, progress, 0.1 + 0.6 * processed.size() / request.targets.size(),
+                       "计算圆角 / 倒角：" + currentPart);
+            if (!processed.insert(currentPart).second)
+                throw GeometryError("duplicate_part", "同一部件的边应合并在一个分组中。");
+            const auto part = std::find_if(result->plates.begin(), result->plates.end(),
+                [&](const auto &p) { return p.id == currentPart; });
+            if (part == result->plates.end())
+                throw GeometryError("unknown_part", "部件不存在。");
+            part->shape = treatSolidEdges(part->shape, target, request.kind, request.sizeMm, stop);
+            auto &treated = result->summary.edgeTreatedParts;
+            if (std::find(treated.begin(), treated.end(), currentPart) == treated.end()) treated.push_back(currentPart);
+        }
+        result->mesh = {};
+        result->mesh.partIds = result->summary.partIds;
+        result->summary.volumeMm3 = 0;
+        BRep_Builder builder;
+        builder.MakeCompound(result->compound);
+        for (std::size_t i = 0; i < result->plates.size(); ++i)
+        {
+            auto &p = result->plates[i];
+            currentPart = p.id;
+            checkpoint(stop, progress, 0.75 + 0.24 * i / result->plates.size(), "更新圆角 / 倒角显示网格");
+            // 三角化也会修改 TShape；未编辑部件同样复制，避免触碰历史快照。
+            p.shape = BRepBuilderAPI_Copy(p.shape, true, false).Shape();
+            builder.Add(result->compound, p.shape);
+            if (p.shape.ShapeType() == TopAbs_SOLID) result->summary.volumeMm3 += checkedVolume(p.shape);
+            appendMesh(p.shape, static_cast<std::uint32_t>(i), result->mesh);
+        }
+        checkpoint(stop, progress, 1, "圆角 / 倒角计算完成");
+        return std::make_shared<const Model>(std::move(result));
+    }
+    catch (const GeometryError &error)
+    {
+        if (error.code() == "cancelled") throw;
+        throw GeometryError(error.code(), "部件 " + currentPart + "：" + error.what());
+    }
+    catch (const Standard_Failure &error)
+    {
+        if (stop.stop_requested()) throw GeometryError("cancelled", "操作已取消。");
+        throw GeometryError("edge_treatment_failed", "部件 " + currentPart +
+                            " 板件轮廓圆角 / 倒角计算失败，请检查轮廓和数值，整批未应用：" + error.what());
+    }
+}
+
+std::map<std::string, PlateThicknessInfo> inspectModelThickness(
+    const Model &model, const std::vector<std::string> &partIds, std::stop_token stop)
+{
+    if (partIds.empty())
+    {
+        throw GeometryError("empty_selection", "参数 --parts 至少需要一个板件 ID。");
+    }
+    std::map<std::string, PlateThicknessInfo> result;
+    for (const auto &id : partIds)
+    {
+        checkpoint(stop, {}, 0, {});
+        const auto &plates = model.implementation_->plates;
+        const auto part = std::find_if(plates.begin(), plates.end(), [&](const auto &p) { return p.id == id; });
+        if (part == plates.end())
+        {
+            throw GeometryError("unknown_part", "参数 --parts 中的部件不存在：" + id);
+        }
+        try
+        {
+            result.emplace(id, detail::inspectPlateThickness(part->shape));
+        }
+        catch (const GeometryError &error)
+        {
+            throw GeometryError(error.code(), "部件 " + id + "：" + error.what());
+        }
+    }
+    return result;
+}
+
+std::shared_ptr<const Model> changeModelThickness(const Model &model, const PlateThicknessChange &request,
+    std::stop_token stop, const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查板件和厚度");
+    if (!std::isfinite(request.thicknessMm) || request.thicknessMm < 0.001 || request.thicknessMm > 1e6)
+    {
+        throw GeometryError("invalid_thickness", "参数 --thickness 必须为 0.001 到 1000000 之间的有限毫米值。");
+    }
+    auto selected = inspectModelThickness(model, request.partIds, stop);
+    auto result = std::make_shared<Model::Impl>(*model.implementation_);
+    result->mesh = {};
+    result->mesh.partIds = result->summary.partIds;
+    result->summary.volumeMm3 = 0;
+    BRep_Builder builder;
+    builder.MakeCompound(result->compound);
+    for (std::size_t i = 0; i < result->plates.size(); ++i)
+    {
+        auto &part = result->plates[i];
+        checkpoint(stop, progress, 0.1 + 0.85 * i / result->plates.size(), "更新板厚：" + part.id);
+        try
+        {
+            const auto info = selected.find(part.id);
+            if (info != selected.end())
+            {
+                part.shape = detail::resizePlateThickness(part.shape, request.thicknessMm);
+                info->second.thicknessMm = request.thicknessMm;
+                result->summary.thicknessOverrides[part.id] = info->second;
+            }
+            else
+            {
+                // 网格生成也修改 TShape；复制未选部件，保证历史快照独立。
+                part.shape = BRepBuilderAPI_Copy(part.shape, true, false).Shape();
+            }
+            builder.Add(result->compound, part.shape);
+            if (part.shape.ShapeType() == TopAbs_SOLID)
+            {
+                result->summary.volumeMm3 += checkedVolume(part.shape);
+            }
+            appendMesh(part.shape, static_cast<std::uint32_t>(i), result->mesh);
+        }
+        catch (const Standard_Failure &error)
+        {
+            throw GeometryError("thickness_failed", "部件 " + part.id + " 修改板厚失败，整批未应用：" + error.what());
+        }
+    }
+    checkpoint(stop, progress, 1, "板厚修改完成");
+    return std::make_shared<const Model>(std::move(result));
+}
+
+std::shared_ptr<const Model> expandModelContours(const Model &model, const PlateContourExpansion &request,
+    std::stop_token stop, const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查板件和外扩距离");
+    if (!std::isfinite(request.distanceMm) || request.distanceMm < 0.001 || request.distanceMm > 1e6)
+    {
+        throw GeometryError("invalid_distance", "参数 --distance 必须为 0.001 到 1000000 之间的有限毫米值。");
+    }
+    auto selected = inspectModelThickness(model, request.partIds, stop);
+    auto result = std::make_shared<Model::Impl>(*model.implementation_);
+    result->mesh = {};
+    result->mesh.partIds = result->summary.partIds;
+    result->summary.volumeMm3 = 0;
+    BRep_Builder builder;
+    builder.MakeCompound(result->compound);
+    for (std::size_t i = 0; i < result->plates.size(); ++i)
+    {
+        auto &part = result->plates[i];
+        checkpoint(stop, progress, 0.1 + 0.85 * i / result->plates.size(), "外扩轮廓：" + part.id);
+        try
+        {
+            const auto info = selected.find(part.id);
+            if (info != selected.end())
+            {
+                part.shape = detail::expandPlateContour(part.shape, request.distanceMm);
+                if (std::find(result->summary.contourExpandedParts.begin(), result->summary.contourExpandedParts.end(),
+                              part.id) == result->summary.contourExpandedParts.end())
+                {
+                    result->summary.contourExpandedParts.push_back(part.id);
+                }
+                // 已经手工修改的板厚标注需跟随新轮廓质心；不为导入板件凭空添加板厚标签。
+                if (result->summary.thicknessOverrides.contains(part.id))
+                {
+                    result->summary.thicknessOverrides[part.id] = detail::inspectPlateThickness(part.shape);
+                }
+            }
+            else
+            {
+                // 网格生成也修改 TShape；复制未选部件，保证历史快照独立。
+                part.shape = BRepBuilderAPI_Copy(part.shape, true, false).Shape();
+            }
+            builder.Add(result->compound, part.shape);
+            if (part.shape.ShapeType() == TopAbs_SOLID)
+            {
+                result->summary.volumeMm3 += checkedVolume(part.shape);
+            }
+            appendMesh(part.shape, static_cast<std::uint32_t>(i), result->mesh);
+        }
+        catch (const GeometryError &error)
+        {
+            throw GeometryError(error.code(), "部件 " + part.id + "：" + error.what());
+        }
+        catch (const Standard_Failure &error)
+        {
+            throw GeometryError("contour_failed", "部件 " + part.id + " 外扩轮廓失败，整批未应用：" + error.what());
+        }
+    }
+    checkpoint(stop, progress, 1, "板件轮廓外扩完成");
+    return std::make_shared<const Model>(std::move(result));
+}
+
+std::shared_ptr<const Model> completeModelMirror(const Model &model, const MirrorCompletion &request,
+    std::stop_token stop, const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查镜像板件与底板中面");
+    const auto &source = *model.implementation_;
+    if (request.planePartId.empty()) throw GeometryError("no_mirror_plane", "请选择作为镜像面的底板（腹板）。");
+    if (std::find(request.partIds.begin(), request.partIds.end(), request.planePartId) != request.partIds.end())
+        throw GeometryError("invalid_parts", "底板（腹板）是镜像参考，不能同时作为待补全板件；请取消选中该板。");
+    if (std::find(source.summary.partIds.begin(), source.summary.partIds.end(), request.planePartId) == source.summary.partIds.end())
+        throw GeometryError("unknown_mirror_plane", "参数 --plane-part 的参考板件不存在：" + request.planePartId);
+    PlateThicknessInfo plane;
+    try
+    {
+        plane = inspectModelThickness(model, {request.planePartId}, stop).at(request.planePartId);
+    }
+    catch (const GeometryError &error)
+    {
+        throw GeometryError(error.code(), "镜像参考板 --plane-part 无法使用：" + std::string(error.what()));
+    }
+    const auto selected = inspectModelThickness(model, request.partIds, stop);
+    auto result = std::make_shared<Model::Impl>(source);
+    bool changed = false;
+    for (const auto &[id, thickness] : selected)
+    {
+        checkpoint(stop, progress, 0.1, "镜像补全：" + id);
+        const auto original = std::find_if(source.plates.begin(), source.plates.end(), [&](const auto &p) { return p.id == id; });
+        try
+        {
+            const auto reflected = detail::mirrorPlate(original->shape, plane);
+            const double reflectedVolume = checkedVolume(reflected);
+            const double tolerance = std::max(1e-4, reflectedVolume * 1e-7);
+            double covered = 0;
+            // 同板原有部分及已存在的对称部件均参与去重，避免重复应用生成重叠板。
+            for (const auto &part : result->plates)
+            {
+                if (part.shape.ShapeType() != TopAbs_SOLID) continue;
+                const double overlap = detail::mirrorOverlapVolume(part.shape, reflected, stop);
+                if (part.id != id && overlap > tolerance && overlap < reflectedVolume - tolerance)
+                    throw GeometryError("mirror_overlap", "镜像区域与部件 " + part.id + " 部分重叠，请先调整板件或镜像参考。");
+                covered += overlap;
+            }
+            if (covered >= reflectedVolume - tolerance) continue;
+            auto united = detail::uniteMirrorPlate(original->shape, reflected, stop);
+            std::string targetId = id;
+            if (!united.IsNull())
+            {
+                auto target = std::find_if(result->plates.begin(), result->plates.end(), [&](const auto &p) { return p.id == id; });
+                target->shape = united;
+                auto &completed = result->summary.mirrorCompletedParts;
+                if (std::find(completed.begin(), completed.end(), id) == completed.end()) completed.push_back(id);
+            }
+            else
+            {
+                do { targetId = "mirrored-part-" + std::to_string(result->summary.nextMirroredPartId++); }
+                while (std::find(result->summary.partIds.begin(), result->summary.partIds.end(), targetId) != result->summary.partIds.end());
+                result->plates.push_back({targetId, {}, {}, reflected});
+                result->summary.partIds.push_back(targetId);
+                result->summary.mirroredParts[targetId] = id;
+                ++result->summary.solidCount;
+                united = reflected;
+            }
+            // 有板厚标签的板件随补全更新锚点；导入模型仍不凭空添加标签。
+            if (source.summary.importedFormat.empty() || source.summary.thicknessOverrides.contains(id))
+                result->summary.thicknessOverrides[targetId] = detail::inspectPlateThickness(united);
+            changed = true;
+        }
+        catch (const GeometryError &error)
+        { throw GeometryError(error.code(), "部件 " + id + " 镜像补全失败：" + error.what()); }
+        catch (const Standard_Failure &error)
+        { throw GeometryError("mirror_failed", "部件 " + id + " 镜像补全失败，整批未应用：" + error.what()); }
+    }
+    if (!changed) throw GeometryError("already_symmetric", "选中板件的镜像区域已存在，无需补全；原模型未修改。");
+    result->mesh = {};
+    result->mesh.partIds = result->summary.partIds;
+    result->summary.volumeMm3 = 0;
+    BRep_Builder builder;
+    builder.MakeCompound(result->compound);
+    for (std::size_t i = 0; i < result->plates.size(); ++i)
+    {
+        auto &part = result->plates[i];
+        checkpoint(stop, progress, 0.5 + 0.49 * i / result->plates.size(), "生成镜像显示网格");
+        part.shape = BRepBuilderAPI_Copy(part.shape, true, false).Shape();
+        const auto box = bounds(part.shape);
+        part.minimum = {box[0], box[1], box[2]}; part.maximum = {box[3], box[4], box[5]};
+        builder.Add(result->compound, part.shape);
+        if (part.shape.ShapeType() == TopAbs_SOLID) result->summary.volumeMm3 += checkedVolume(part.shape);
+        appendMesh(part.shape, static_cast<std::uint32_t>(i), result->mesh);
+    }
+    checkpoint(stop, progress, 1, "镜像补全完成");
+    return std::make_shared<const Model>(std::move(result));
+}
+
+std::shared_ptr<const Model> generateModelPlate(const Model &model, const PlateGeneration &request,
+    std::stop_token stop, const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查附加板适用性");
+    const auto &source = *model.implementation_;
+    const bool pair = request.kind == PlateGenerationKind::Base && request.baseMode == BasePlateMode::VerticalPair;
+    if (pair && (request.secondPartId.empty() || request.secondPartId == request.partId))
+    {
+        throw GeometryError("invalid_parts", "两块竖直板方式需要两个不同的部件；请用 Shift 加选第二块板，或填写 --second-part。");
+    }
+    if (!pair && !request.secondPartId.empty())
+    {
+        throw GeometryError("invalid_parts", "当前方式只允许一块板；请清空 --second-part 或选择 --mode vertical_pair。");
+    }
+    const auto selected = std::find_if(source.plates.begin(), source.plates.end(),
+        [&](const auto &p) { return p.id == request.partId; });
+    if (selected == source.plates.end()) throw GeometryError("unknown_part", "部件不存在：" + request.partId);
+    TopoDS_Shape secondSource;
+    if (pair)
+    {
+        const auto second = std::find_if(source.plates.begin(), source.plates.end(),
+            [&](const auto &p) { return p.id == request.secondPartId; });
+        if (second == source.plates.end())
+        {
+            throw GeometryError("unknown_part", "第二块部件不存在：" + request.secondPartId);
+        }
+        secondSource = second->shape;
+    }
+    try
+    {
+        const auto shape = detail::generateAttachedPlate(selected->shape, request, secondSource);
+        auto result = std::make_shared<Model::Impl>(source);
+        const auto prefix = request.kind == PlateGenerationKind::Cover ? "generated-cover-" : "generated-base-";
+        std::string id;
+        do { id = prefix + std::to_string(result->summary.nextGeneratedPlateId++); }
+        while (std::find(result->summary.partIds.begin(), result->summary.partIds.end(), id) != result->summary.partIds.end());
+        const auto box = bounds(shape);
+        result->plates.push_back({id, {box[0], box[1], box[2]}, {box[3], box[4], box[5]}, shape});
+        result->summary.partIds.push_back(id);
+        result->summary.generatedPlates[id] = {request.kind, request.partId, request.secondPartId, request.baseMode};
+        const auto thickness = detail::inspectPlateThickness(shape);
+        if (std::abs(thickness.thicknessMm - request.thicknessMm) > 1e-5)
+            throw GeometryError("unsuitable_plate_dimensions", "新增板厚大于轮廓窄边尺寸，不再是适合的板件；请减小板厚或增大外扩量。");
+        result->summary.thicknessOverrides[id] = thickness;
+        ++result->summary.solidCount;
+        result->summary.volumeMm3 = 0;
+        result->mesh = {};
+        result->mesh.partIds = result->summary.partIds;
+        BRep_Builder builder;
+        builder.MakeCompound(result->compound);
+        for (std::size_t i = 0; i < result->plates.size(); ++i)
+        {
+            auto &p = result->plates[i];
+            checkpoint(stop, progress, 0.5 + 0.49 * i / result->plates.size(), "生成附加板显示网格");
+            p.shape = BRepBuilderAPI_Copy(p.shape, true, false).Shape();
+            builder.Add(result->compound, p.shape);
+            if (p.shape.ShapeType() == TopAbs_SOLID) result->summary.volumeMm3 += checkedVolume(p.shape);
+            appendMesh(p.shape, static_cast<std::uint32_t>(i), result->mesh);
+        }
+        checkpoint(stop, progress, 1, "附加板生成完成：" + id);
+        return std::make_shared<const Model>(std::move(result));
+    }
+    catch (const Standard_Failure &error)
+    {
+        throw GeometryError("plate_generation_failed", "生成板件失败，原模型未修改：" + std::string(error.what()));
+    }
+}
+
+std::vector<PlateHoleBase> inspectModelHoleBases(const Model &model, const std::string &partId)
+{
+    for (const auto &plate : model.implementation_->plates)
+        if (plate.id == partId) return detail::plateHoleBases(plate.shape);
+    throw GeometryError("unknown_part", "部件不存在：" + partId);
+}
+
+std::shared_ptr<const Model> addModelHole(const Model &model, const PlateHole &request, std::stop_token stop,
+                                        const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查添加孔参数");
+    auto result = std::make_shared<Model::Impl>(*model.implementation_);
+    auto part = std::find_if(result->plates.begin(), result->plates.end(),
+        [&](const auto &p) { return p.id == request.partId; });
+    if (part == result->plates.end()) throw GeometryError("unknown_part", "部件不存在：" + request.partId);
+    std::string currentPart = request.partId;
+    try
+    {
+        part->shape = detail::cutPlateHole(part->shape, request, stop);
+        auto &edited = result->summary.holeEditedParts;
+        if (std::find(edited.begin(), edited.end(), request.partId) == edited.end()) edited.push_back(request.partId);
+        result->mesh = {};
+        result->mesh.partIds = result->summary.partIds;
+        result->summary.volumeMm3 = 0;
+        BRep_Builder builder;
+        builder.MakeCompound(result->compound);
+        for (std::size_t i = 0; i < result->plates.size(); ++i)
+        {
+            auto &p = result->plates[i];
+            currentPart = p.id;
+            checkpoint(stop, progress, 0.75 + 0.24 * i / result->plates.size(), "更新开孔显示网格");
+            // 三角化也会修改 TShape；未编辑部件同样复制，避免触碰历史快照。
+            p.shape = BRepBuilderAPI_Copy(p.shape, true, false).Shape();
+            builder.Add(result->compound, p.shape);
+            if (p.shape.ShapeType() == TopAbs_SOLID) result->summary.volumeMm3 += checkedVolume(p.shape);
+            appendMesh(p.shape, static_cast<std::uint32_t>(i), result->mesh);
+        }
+        checkpoint(stop, progress, 1, "开孔完成");
+        return std::make_shared<const Model>(std::move(result));
+    }
+    catch (const Standard_Failure &error)
+    {
+        if (stop.stop_requested()) throw GeometryError("cancelled", "操作已取消。");
+        throw GeometryError("hole_cut_failed", "部件 " + request.partId + " 开孔失败，模型未修改：" + error.what());
+    }
+}
+
+std::shared_ptr<const Model> transformModelParts(const Model &model, const std::vector<std::string> &partIds,
+                                                 const ModelTransform &request, std::stop_token stop,
+                                                 const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查变换参数和部件");
+    const auto delta = modelTransformFrame(request);
+    const auto &source = *model.implementation_;
+    const std::set<std::string> selected(partIds.begin(), partIds.end());
+    if (selected.empty())
+        throw GeometryError("empty_selection", "参数 --parts 至少需要一个部件 ID。");
+    for (const auto &id : selected)
+        if (std::find(source.summary.partIds.begin(), source.summary.partIds.end(), id) == source.summary.partIds.end())
+            throw GeometryError("unknown_part", "参数 --parts 中的部件不存在：" + id);
+    if (isIdentityTransform(request))
+        return std::make_shared<const Model>(model.implementation_);
+    auto result = std::make_shared<Model::Impl>(source);
+    BRep_Builder builder;
+    builder.MakeCompound(result->compound);
+    gp_Trsf transform;
+    transform.SetValues(delta.xAxis.x, delta.yAxis.x, delta.zAxis.x, delta.originMm.x, delta.xAxis.y, delta.yAxis.y,
+                        delta.zAxis.y, delta.originMm.y, delta.xAxis.z, delta.yAxis.z, delta.zAxis.z, delta.originMm.z);
+    std::vector<bool> moved(source.plates.size());
+    for (std::size_t i = 0; i < result->plates.size(); ++i)
+    {
+        checkpoint(stop, progress, 0.1 + 0.6 * i / result->plates.size(), "变换实体部件");
+        auto &plate = result->plates[i];
+        moved[i] = selected.contains(plate.id);
+        if (moved[i])
+        {
+            // Copy=true 避免修改撤销历史共享的拓扑；刚体变换不改变体积和板厚。
+            BRepBuilderAPI_Transform operation(plate.shape, transform, true);
+            if (!operation.IsDone()) throw GeometryError("transform_failed", "部件几何变换失败。");
+            plate.shape = operation.Shape();
+            auto &accumulated = result->summary.partTransforms[plate.id];
+            accumulated = composeTransforms(delta, accumulated);
+            if (auto info = result->summary.thicknessOverrides.find(plate.id);
+                info != result->summary.thicknessOverrides.end())
+            {
+                info->second.centerMm = transformPoint(delta, info->second.centerMm);
+                info->second.normal = transformVector(delta, info->second.normal);
+            }
+        }
+        builder.Add(result->compound, plate.shape);
+    }
+    auto &mesh = result->mesh;
+    std::vector<bool> vertices(mesh.vertices.size());
+    for (std::size_t i = 0; i < mesh.triangles.size(); ++i)
+    {
+        if (i % 4096 == 0) checkpoint(stop, progress, 0.7 + 0.2*i/mesh.triangles.size(), "同步显示和拾取几何");
+        if (moved.at(mesh.trianglePartIndices.at(i)))
+            for (const auto v : mesh.triangles[i]) vertices.at(v) = true;
+    }
+    for (std::size_t i = 0; i < vertices.size(); ++i)
+        if (vertices[i]) mesh.vertices[i] = transformPoint(delta, mesh.vertices[i]);
+    for (auto &point : mesh.keyPoints)
+        if (moved.at(point.partIndex)) point.positionMm = transformPoint(delta, point.positionMm);
+    for (auto &edge : mesh.edges)
+        if (moved.at(edge.partIndex)) for (auto &point : edge.pointsMm) point = transformPoint(delta, point);
+    checkpoint(stop, progress, 1, "部件变换完成");
+    return std::make_shared<const Model>(std::move(result));
+}
+
+PlateEditResult editModelPlates(const Model &model, PlateEdit request,
+    std::stop_token stop, const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查板件编辑范围");
+    std::map<std::string, TopoDS_Shape> shapes;
+    for (const auto &p : model.implementation_->plates) shapes.emplace(p.id, p.shape);
+    auto edited = detail::editPlateShapes(shapes, request, stop);
+    if (edited.replacements.empty())
+        return {std::make_shared<const Model>(model.implementation_), std::move(request), std::move(edited.reports), false};
+    auto result = std::make_shared<Model::Impl>(*model.implementation_);
+    auto &summary = result->summary;
+    result->plates.clear(); result->mesh = {};
+    summary.partIds.clear(); summary.solidCount = summary.surfaceCount = 0; summary.volumeMm3 = 0;
+    std::set<std::string> removed;
+    for (const auto &old : model.implementation_->plates)
+    {
+        const auto found = edited.replacements.find(old.id);
+        if (found == edited.replacements.end()) { result->plates.push_back(old); continue; }
+        const auto &replacements = found->second;
+        if (replacements.size() != 1) removed.insert(old.id);
+        for (const auto &shape : replacements)
+        {
+            Plate part = old; part.shape = shape;
+            if (replacements.size() > 1) part.id = old.id + "-split-" + std::to_string(summary.nextSplitId++);
+            const auto box = bounds(shape);
+            part.minimum = {box[0],box[1],box[2]}; part.maximum = {box[3],box[4],box[5]};
+            result->plates.push_back(part);
+            if (std::find(summary.contourExpandedParts.begin(),summary.contourExpandedParts.end(),part.id)==summary.contourExpandedParts.end())
+                summary.contourExpandedParts.push_back(part.id);
+            summary.thicknessOverrides[part.id] = request.operation=="repair" ?
+                detail::inspectRepairPlateThickness(shape) : detail::inspectPlateThickness(shape);
+            summary.editSources[part.id] = {old.id};
+            if (request.operation=="merge" && part.id==request.target)
+            {
+                summary.editSources[part.id].insert(summary.editSources[part.id].end(),request.parts.begin(),request.parts.end());
+                result->cloudSources.erase(part.id);
+                std::erase(summary.reconstructableParts,part.id);
+                summary.localSourceUnavailable[part.id]="合并校正后无法可靠沿用原点云索引，请重新全局重建。";
+            }
+            else if (replacements.size()>1 && result->cloudSources.contains(old.id))
+            {
+                // 分割子件不能共用父件支持点，否则局部重建会恢复整块父板。
+                summary.localSourceUnavailable[part.id]="分割后原支持点尚未重新分配，不能局部重建此子件；其他部件不受影响。";
+            }
+        }
+    }
+    std::erase_if(result->cloudSources,[&](const auto &p){return removed.contains(p.first);});
+    for (auto *ids : {&summary.reconstructableParts,&summary.locallyReconstructedParts,&summary.mirrorCompletedParts,
+         &summary.contourExpandedParts,&summary.holeEditedParts,&summary.edgeTreatedParts})
+        std::erase_if(*ids,[&](const auto &id){return removed.contains(id);});
+    std::erase_if(summary.plates,[&](const auto &p){return removed.contains(p.id);});
+    std::erase_if(summary.thicknessOverrides,[&](const auto &p){return removed.contains(p.first);});
+    std::erase_if(summary.partTransforms,[&](const auto &p){return removed.contains(p.first);});
+    std::erase_if(summary.generatedPlates,[&](const auto &p){return removed.contains(p.first);});
+    std::erase_if(summary.mirroredParts,[&](const auto &p){return removed.contains(p.first);});
+    BRep_Builder builder; builder.MakeCompound(result->compound);
+    for (std::size_t i=0;i<result->plates.size();++i)
+    {
+        auto &part=result->plates[i];
+        checkpoint(stop,progress,0.7+0.29*i/result->plates.size(),"更新板件显示");
+        part.shape=BRepBuilderAPI_Copy(part.shape,true,false).Shape();
+        builder.Add(result->compound,part.shape); summary.partIds.push_back(part.id);
+        if (part.shape.ShapeType()==TopAbs_SOLID) { ++summary.solidCount;summary.volumeMm3+=checkedVolume(part.shape); }
+        else ++summary.surfaceCount;
+        appendMesh(part.shape,static_cast<std::uint32_t>(i),result->mesh);
+    }
+    result->mesh.partIds=summary.partIds;
+    checkpoint(stop,progress,1,"板件编辑完成");
+    return {std::make_shared<const Model>(std::move(result)),std::move(request),std::move(edited.reports),true};
+}
+
+std::shared_ptr<const Model> deleteModelParts(const Model &model, const std::vector<std::string> &partIds,
+    std::stop_token stop, const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查待删除部件");
+    const auto &source = *model.implementation_;
+    const std::set<std::string> removed(partIds.begin(), partIds.end());
+    if (removed.empty()) throw GeometryError("empty_selection", "参数 --parts 至少需要一个部件 ID。");
+    for (const auto &id : removed)
+    {
+        if (std::find(source.summary.partIds.begin(), source.summary.partIds.end(), id) == source.summary.partIds.end())
+            throw GeometryError("unknown_part", "参数 --parts 中的部件不存在：" + id);
+    }
+    if (removed.size() == source.plates.size()) return {};
+    auto result = std::make_shared<Model::Impl>();
+    auto &summary = result->summary;
+    summary = source.summary;
+    std::erase_if(summary.mirroredParts, [&](const auto &p) { return removed.contains(p.first); });
+    std::erase_if(summary.mirrorCompletedParts, [&](const auto &id) { return removed.contains(id); });
+    std::erase_if(summary.generatedPlates, [&](const auto &p) { return removed.contains(p.first); });
+    std::erase_if(summary.reconstructableParts, [&](const auto &id) { return removed.contains(id); });
+    std::erase_if(summary.locallyReconstructedParts, [&](const auto &id) { return removed.contains(id); });
+    std::erase_if(summary.contourExpandedParts, [&](const auto &id) { return removed.contains(id); });
+    std::erase_if(summary.thicknessOverrides, [&](const auto &p) { return removed.contains(p.first); });
+    std::erase_if(summary.holeEditedParts, [&](const auto &id) { return removed.contains(id); });
+    std::erase_if(summary.edgeTreatedParts, [&](const auto &id) { return removed.contains(id); });
+    summary.partIds.clear();
+    summary.solidCount = summary.surfaceCount = 0;
+    summary.volumeMm3 = 0;
+    std::erase_if(summary.plates, [&](const auto &p) { return removed.contains(p.id); });
+    std::erase_if(summary.partTransforms, [&](const auto &p) { return removed.contains(p.first); });
+    BRep_Builder builder;
+    builder.MakeCompound(result->compound);
+    const auto absent = std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::uint32_t> partMap(source.plates.size(), absent);
+    for (std::size_t i = 0; i < source.plates.size(); ++i)
+    {
+        checkpoint(stop, progress, 0.1 + 0.3 * i / source.plates.size(), "移除模型部件");
+        const auto &plate = source.plates[i];
+        if (removed.contains(plate.id)) continue;
+        partMap[i] = static_cast<std::uint32_t>(result->plates.size());
+        result->plates.push_back(plate);
+        summary.partIds.push_back(plate.id);
+        builder.Add(result->compound, plate.shape);
+        if (plate.shape.ShapeType() == TopAbs_SOLID)
+        {
+            ++summary.solidCount;
+            summary.volumeMm3 += checkedVolume(plate.shape);
+        }
+        else ++summary.surfaceCount;
+    }
+    // 同步裁剪中立显示网格，既不重新三角化共享 BRep，也不重新编号剩余部件 ID。
+    auto &mesh = result->mesh;
+    const auto &old = source.mesh;
+    mesh.partIds = summary.partIds;
+    std::vector<std::uint32_t> vertexMap(old.vertices.size(), absent);
+    for (std::size_t i = 0; i < old.triangles.size(); ++i)
+    {
+        if (i % 4096 == 0) checkpoint(stop, progress, 0.4 + 0.5 * i / old.triangles.size(), "更新剩余部件网格");
+        const auto part = partMap.at(old.trianglePartIndices.at(i));
+        if (part == absent) continue;
+        auto triangle = old.triangles[i];
+        for (auto &v : triangle)
+        {
+            auto &mapped = vertexMap.at(v);
+            if (mapped == absent)
+            {
+                mapped = static_cast<std::uint32_t>(mesh.vertices.size());
+                mesh.vertices.push_back(old.vertices[v]);
+            }
+            v = mapped;
+        }
+        mesh.triangles.push_back(triangle);
+        mesh.trianglePartIndices.push_back(part);
+        mesh.triangleFaceIndices.push_back(old.triangleFaceIndices.at(i));
+    }
+    for (auto p : old.keyPoints)
+    {
+        p.partIndex = partMap.at(p.partIndex);
+        if (p.partIndex != absent) mesh.keyPoints.push_back(p);
+    }
+    for (auto edge : old.edges)
+    {
+        edge.partIndex = partMap.at(edge.partIndex);
+        if (edge.partIndex != absent) mesh.edges.push_back(std::move(edge));
+    }
+    for (auto face : old.planarFaces)
+    {
+        face[0] = partMap.at(face[0]);
+        if (face[0] != absent) mesh.planarFaces.push_back(face);
+    }
+    checkpoint(stop, progress, 1, "部件删除完成");
+    return std::make_shared<const Model>(std::move(result));
+}
 
 std::shared_ptr<const Model> buildBeam(const BeamFrame& inputFrame, const BeamParameters& parameters,
     std::stop_token stop, const ProgressCallback& progress)
@@ -467,6 +1223,173 @@ std::shared_ptr<const Model> buildRecognizedPlates(const PlateRecognition &recog
     }
     checkpoint(stop, progress, 1.0, "点云识别模型构建完成");
     return std::make_shared<Model>(std::move(implementation));
+}
+
+std::shared_ptr<const Model> associateModelCloud(const Model &model, const CloudData &cloud, std::stop_token stop)
+{
+    auto result = std::make_shared<Model::Impl>(*model.implementation_);
+    std::vector<detail::LocalPlateSource> sources;
+    for (const auto &plate : model.summary().plates)
+        sources.push_back({plate, model.summary().frame, {}});
+    const auto &f = model.summary().frame;
+    for (std::size_t i = 0; i < cloud.points.size(); ++i)
+    {
+        if (i % 4096 == 0)
+            checkpoint(stop, {}, 0, {});
+        const auto &p = cloud.points[i];
+        const Vec3 relative{p.position.x + cloud.originMm.x - f.originMm.x,
+                            p.position.y + cloud.originMm.y - f.originMm.y,
+                            p.position.z + cloud.originMm.z - f.originMm.z};
+        const double q[] = {dot(relative, f.xAxis), dot(relative, f.yAxis), dot(relative, f.zAxis)};
+        double best = std::numeric_limits<double>::infinity();
+        std::size_t chosen = sources.size();
+        for (std::size_t j = 0; j < sources.size(); ++j)
+        {
+            const auto &plate = sources[j].plate;
+            const double low[] = {plate.minimumMm.x, plate.minimumMm.y, plate.minimumMm.z};
+            const double high[] = {plate.maximumMm.x, plate.maximumMm.y, plate.maximumMm.z};
+            double distance = 0;
+            for (int a = 0; a < 3; ++a)
+            {
+                const double d = a == plate.normalAxis ? std::min(std::abs(q[a] - low[a]), std::abs(q[a] - high[a]))
+                                                       : std::max({low[a] - q[a], q[a] - high[a], 0.0});
+                distance += d * d;
+            }
+            // 仅关联原板面附近的点，远离原模型的杂点不参与后续局部重建。
+            if (distance <= 25.0 && distance < best)
+            {
+                best = distance;
+                chosen = j;
+            }
+        }
+        if (chosen < sources.size())
+            sources[chosen].indices.push_back(p.sourceIndex);
+    }
+    result->summary.reconstructableParts.clear();
+    for (auto &source : sources)
+    {
+        std::sort(source.indices.begin(), source.indices.end());
+        source.indices.erase(std::unique(source.indices.begin(), source.indices.end()), source.indices.end());
+        if (source.indices.size() < 12)
+            continue;
+        const auto id = source.plate.id;
+        result->cloudSources[id] = std::make_shared<const detail::LocalPlateSource>(std::move(source));
+        result->summary.reconstructableParts.push_back(id);
+    }
+    return std::make_shared<const Model>(std::move(result));
+}
+
+std::shared_ptr<const Model> reconstructLocalParts(const Model &model, const CloudData &cloud,
+                                                   const LocalReconstruction &request, std::stop_token stop,
+                                                   const ProgressCallback &progress)
+{
+    checkpoint(stop, progress, 0, "检查局部重建规则和点云关联");
+    const std::set<std::string> types{"plate", "horizontal", "box"};
+    const std::set<std::string> contours{"circle", "rectangle", "chamfer_rectangle", "convex", "polygon", "smooth"};
+    if (!types.contains(request.type) || !contours.contains(request.contour))
+        throw GeometryError("invalid_rule", "局部重建类型或轮廓规则无效。");
+    if (!std::isfinite(request.toleranceMm) || request.toleranceMm < 0.1 || request.toleranceMm > 1000 ||
+        !std::isfinite(request.cornerMm) || request.cornerMm <= 0 || request.cornerMm > 100000)
+        throw GeometryError("invalid_rule", "轮廓容差须为 0.1–1000 mm，倒角退距须为 0–100000 mm 的正数。");
+    std::set<std::string> selected(request.partIds.begin(), request.partIds.end());
+    if (selected.empty() || selected.size() != request.partIds.size())
+        throw GeometryError("invalid_parts", "请选择至少一个部件，部件 ID 不可重复。");
+    const auto &source = *model.implementation_;
+    for (const auto &id : selected)
+    {
+        if (std::find(source.summary.partIds.begin(), source.summary.partIds.end(), id) == source.summary.partIds.end())
+            throw GeometryError("unknown_part", "部件不存在：" + id);
+        if (!source.cloudSources.contains(id))
+            throw GeometryError("no_local_source", "部件 " + id + "：" +
+                (source.summary.localSourceUnavailable.contains(id) ? source.summary.localSourceUnavailable.at(id) :
+                 "没有足够的原始点云关联，不能局部重建。"));
+        if (source.summary.partTransforms.contains(id))
+            throw GeometryError("moved_local_source",
+                                "部件 " + id + " 已移动或旋转，与原点云位置不一致；请撤销变换后再局部重建。");
+    }
+    auto result = std::make_shared<Model::Impl>(source);
+    result->mesh = {};
+    result->mesh.partIds = result->summary.partIds;
+    result->summary.solidCount = 0;
+    result->summary.surfaceCount = 0;
+    result->summary.volumeMm3 = 0;
+    BRep_Builder builder;
+    builder.MakeCompound(result->compound);
+    for (std::size_t index = 0; index < result->plates.size(); ++index)
+    {
+        auto &part = result->plates[index];
+        checkpoint(stop, progress, 0.1 + 0.8 * index / result->plates.size(), "局部重建：" + part.id);
+        try
+        {
+            if (selected.contains(part.id))
+            {
+                const auto &support = *source.cloudSources.at(part.id);
+                std::vector<Vec3> remaining;
+                for (std::size_t i = 0; i < cloud.points.size(); ++i)
+                {
+                    if (i % 4096 == 0)
+                        checkpoint(stop, {}, 0, {});
+                    const auto &p = cloud.points[i];
+                    if (std::binary_search(support.indices.begin(), support.indices.end(), p.sourceIndex))
+                        remaining.push_back({p.position.x + cloud.originMm.x, p.position.y + cloud.originMm.y,
+                                             p.position.z + cloud.originMm.z});
+                }
+                auto thickness = support.plate.thicknessMm;
+                if (source.summary.thicknessOverrides.contains(part.id))
+                    thickness = source.summary.thicknessOverrides.at(part.id).thicknessMm;
+                const auto rebuilt = detail::rebuildLocalShape(remaining, support, thickness, request, stop);
+                part.shape = rebuilt.shape;
+                std::erase(result->summary.edgeTreatedParts, part.id);
+                std::erase(result->summary.holeEditedParts, part.id);
+                std::erase(result->summary.contourExpandedParts, part.id);
+                std::erase(result->summary.mirrorCompletedParts, part.id);
+                if (std::find(result->summary.locallyReconstructedParts.begin(),
+                              result->summary.locallyReconstructedParts.end(),
+                              part.id) == result->summary.locallyReconstructedParts.end())
+                    result->summary.locallyReconstructedParts.push_back(part.id);
+                if (rebuilt.thickness)
+                    result->summary.thicknessOverrides[part.id] = *rebuilt.thickness;
+                else
+                    result->summary.thicknessOverrides.erase(part.id);
+                for (auto &plate : result->summary.plates)
+                    if (plate.id == part.id)
+                    {
+                        plate.supportPoints = remaining.size();
+                        plate.method = "local_reconstruction";
+                        if (result->summary.thicknessOverrides.contains(part.id))
+                            plate.thicknessMm = result->summary.thicknessOverrides.at(part.id).thicknessMm;
+                    }
+            }
+            else
+                part.shape = BRepBuilderAPI_Copy(part.shape, true, false).Shape();
+            builder.Add(result->compound, part.shape);
+            if (part.shape.ShapeType() == TopAbs_SOLID)
+            {
+                ++result->summary.solidCount;
+                result->summary.volumeMm3 += checkedVolume(part.shape);
+            }
+            else
+                ++result->summary.surfaceCount;
+            appendMesh(part.shape, static_cast<std::uint32_t>(index), result->mesh);
+        }
+        catch (const GeometryError &error)
+        {
+            throw GeometryError(error.code(), "部件 " + part.id + "：" + error.what() + " 整批未应用。");
+        }
+        catch (const Standard_Failure &error)
+        {
+            throw GeometryError("local_rebuild_failed",
+                                "部件 " + part.id + " 局部重建失败，整批未应用：" + error.what());
+        }
+    }
+    checkpoint(stop, progress, 1, "局部重建完成，未选部件保持不变");
+    return std::make_shared<const Model>(std::move(result));
+}
+
+StepExportResult exportCwrm(const Model& model, const std::filesystem::path& path,
+    std::stop_token stop, const ProgressCallback& progress)
+{
+    return detail::writeCwrmShape(model.implementation_->compound, model.summary(), path, stop, progress);
 }
 
 StepExportResult exportStep(const Model& model, const std::filesystem::path& requestedPath,
@@ -597,12 +1520,22 @@ StepExportResult exportStep(const Model& model, const std::filesystem::path& req
 DeviationResult evaluateDeviation(const CloudData& cloud, const Model& model,
     std::stop_token stop, const ProgressCallback& progress)
 {
+    if (!model.summary().mirrorCompletedParts.empty() || !model.summary().mirroredParts.empty())
+        throw GeometryError("unsupported_deviation", "镜像补全后不再适用原矩形板件偏差算法。");
+    if (!model.summary().contourExpandedParts.empty() || !model.summary().locallyReconstructedParts.empty())
+    {
+        throw GeometryError("unsupported_deviation", "外扩轮廓后的模型暂不适用原矩形板件偏差算法。");
+    }
+    if (!model.summary().thicknessOverrides.empty())
+        throw GeometryError("unsupported_deviation", "修改板厚后的模型暂不适用矩形板件偏差算法。");
+    if (!model.summary().edgeTreatedParts.empty() || !model.summary().holeEditedParts.empty())
+        throw GeometryError("unsupported_deviation", "圆角/倒角后的模型不适用矩形板件偏差算法。");
     if (!model.summary().importedFormat.empty())
         throw GeometryError("unsupported_deviation", "导入模型不适用矩形板件偏差算法");
     if (cloud.points.empty()) throw GeometryError("empty_cloud", "没有可比较的有效点");
     const auto& source = *model.implementation_;
-    const auto& frame = source.summary.frame;
-    const auto originDifference = subtract(cloud.originMm, frame.originMm);
+    std::vector<BeamFrame> frames;
+    for (const auto &plate : source.plates) frames.push_back(modelPartFrame(source.summary, plate.id));
     DeviationResult result;
     result.pointCount = cloud.points.size();
     result.distancesMm.reserve(cloud.points.size());
@@ -612,14 +1545,11 @@ DeviationResult evaluateDeviation(const CloudData& cloud, const Model& model,
         if (index % 4096 == 0)
             checkpoint(stop, progress, 0.95 * index / cloud.points.size(), "计算原始有效点到有限板件表面的偏差");
         const auto& point = cloud.points[index].position;
-        const Vec3 displacement{point.x + originDifference.x, point.y + originDifference.y,
-                                point.z + originDifference.z};
-        const Vec3 local{dot(displacement, frame.xAxis), dot(displacement, frame.yAxis),
-                         dot(displacement, frame.zAxis)};
+        const Vec3 world{point.x + cloud.originMm.x, point.y + cloud.originMm.y, point.z + cloud.originMm.z};
         double distance = std::numeric_limits<double>::infinity();
         std::uint32_t nearest{};
         for (std::size_t part = 0; part < source.plates.size(); ++part) {
-            const double candidate = boxSurfaceDistance(local, source.plates[part]);
+            const double candidate = boxSurfaceDistance(inverseTransformPoint(frames[part], world), source.plates[part]);
             if (candidate < distance) { distance = candidate; nearest = static_cast<std::uint32_t>(part); }
         }
         if (!std::isfinite(distance)) throw GeometryError("deviation_failed", "偏差计算出现无效数值");

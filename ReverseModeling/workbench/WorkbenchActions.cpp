@@ -1,7 +1,7 @@
 ﻿/*
  * 文件描述：
  * 创建工作台动作、稳定对象名、快捷键和能力提示；未接入的业务动作保持禁用，
- * 表单预览动作只负责打开操作面板，实际服务执行由主窗口连接。
+ * 实际服务执行由主窗口连接。
  */
 #include <initializer_list>
 
@@ -9,6 +9,7 @@
 #include <QActionGroup>
 #include <QKeySequence>
 
+#include "workbench/WorkbenchActionHelp.h"
 #include "workbench/WorkbenchActions.h"
 #include "workbench/WorkbenchTheme.h"
 
@@ -19,7 +20,6 @@ namespace
 enum class Capability
 {
     Available,
-    Preview,
     Pending
 };
 struct ActionSpec
@@ -43,48 +43,38 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {ExportStep, "exportStep", "导出 STEP", "export", Available},
                                 {ExportAndExit, "exportAndExit", "导出并退出", "export", Available},
                                 {ExportCloud, "exportCloud", "导出点云 (*.pcd)", "cloud", Available},
-                                {ExportModel, "exportModel", "导出工程模型", "cube", Pending},
+                                {ExportModel, "exportModel", "导出模型 (*.cwrm)", "cube", Available},
+                                {ExportModelCloud, "exportModelCloud", "模型采样导出 (*.pcd)", "cloud", Available},
                                 {ExportParameters, "exportParameters", "导出重建参数", "parameters", Pending},
                                 {Undo, "undo", "撤销", "undo", Available},
                                 {Redo, "redo", "重做", "redo", Available},
                                 {Reset, "reset", "重置", "reset", Available},
                                 {CropCloud, "cropCloud", "截取点云", "crop", Available},
                                 {DeleteCloud, "deleteCloud", "删除点云", "delete", Available},
-                                {AutoAlign, "autoAlign", "自动对齐", "align", Pending},
-                                {RemoveDuplicates, "removeDuplicates", "拼接时去重", "cloud", Pending},
-                                {PrecisionLow, "precisionLow", "低", "", Pending},
-                                {PrecisionMedium, "precisionMedium", "中", "", Pending},
-                                {PrecisionHigh, "precisionHigh", "高", "", Pending},
-                                {Denoise, "denoise", "AI 去噪", "cloud", Pending},
-                                {SplitBoards, "splitBoards", "AI 辅助分板", "cube", Pending},
                                 {Parameters, "parameters", "重建参数", "parameters", Available},
                                 {Reconstruct, "reconstruct", "开始重建", "play", Available},
                                 {StopReconstruct, "stopReconstruct", "停止重建", "stop", Available},
-                                {LocalReconstruct, "localReconstruct", "局部重建", "reset", Pending},
-                                {BuildSelection, "buildSelection", "选点建模", "cube", Preview},
-                                {Obstacle, "obstacle", "选点生成障碍物", "cube", Preview},
-                                {PlateThickness, "plateThickness", "修改板厚", "parameters", Preview},
-                                {ExtendContour, "extendContour", "外拉板件轮廓", "cube", Preview},
-                                {Channel, "channel", "设为槽钢", "cube", Preview},
-                                {Angle, "angle", "设为角钢", "cube", Preview},
-                                {OuterPlate, "outerPlate", "生成外扩贴板", "cube", Preview},
-                                {BottomPlate, "bottomPlate", "生成下底板", "cube", Preview},
-                                {SteelStructure, "steelStructure", "钢结构", "cube", Pending},
-                                {WeldHole, "weldHole", "过焊孔", "hole", Preview},
-                                {BottomHole, "bottomHole", "底边孔", "hole", Preview},
-                                {Fillet, "fillet", "圆角/倒角", "cube", Preview},
-                                {Move, "move", "移动", "move", Preview},
-                                {Rotate, "rotate", "旋转", "rotate", Preview},
-                                {DeleteModel, "deleteModel", "删除模型", "delete", Pending},
-                                {Measure, "measure", "测量", "measure", Preview},
-                                {BasePlane, "basePlane", "基准面", "plane", Preview},
+                                {LocalReconstruct, "localReconstruct", "局部重建", "reset", Available},
+                                {PlateThickness, "plateThickness", "修改板厚", "parameters", Available},
+                                {ExtendContour, "extendContour", "外扩板件轮廓", "cube", Available},
+                                {OuterPlate, "outerPlate", "生成外扩贴板", "cube", Available},
+                                {BottomPlate, "bottomPlate", "生成下底板", "cube", Available},
+                                {MirrorComplete, "mirrorComplete", "镜像补全", "cube", Available},
+                                {WeldHole, "weldHole", "过焊孔", "hole", Available},
+                                {BottomHole, "bottomHole", "底边孔", "hole", Available},
+                                {Fillet, "fillet", "圆角/倒角", "cube", Available},
+                                {Move, "move", "移动", "move", Available},
+                                {Rotate, "rotate", "旋转", "rotate", Available},
+                                {DeleteModel, "deleteModel", "删除模型", "delete", Available},
+                                {Measure, "measure", "测量", "measure", Available},
+                                {BasePlane, "basePlane", "基准面", "plane", Available},
                                 {Deviation, "deviation", "计算偏差", "measure", Available},
                                 {Select, "select", "选择", "cursor", Available},
                                 {AddSelection, "addSelection", "新增选择", "cursor-add", Available},
                                 {RemoveSelection, "removeSelection", "移除选择", "cursor-remove", Available},
                                 {SelectPoint, "selectPoint", "点", "", Available},
-                                {SelectEdge, "selectEdge", "线", "", Pending},
-                                {SelectFace, "selectFace", "面", "", Pending},
+                                {SelectEdge, "selectEdge", "线", "", Available},
+                                {SelectFace, "selectFace", "面", "", Available},
                                 {SelectSolid, "selectSolid", "体", "cube", Available},
                                 {ShowCloud, "showCloud", "点云", "cloud", Available},
                                 {CloudHeight, "cloudHeight", "高度渐变", "", Available},
@@ -93,7 +83,7 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {ShowThickness, "showThickness", "板厚", "parameters", Available},
                                 {ModelSolid, "modelSolid", "实体", "", Available},
                                 {ModelWire, "modelWire", "线框（待接入）", "", Pending},
-                                {Section, "section", "剖视", "plane", Preview},
+                                {Section, "section", "剖视", "plane", Available},
                                 {FitAll, "fitAll", "适合视图", "fit", Available},
                                 {BottomView, "bottomView", "底板面", "home", Available},
                                 {CancelTask, "cancelTask", "取消任务", "stop", Available},
@@ -109,17 +99,10 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
         if (spec.capability == Pending)
         {
             action->setEnabled(false);
-            action->setToolTip(action->text() + QStringLiteral("：功能待接入"));
-        }
-        else if (spec.capability == Preview)
-        {
-            action->setToolTip(action->text() + QStringLiteral("：打开参数面板，几何操作待接入"));
         }
         m_actions[static_cast<std::size_t>(spec.id)] = action;
     }
-    get(StartRecording)->setToolTip(QStringLiteral("选择脚本文件，每条成功执行的命令立即写入"));
-    get(StopRecording)->setToolTip(QStringLiteral("停止录制并关闭脚本文件，无需另行保存"));
-    get(ExecuteScript)->setToolTip(QStringLiteral("选择脚本，在命令工作线程按顺序执行"));
+    get(Measure)->setCheckable(true);
     const auto exclusive = [this](std::initializer_list<ActionId> ids, ActionId selected)
     {
         auto *group = new QActionGroup(this);
@@ -132,29 +115,18 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
     };
     exclusive({Select, AddSelection, RemoveSelection}, Select);
     exclusive({SelectPoint, SelectEdge, SelectFace, SelectSolid}, SelectPoint);
-    exclusive({PrecisionLow, PrecisionMedium, PrecisionHigh}, PrecisionMedium);
     exclusive({CloudHeight, CloudSolid}, CloudHeight);
     exclusive({ModelSolid, ModelWire}, ModelSolid);
-    for (const auto id : {ShowCloud, ShowModel, ShowThickness, AutoAlign, RemoveDuplicates})
+    for (const auto id : {ShowCloud, ShowModel, ShowThickness})
     {
         get(id)->setCheckable(true);
         get(id)->setChecked(id == ShowCloud || id == ShowModel || id == ShowThickness);
     }
-    get(ShowThickness)->setToolTip(QStringLiteral("显示逐板厚度（mm）；底板最大值标注估算，缺少依据时显示未识别"));
-    get(CropCloud)->setToolTip(QStringLiteral("保留框选点云，移除其余点；选区贯穿深度，作用于完整点云"));
-    get(DeleteCloud)->setToolTip(QStringLiteral("删除框选点云；可撤销，不改写源 PCD 文件"));
-    get(Undo)->setToolTip(QStringLiteral("撤销上一次点云截取、删除或重置（最多 10 步）"));
-    get(Redo)->setToolTip(QStringLiteral("重做点云编辑"));
-    get(Reset)->setToolTip(QStringLiteral("恢复本次导入的完整点云；可撤销"));
-    get(Select)->setToolTip(QStringLiteral("体模式左键选择部件；点模式左键框选；单击空白或 Esc 清空选择"));
-    get(SelectSolid)->setToolTip(QStringLiteral("选择完整模型部件，同步模型树与只读属性"));
-    get(AddSelection)->setToolTip(QStringLiteral("左键框选，将区域内点加入选区"));
-    get(RemoveSelection)->setToolTip(QStringLiteral("左键框选，将区域内点移出选区"));
     get(Open)->setShortcut(QKeySequence::Open);
     get(ExportStep)->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+E")));
     get(Parameters)->setShortcut(QKeySequence(QStringLiteral("Ctrl+P")));
     get(FitAll)->setShortcut(QKeySequence(QStringLiteral("F")));
-    get(BottomView)->setToolTip(QStringLiteral("正对底板观测面，长边横向放置并适合视图"));
+    initializeActionHelp(*this);
 }
 
 QAction *WorkbenchActions::get(ActionId id) const

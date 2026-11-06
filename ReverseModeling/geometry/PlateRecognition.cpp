@@ -272,7 +272,7 @@ PlateRecognition recognizePlates(const CloudData &cloud, const BeamEstimate &est
     const auto second = measureStrip(right, 0, 2, x0, x1, 48);
     if (!first || !second)
     {
-        result.warnings.emplace_back("两侧纵向顶边的支持点或厚度一致性不足，无法估算底板厚度；保留观测面，不补默认板厚。");
+        result.warnings.emplace_back("两侧纵向顶边的支持点或厚度一致性不足，无法确定底板厚度；保留观测面，不补默认板厚。");
         return result;
     }
     const double inside0 = first->center + first->thickness / 2;
@@ -297,7 +297,7 @@ PlateRecognition recognizePlates(const CloudData &cloud, const BeamEstimate &est
     std::erase_if(top,
                   [&](const Point &point) { return point.z() <= inside0 + margin || point.z() >= inside1 - margin; });
     addRibs(result, std::move(top), base, inside0, inside1, x1 - x0, stop);
-    result.warnings.emplace_back("底板厚度按两块侧板识别厚度的最大值估算，向观测面背侧加厚；不是底板实测厚度。");
+    result.warnings.emplace_back("底板厚度取两块侧板识别厚度的最大值，向观测面背侧加厚。");
     result.warnings.emplace_back("按 H 型钢连接关系将底板限定在两翼板内侧，并将翼板下沿贴合底板底面；肋板落在底板上表面。");
     result.warnings.emplace_back("侧板和肋板厚度为可见顶边横向宽度的分段稳健估计；各板独立识别，不取名义规格或经验初值。");
     result.warnings.emplace_back("当前按直板构建；弯曲、缺口、孔洞及不可见的另一侧板件不作自动补全。");

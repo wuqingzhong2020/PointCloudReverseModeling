@@ -267,7 +267,7 @@ TEST_F(TaskOutputTest, RecordingOverwritesWithNoticeAndCapturesStartupAndFinalDe
     }));
 }
 
-TEST_F(TaskOutputTest, LateRecordingSeedsOnlySuccessfulStartupWithoutReexecutingIt)
+TEST_F(TaskOutputTest, LateRecordingSeedsSuccessfulSessionWithoutReexecutingIt)
 {
     reverse::CommandService service;
     ASSERT_EQ(finish(service, service.submitInitializeOutput(directory)).state, reverse::TaskState::Succeeded);
@@ -276,10 +276,10 @@ TEST_F(TaskOutputTest, LateRecordingSeedsOnlySuccessfulStartupWithoutReexecuting
     const auto revision = service.project().revision;
     const auto started = finish(service, service.submitStartRecording(directory / "late.py"));
     ASSERT_EQ(started.state, reverse::TaskState::Succeeded);
-    EXPECT_NE(started.message.find("开始录制前的编辑未包含"), std::string::npos);
+    EXPECT_NE(started.message.find("已补写 3 条前序命令"), std::string::npos);
     EXPECT_EQ(service.project().revision, revision);
     EXPECT_TRUE(service.project().model);
-    EXPECT_EQ(service.recordingState().commandCount, 2);
+    EXPECT_EQ(service.recordingState().commandCount, 3);
     ASSERT_EQ(finish(service, service.submitStopRecording()).state, reverse::TaskState::Succeeded);
 }
 

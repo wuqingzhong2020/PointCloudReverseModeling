@@ -1,10 +1,19 @@
-list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/service_tests.cpp")
+﻿list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/service_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/project_history_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/commandManager/command_manager_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/commandManager/command_service_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/model_display_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/model_editing_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_recognition_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/cloud_editing_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/viewport_picking_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/point_measurement_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/measurement_snap_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/MeasurementSnap.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/MeasurementSnap.h")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccMeasurementPicking.h")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointMeasurement.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointMeasurement.h")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccPicking.h")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccPartMesh.h")
 # 仅测试中立显示数据的分组与标注，不引入 Qt / AIS / Dock 依赖。
@@ -17,3 +26,29 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/file_exchange_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/commandManager/startup_arguments_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/task_output_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccPartMesh.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ReferencePlanePicking.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/reference_plane_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/model_transform_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/edge_treatment_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_hole_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_thickness_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_contour_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/thickness_label_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ThicknessLabel.cpp")
+
+list(APPEND RM_SOURCES ${CMAKE_CURRENT_LIST_DIR}/plate_generation_tests.cpp)
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/mirror_completion_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/local_reconstruction_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_editing_tests.cpp")

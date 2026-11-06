@@ -1,4 +1,4 @@
-/*
+﻿/*
  * 文件描述：
  * 定义不依赖界面或第三方几何类型的点云、辅助建模、显示和质量数据契约。
  */
@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -108,6 +109,7 @@ struct BeamParameters {
     std::vector<double> ribStations; // 距梁起点的距离；默认仅生成一侧肋板。
     bool swapCrossSection{}; // 交换框架的 y/z 方向；尺寸仍使用用户提交值。
     bool mirrorSymmetry{}; // 仅显式开启时补建对侧。
+    bool operator==(const BeamParameters &) const = default;
 };
 
 struct RecognizedPlate {
@@ -130,6 +132,55 @@ struct PlateRecognition {
 struct PlateBuildOptions {
     bool mirrorSymmetry{};
     double endOverhangToleranceMm{30.0}; // 只收齐底板沿梁长方向的小突出；0 表示保留观测端部。
+    bool operator==(const PlateBuildOptions &) const = default;
+};
+
+struct ModelKeyPoint
+{
+    Vec3 positionMm;
+    std::uint32_t partIndex{};
+};
+
+enum class PlateHoleKind { Weld, Bottom };
+enum class PlateHoleShape { Circle, Triangle, Rectangle };
+enum class HoleReference { Start, Middle, End };
+struct PlateHoleBase
+{
+    std::uint32_t edge{}; // 部件内 BRep 边编号，从 1 开始。
+    Vec3 firstMm, secondMm, inward, thicknessDirection;
+    double thicknessMm{};
+};
+struct PlateHole
+{
+    std::string partId;
+    std::uint32_t bottomEdge{}; // 明确底边，命令不依赖当前视角、选区或基准面。
+    PlateHoleKind kind{PlateHoleKind::Weld};
+    PlateHoleShape shape{PlateHoleShape::Circle};
+    double sizeMm{20}; // 圆形半径 / 三角形两直角边长度。
+    double widthMm{30}, heightMm{15}; // 矩形总宽、切入板内的高度。
+    HoleReference reference{HoleReference::Middle};
+    double offsetMm{}; // 端点向内为正，中点朝端点 2 为正。
+    bool first{true}, second{true};
+};
+
+enum class EdgeTreatmentKind { Fillet, Chamfer };
+struct EdgeTreatmentTarget
+{
+    std::string partId;
+    std::vector<std::uint32_t> edges; // BRep 选边编号，从 1 开始；轮廓边解析为两端贯穿板厚的角边。
+};
+struct EdgeTreatment
+{
+    std::vector<EdgeTreatmentTarget> targets; // 按部件分组；整批计算成功后才提交。
+    EdgeTreatmentKind kind{EdgeTreatmentKind::Fillet};
+    double sizeMm{10};
+};
+
+struct ModelEdge
+{
+    std::vector<Vec3> pointsMm; // 真实 BRep 边的显示折线，不包含三角化内部对角线。
+    std::uint32_t partIndex{};
+    std::uint32_t topologyIndex{}; // 原始 BRep 边编号（1-based），不受显示采样跳过边影响。
 };
 
 struct MeshData {
@@ -137,10 +188,87 @@ struct MeshData {
     std::vector<std::array<std::uint32_t, 3>> triangles;
     std::vector<std::uint32_t> trianglePartIndices;
     std::vector<std::string> partIds;
+    std::vector<ModelKeyPoint> keyPoints; // BRep 拓扑顶点/边端点，不包含三角化细分节点。
+    std::vector<ModelEdge> edges;
+    std::vector<std::array<std::uint32_t, 2>> planarFaces; // {部件编号, 面编号}，由精确 BRep 曲面类型确定。
+    std::vector<std::uint32_t> triangleFaceIndices; // 部件内 BRep 面编号，与 triangles 一一对应。
+};
+
+struct PlateThicknessInfo
+{
+    double thicknessMm{};
+    Vec3 centerMm; // 当前项目坐标中的中面锚点。
+    Vec3 normal; // 单位厚度方向，随部件刚体变换更新。
+};
+struct PlateThicknessChange
+{
+    std::vector<std::string> partIds;
+    double thicknessMm{};
+};
+
+struct PlateContourExpansion
+{
+    std::vector<std::string> partIds;
+    double distanceMm{10.0};
+};
+
+struct MirrorCompletion
+{
+    std::vector<std::string> partIds;
+    std::string planePartId; // 显式指定底板（腹板），使用其真实等厚中面，不依赖相机或世界 Z。
+};
+
+enum class PlateGenerationKind { Cover, Base };
+enum class BasePlateMode { Horizontal, VerticalPair };
+struct PlateGeneration
+{
+    PlateGenerationKind kind{PlateGenerationKind::Cover};
+    std::string partId;
+    std::uint32_t faceIndex{}; // 贴板的主面编号，BRep 1-based。
+    double offsetMm{30};
+    double thicknessMm{10};
+    bool reversed{}; // 贴板沿选中面的内法线拉伸。
+    Vec3 up{0, 0, 1}; // 下底板固定世界 +Z；保留命令参数，其他方向明确拒绝。
+    BasePlateMode baseMode{BasePlateMode::Horizontal};
+    std::string secondPartId; // 两块竖直板方式必须指定不同的第二块板。
+};
+struct GeneratedPlateInfo
+{
+    PlateGenerationKind kind{};
+    std::string sourcePartId;
+    std::string secondSourcePartId;
+    BasePlateMode baseMode{BasePlateMode::Horizontal};
+};
+
+// 按源部件关联的剩余点重建；不修改未选部件。
+struct LocalReconstruction
+{
+    std::vector<std::string> partIds;
+    std::string type{"plate"}; // plate 原板面方向、horizontal 指定水平法向、box 定向包围盒。
+    std::string contour{"rectangle"};
+    Vec3 up{0, 0, 1};
+    double toleranceMm{2}; // 凹轮廓采样/简化尺度。
+    double cornerMm{5}; // 倒角矩形的角部退距。
 };
 
 struct ModelSummary {
+    std::map<std::string, std::vector<std::string>> editSources; // 分割/合并来源；不受相机影响。
+    std::map<std::string, std::string> localSourceUnavailable;
+    std::uint64_t nextSplitId{1};
+    std::vector<std::string> reconstructableParts; // 含原始点索引关联的部件。
+    std::vector<std::string> locallyReconstructedParts;
+
+    std::map<std::string, std::string> mirroredParts; // 新增镜像部件 -> 源部件。
+    std::vector<std::string> mirrorCompletedParts; // 已与镜像合并的原部件。
+    std::uint64_t nextMirroredPartId{1};
+    std::map<std::string, GeneratedPlateInfo> generatedPlates;
+    std::uint64_t nextGeneratedPlateId{1};
+    std::vector<std::string> contourExpandedParts; // 外轮廓已修改，不再适用原矩形板偏差算法。
+    std::map<std::string, PlateThicknessInfo> thicknessOverrides; // 用户明确修改的板厚。
+    std::vector<std::string> holeEditedParts; // 开孔后不再适用矩形板件偏差算法。
+    std::vector<std::string> edgeTreatedParts; // 已做边处理的部件不适用矩形板件偏差算法。
     BeamFrame frame;
+    std::map<std::string, BeamFrame> partTransforms; // 部件相对生成/导入位置的累计项目坐标刚体变换。
     BeamParameters parameters;
     std::uint64_t solidCount{};
     double volumeMm3{};

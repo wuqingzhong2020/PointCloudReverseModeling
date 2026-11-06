@@ -179,7 +179,7 @@ reverse::CloudSelectionRect cloudRectangle(bool half = false)
 }
 } // namespace
 
-TEST(CloudCommands, CropInvalidatesDerivedResultsAndUndoRestoresExportableModel)
+TEST(CloudCommands, CropPreservesModelAndInvalidatesDeviationForLocalReconstruction)
 {
     using namespace reverse;
     TemporaryDirectory temp;
@@ -198,7 +198,7 @@ TEST(CloudCommands, CropInvalidatesDerivedResultsAndUndoRestoresExportableModel)
     ASSERT_TRUE(selected.selection);
     EXPECT_EQ(selected.selection->size(), 60u);
     EXPECT_EQ(selected.model, built.model);
-    EXPECT_FALSE(selected.canUndoCloud);
+    EXPECT_TRUE(selected.canUndoCloud); // 建模也进入统一工程历史。
     EXPECT_EQ(wait(service, service.submitCloudEdit(CloudEditMode::KeepSelection, built.revision)).errorCode, "stale_revision");
     success(service, service.submitCloudEdit(CloudEditMode::KeepSelection, selected.revision));
     const auto cropped = service.project();
@@ -209,28 +209,29 @@ TEST(CloudCommands, CropInvalidatesDerivedResultsAndUndoRestoresExportableModel)
     EXPECT_TRUE(cropped.canUndoCloud);
     EXPECT_TRUE(cropped.canResetCloud);
     EXPECT_FALSE(cropped.canRedoCloud);
-    EXPECT_FALSE(cropped.model);
-    EXPECT_FALSE(cropped.mesh);
+    EXPECT_EQ(cropped.model, built.model);
+    EXPECT_EQ(cropped.mesh, built.mesh);
     EXPECT_FALSE(cropped.deviation);
     EXPECT_FALSE(cropped.selection);
     ASSERT_TRUE(cropped.estimate);
     EXPECT_NEAR(cropped.estimate->length, 60, 1e-6); // 剩余最长尺寸为 Z=60，不再沿用原梁长 100。
-    EXPECT_EQ(wait(service, service.submitExport(temp.path / "stale.step", cropped.revision)).errorCode, "no_model");
+    success(service, service.submitExport(temp.path / "retained.step", cropped.revision));
+    EXPECT_EQ(service.project().lastExport->solidCount, built.model->solidCount);
     success(service, service.submitCloudHistory(CloudHistoryAction::Undo, cropped.revision));
     const auto undone = service.project();
     EXPECT_EQ(undone.cloud, built.cloud);
     EXPECT_EQ(undone.model, built.model);
     EXPECT_EQ(undone.mesh, built.mesh);
-    EXPECT_EQ(undone.deviation, built.deviation);
+    EXPECT_FALSE(undone.deviation); // 恢复几何后重新计算偏差，不恢复旧缓存。
     EXPECT_GT(undone.revision, cropped.revision);
     EXPECT_TRUE(undone.canRedoCloud);
-    EXPECT_FALSE(undone.canResetCloud);
+    EXPECT_TRUE(undone.canResetCloud); // 点云已恢复，但模型仍不同于导入基线。
     // 证明恢复了几何内核对象，不只是恢复界面摘要。
     success(service, service.submitExport(temp.path / "restored.step", undone.revision));
     EXPECT_EQ(service.project().lastExport->solidCount, built.model->solidCount);
     success(service, service.submitCloudHistory(CloudHistoryAction::Redo, service.project().revision));
     EXPECT_EQ(service.project().cloud, cropped.cloud);
-    EXPECT_FALSE(service.project().model);
+    EXPECT_EQ(service.project().model, built.model);
     EXPECT_EQ(std::filesystem::file_size(input), fileSize);
     EXPECT_EQ(loadPointCloud(input, LengthUnit::Millimeter)->points.size(), 110u);
 }
@@ -258,6 +259,8 @@ TEST(CloudCommands, DeleteAllResetAndNoOpPreserveHistoryCorrectly)
     EXPECT_FALSE(empty.recognition);
     EXPECT_FALSE(empty.model);
     success(service, service.submitCloudHistory(CloudHistoryAction::Undo, empty.revision));
+    EXPECT_FALSE(service.project().selection);
+    success(service, service.submitCloudSelection(cloudRectangle(), CloudSelectionMode::Replace, service.project().revision));
     success(service, service.submitCloudEdit(CloudEditMode::KeepSelection, service.project().revision));
     EXPECT_TRUE(service.project().canRedoCloud); // 无变化的截取不清空重做。
     success(service, service.submitCloudHistory(CloudHistoryAction::Redo, service.project().revision));

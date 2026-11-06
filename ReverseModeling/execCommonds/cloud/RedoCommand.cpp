@@ -7,9 +7,9 @@ rm::CommandDefinition RedoCommand::definition()
     rm::CommandDefinition d;
     d.name = name();
     d.module = "cloud";
-    d.summary = "重做点云编辑";
+    d.summary = "重做工程编辑（旧入口）";
     d.usage = "cloud.redo";
-    d.description = "";
+    d.description = "project.redo 的旧入口；现在作用于统一工程历史，新录制写入 project.redo。";
     d.returns = "object: 结果摘要；执行失败返回错误码";
     d.examples = {  };
     return d;

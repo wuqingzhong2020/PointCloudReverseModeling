@@ -135,6 +135,12 @@ QIcon WorkbenchTheme::icon(const QString &name)
                 painter.drawArc(QRect(5, 5, 23, 23), 35 * 16, 285 * 16);
                 painter.drawPolyline(QPolygon{{14, 3}, {7, 6}, {12, 12}});
             }
+            else if (name == "three-points")
+            {
+                painter.drawPolygon(QPolygon{{5, 24}, {10, 7}, {27, 7}});
+                for (const auto &point : {QPoint(5, 24), QPoint(10, 7), QPoint(27, 7)})
+                    painter.drawEllipse(point, 3, 3);
+            }
             else if (name == "plane")
             {
                 painter.drawPolygon(QPolygon{{4, 23}, {11, 8}, {29, 8}, {22, 23}});

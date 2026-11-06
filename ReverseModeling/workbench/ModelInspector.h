@@ -13,6 +13,7 @@
 #include <QString>
 
 #include "commands/CommandService.h"
+#include "workbench/ModelDisplayData.h"
 
 class QTableWidget;
 class QTreeWidget;
@@ -29,7 +30,13 @@ public:
     QTableWidget *properties() const;
     void setProject(const ProjectSnapshot &project);
     void selectPart(const std::string &id);
-    std::function<void(const std::string &)> onPartSelected;
+    void selectParts(const std::vector<std::string> &ids);
+    void selectObject(const ModelSelection &selection);
+    void selectObjects(const std::vector<ModelSelection> &selections);
+    std::function<void(const std::vector<std::string> &)> onPartsSelected;
+    std::function<void(const QPoint &)> onContextMenu;
+protected:
+    bool eventFilter(QObject *,QEvent *) override;
 
 private:
     using PropertyRows = QList<QPair<QString, QString>>;

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * 文件描述：
  * 实现版本化 JSON 摘要与辅助建模参数读取，避免将点云大数组和第三方对象传入命令消息。
  */
@@ -84,8 +84,24 @@ json toJson(const ProjectSnapshot& project) {
                 {"warnings", project.warnings},
                 {"selectedPointCount", project.selection ? project.selection->size() : 0},
                 {"canUndoCloud", project.canUndoCloud},
+                {"canUndo", project.canUndo},
+                {"canRedo", project.canRedo},
+                {"canReset", project.canReset},
+                {"undoLabel", project.undoLabel},
+                {"redoLabel", project.redoLabel},
+                {"historySteps", project.historySteps},
+                {"historyArrayBytes", project.historyArrayBytes},
                 {"canRedoCloud", project.canRedoCloud},
                 {"canResetCloud", project.canResetCloud}};
+    result["referencePlane"] = nullptr;
+    if (project.referencePlane)
+    {
+        const auto &plane = *project.referencePlane;
+        result["referencePlane"] = {{"pointsMm", {vectorJson(plane.pointsMm[0]), vectorJson(plane.pointsMm[1]),
+            vectorJson(plane.pointsMm[2])}}, {"normal", vectorJson(plane.normal)}, {"xAxis", vectorJson(plane.xAxis)}};
+    }
+    result["section"] = {{"enabled", project.section.enabled}, {"offsetMm", project.section.offsetMm},
+                         {"reversed", project.section.reversed}};
     if (project.cloud) {
         const auto& c = *project.cloud;
         result["cloud"] = {{"sourcePath", project.sourcePathUtf8}, {"sourcePointCount", c.sourcePointCount},
@@ -105,7 +121,29 @@ json toJson(const ProjectSnapshot& project) {
             {"parameters", parametersJson(m.parameters)}, {"solidCount", m.solidCount},
             {"surfaceCount", m.surfaceCount}, {"plates", platesJson(m.plates)},
             {"volumeMm3", m.volumeMm3}, {"partIds", m.partIds}};
+        result["model"]["thicknessOverrides"] = json::object();
+        for (const auto &[id, info] : m.thicknessOverrides)
+        {
+            result["model"]["thicknessOverrides"][id] = {{"thicknessMm", info.thicknessMm},
+                {"centerMm", vectorJson(info.centerMm)}, {"normal", vectorJson(info.normal)}, {"method", "manual_edit"}};
+        }
+        result["model"]["edgeTreatedParts"] = m.edgeTreatedParts;
+        result["model"]["holeEditedParts"] = m.holeEditedParts;
+        result["model"]["mirroredParts"] = m.mirroredParts;
+        result["model"]["mirrorCompletedParts"] = m.mirrorCompletedParts;
+        result["model"]["reconstructableParts"] = m.reconstructableParts;
+        result["model"]["editSources"] = m.editSources;
+        result["model"]["localSourceUnavailable"] = m.localSourceUnavailable;
+        result["model"]["locallyReconstructedParts"] = m.locallyReconstructedParts;
+        result["model"]["contourExpandedParts"] = m.contourExpandedParts;
+        result["model"]["generatedPlates"] = json::object();
+        for (const auto &[id, info] : m.generatedPlates)
+            result["model"]["generatedPlates"][id] = {{"kind", info.kind == PlateGenerationKind::Cover ? "cover" : "base"},
+                {"sourcePartId", info.sourcePartId}, {"secondSourcePartId", info.secondSourcePartId},
+                {"baseMode", info.baseMode == BasePlateMode::Horizontal ? "horizontal" : "vertical_pair"}};
         result["model"]["importedFormat"] = m.importedFormat;
+        result["model"]["partTransforms"] = nlohmann::json::object();
+        for (const auto &[id, transform] : m.partTransforms) result["model"]["partTransforms"][id] = frameJson(transform);
         if (m.fromPointCloud) {
             result["model"]["recognitionOptions"] = {
                 {"mirrorSymmetry", m.recognitionOptions.mirrorSymmetry},

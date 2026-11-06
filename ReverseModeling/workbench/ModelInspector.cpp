@@ -7,6 +7,7 @@
 #include <QColor>
 #include <QHeaderView>
 #include <QIcon>
+#include <QItemSelectionModel>
 #include <QPixmap>
 #include <QSignalBlocker>
 #include <QTableWidget>
@@ -14,6 +15,8 @@
 
 #include "workbench/ModelDisplayData.h"
 #include "workbench/ModelInspector.h"
+#include <QMouseEvent>
+#include <QContextMenuEvent>
 
 namespace reverse::workbench
 {
@@ -45,18 +48,41 @@ QString partName(QString id)
         if (fields.value(2) == QStringLiteral("left")) name += QStringLiteral("（左侧）");
         if (fields.value(2) == QStringLiteral("right")) name += QStringLiteral("（右侧）");
     }
+    else if (id.startsWith(QStringLiteral("generated-cover-")))
+        name = QStringLiteral("外扩贴板 %1").arg(id.mid(16));
+    else if (id.startsWith(QStringLiteral("generated-base-")))
+        name = QStringLiteral("下底板 %1").arg(id.mid(15));
+    else if (id.startsWith(QStringLiteral("mirrored-part-")))
+        name = QStringLiteral("镜像板件 %1").arg(id.mid(14));
     else if (id.startsWith(QStringLiteral("imported-part-")))
         name = QStringLiteral("导入部件 %1").arg(id.mid(14));
     return mirrored ? name + QStringLiteral("（镜像）") : name;
 }
 }
 
+bool ModelInspector::eventFilter(QObject *object,QEvent *event)
+{
+    if(object==m_tree->viewport()&&event->type()==QEvent::MouseButtonPress) {
+        auto *mouse=static_cast<QMouseEvent*>(event);
+        if(mouse->button()==Qt::RightButton) {
+            bool hasPart=false;for(auto *item:m_tree->selectedItems()) if(!item->data(0,idRole).toString().isEmpty()) hasPart=true;
+            if(!hasPart) {auto *item=m_tree->itemAt(mouse->position().toPoint());if(item&&!item->data(0,idRole).toString().isEmpty()) {m_tree->clearSelection();item->setSelected(true);}}
+            return true;
+        }
+    }
+    if(object==m_tree->viewport()&&event->type()==QEvent::ContextMenu) {
+        if(onContextMenu) onContextMenu(static_cast<QContextMenuEvent*>(event)->globalPos());return true;
+    }
+    return QObject::eventFilter(object,event);
+}
+
 ModelInspector::ModelInspector(QWidget *parent)
     : QObject(parent), m_tree(new QTreeWidget(parent)), m_properties(new QTableWidget(0, 2, parent))
 {
+    m_tree->viewport()->installEventFilter(this);
     m_tree->setObjectName(QStringLiteral("panel.modelTree"));
     m_tree->setHeaderLabels({QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("板厚 mm")});
-    m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_tree->setAlternatingRowColors(true);
     m_tree->setUniformRowHeights(true);
@@ -72,13 +98,15 @@ ModelInspector::ModelInspector(QWidget *parent)
     m_properties->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_properties->setAlternatingRowColors(true);
     m_properties->setSelectionBehavior(QAbstractItemView::SelectRows);
-    connect(m_tree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *item)
+    connect(m_tree, &QTreeWidget::itemSelectionChanged, this, [this]()
     {
-        showProperties(item);
+        std::vector<std::string> ids;
+        for (const auto *item : m_tree->selectedItems())
+            if (item->data(0, kindRole).toString() == QStringLiteral("part"))
+                ids.push_back(item->data(0, idRole).toString().toStdString());
+        showProperties(m_tree->currentItem());
         m_properties->scrollToTop();
-        if (onPartSelected)
-            onPartSelected(item && item->data(0, kindRole).toString() == QStringLiteral("part")
-                ? item->data(0, idRole).toString().toStdString() : std::string{});
+        if (onPartsSelected) onPartsSelected(ids);
     });
 }
 
@@ -123,9 +151,8 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
             const auto id = text(part.id);
             const auto name = partName(id);
             const auto kind = part.thicknessUnresolved ? QStringLiteral("观测面") : QStringLiteral("部件");
-            QString thickness = part.thicknessMm ? QString::number(*part.thicknessMm, 'f', 1)
+            const QString thickness = part.thicknessMm ? QString::number(*part.thicknessMm, 'f', 1)
                 : part.thicknessUnresolved ? QStringLiteral("未识别") : QStringLiteral("未提供");
-            if (part.thicknessEstimated) thickness += QStringLiteral("（估算）");
             auto *item = new QTreeWidgetItem(m_modelNode, {name, kind, thickness});
             item->setData(0, kindRole, QStringLiteral("part"));
             item->setData(0, idRole, id);
@@ -136,12 +163,28 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
             m_parts.insert(id, item);
             QString basis = !model.importedFormat.empty() ? QStringLiteral("导入文件未提供板厚，不作推测")
                 : !model.fromPointCloud ? QStringLiteral("手动建模参数")
-                : part.thicknessEstimated ? QStringLiteral("两侧板识别厚度的最大值（估算）")
+                : part.thicknessEstimated ? QStringLiteral("两侧板识别厚度的最大值")
                 : part.thicknessUnresolved ? QStringLiteral("仅观测面，缺少厚度依据") : QStringLiteral("点云顶边宽度识别");
             const auto plate = std::find_if(model.plates.begin(), model.plates.end(),
                 [&part](const auto &value) { return value.id == part.id; });
             if (plate != model.plates.end() && plate->method.starts_with("explicit_mirror_of_"))
                 basis = QStringLiteral("显式镜像，沿用原板件厚度");
+            if (model.thicknessOverrides.contains(part.id))
+            {
+                basis = model.editSources.contains(part.id) ? QStringLiteral("板件编辑后实体板厚") : QStringLiteral("手动修改实体板厚（中面固定）");
+            }
+            if (const auto mirrored = model.mirroredParts.find(part.id); mirrored != model.mirroredParts.end())
+                basis = QStringLiteral("镜像补全；来源部件：") + text(mirrored->second);
+            else if (std::find(model.mirrorCompletedParts.begin(), model.mirrorCompletedParts.end(), part.id) != model.mirrorCompletedParts.end())
+                basis = QStringLiteral("镜像补全，保留源板厚度");
+            if (const auto generated = model.generatedPlates.find(part.id); generated != model.generatedPlates.end())
+            {
+                basis = QStringLiteral("附加板显式板厚；来源部件：") + text(generated->second.sourcePartId);
+                if (!generated->second.secondSourcePartId.empty())
+                {
+                    basis += QStringLiteral("、") + text(generated->second.secondSourcePartId);
+                }
+            }
             PropertyRows rows{{QStringLiteral("名称"), name}, {QStringLiteral("部件 ID"), id},
                 {QStringLiteral("模型 ID"), text(project.modelId)}, {QStringLiteral("类型"), kind},
                 {QStringLiteral("板厚 mm"), thickness}, {QStringLiteral("厚度依据"), basis},
@@ -155,9 +198,11 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
             if (plate != model.plates.end())
             {
                 rows.insert(6, {QStringLiteral("支持点数"), QString::number(plate->supportPoints)});
-                rows.insert(7, {QStringLiteral("板厚离散度 mm"), QString::number(plate->thicknessSpreadMm, 'f', 3)});
+                rows.insert(7, {QStringLiteral("板厚离散度 mm"), QString::number(plate->thicknessSpreadMm, 'f', 1)});
             }
             item->setToolTip(2, basis);
+            if(const auto reason=model.localSourceUnavailable.find(part.id);reason!=model.localSourceUnavailable.end())
+                rows.append({QStringLiteral("局部重建"),text(reason->second)});
             m_partProperties.insert(id, rows);
         }
     }
@@ -169,11 +214,83 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
 
 void ModelInspector::selectPart(const std::string &id)
 {
+    selectParts(id.empty() ? std::vector<std::string>{} : std::vector<std::string>{id});
+}
+
+void ModelInspector::selectParts(const std::vector<std::string> &ids)
+{
     const QSignalBlocker blocker(m_tree);
-    auto *item = m_parts.value(text(id), m_modelNode ? m_modelNode : m_root);
-    m_tree->setCurrentItem(item);
+    m_tree->clearSelection();
+    auto *item = m_modelNode ? m_modelNode : m_root;
+    for (const auto &id : ids)
+    {
+        if (auto *part = m_parts.value(text(id), nullptr))
+        {
+            part->setSelected(true);
+            item = part;
+        }
+    }
+    m_tree->setCurrentItem(item, 0, QItemSelectionModel::NoUpdate);
     if (item) m_tree->scrollToItem(item);
     showProperties(item);
+    m_properties->scrollToTop();
+}
+
+void ModelInspector::selectObjects(const std::vector<ModelSelection> &selections)
+{
+    if (selections.size() == 1)
+    {
+        selectObject(selections.front());
+        return;
+    }
+    std::vector<std::string> ids;
+    QStringList objects;
+    for (const auto &selection : selections)
+    {
+        if (std::find(ids.begin(), ids.end(), selection.partId) == ids.end()) ids.push_back(selection.partId);
+        const auto *part = m_parts.value(text(selection.partId), nullptr);
+        objects << QStringLiteral("%1：%2").arg(part ? part->text(0) : text(selection.partId))
+                       .arg(selection.index + 1);
+    }
+    selectParts(ids);
+    if (selections.empty() || selections.front().kind == ModelPickMode::Body) return;
+    const auto kind = selections.front().kind;
+    const QString type = kind == ModelPickMode::Vertex ? QStringLiteral("点")
+        : kind == ModelPickMode::Edge ? QStringLiteral("线") : QStringLiteral("面");
+    const PropertyRows rows{{QStringLiteral("拾取对象"), type + QStringLiteral("（多选）")},
+        {QStringLiteral("选中对象数"), QString::number(selections.size())},
+        {QStringLiteral("所属部件数"), QString::number(ids.size())},
+        {QStringLiteral("部件 / 子对象编号"), objects.join(QStringLiteral("\n"))},
+        {QStringLiteral("模型 ID"), text(m_project.modelId)}};
+    m_properties->setRowCount(static_cast<int>(rows.size()));
+    for (qsizetype row = 0; row < rows.size(); ++row)
+    {
+        m_properties->setItem(static_cast<int>(row), 0, new QTableWidgetItem(rows[row].first));
+        auto *value = new QTableWidgetItem(rows[row].second);
+        value->setToolTip(rows[row].second);
+        m_properties->setItem(static_cast<int>(row), 1, value);
+    }
+    m_properties->resizeRowsToContents();
+    m_properties->scrollToTop();
+}
+
+void ModelInspector::selectObject(const ModelSelection &selection)
+{
+    selectPart(selection.partId);
+    if (selection.partId.empty()) return;
+    const QString kind = selection.kind == ModelPickMode::Vertex ? QStringLiteral("点")
+        : selection.kind == ModelPickMode::Edge ? QStringLiteral("线")
+        : selection.kind == ModelPickMode::Face ? QStringLiteral("面") : QStringLiteral("体（整个部件）");
+    m_properties->insertRow(0);
+    m_properties->setItem(0, 0, new QTableWidgetItem(QStringLiteral("拾取对象")));
+    m_properties->setItem(0, 1, new QTableWidgetItem(kind));
+    if (selection.kind != ModelPickMode::Body)
+    {
+        m_properties->insertRow(1);
+        m_properties->setItem(1, 0, new QTableWidgetItem(QStringLiteral("子对象编号")));
+        m_properties->setItem(1, 1, new QTableWidgetItem(QString::number(selection.index + 1)));
+    }
+    m_properties->resizeRowsToContents();
     m_properties->scrollToTop();
 }
 
@@ -181,7 +298,22 @@ void ModelInspector::showProperties(QTreeWidgetItem *item)
 {
     const auto kind = item ? item->data(0, kindRole).toString() : QString();
     PropertyRows rows;
-    if (kind == QStringLiteral("part")) rows = m_partProperties.value(item->data(0, idRole).toString());
+    QStringList selectedIds, selectedNames;
+    for (const auto *selected : m_tree->selectedItems())
+    {
+        if (selected->data(0, kindRole).toString() != QStringLiteral("part")) continue;
+        selectedIds << selected->data(0, idRole).toString();
+        selectedNames << selected->text(0);
+    }
+    if (selectedIds.size() > 1)
+    {
+        rows = {{QStringLiteral("拾取对象"), QStringLiteral("体（多个部件）")},
+                {QStringLiteral("选中部件数"), QString::number(selectedIds.size())},
+                {QStringLiteral("名称"), selectedNames.join(QStringLiteral("\n"))},
+                {QStringLiteral("部件 ID"), selectedIds.join(QStringLiteral("\n"))},
+                {QStringLiteral("模型 ID"), text(m_project.modelId)}};
+    }
+    else if (kind == QStringLiteral("part")) rows = m_partProperties.value(item->data(0, idRole).toString());
     else
     {
         rows = {{QStringLiteral("对象"), item ? item->text(0) : QStringLiteral("当前工程")},

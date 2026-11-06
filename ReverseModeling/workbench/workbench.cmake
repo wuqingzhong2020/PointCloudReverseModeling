@@ -1,4 +1,11 @@
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/OccViewport.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PointMeasurement.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/MeasurementSnap.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/MeasurementSnap.h")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/OccMeasurementPicking.h")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PointMeasurement.h")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/OccMeasurementPresentation.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/OccMeasurementPresentation.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/MainWindow.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/CommandConsoleWidget.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/CommandConsoleWidget.h")
@@ -36,3 +43,49 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ModelLabelVisibility.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ModelLabelVisibility.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PointCloudDisplayData.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PointCloudDisplayData.h")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/OccPartMesh.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/OccReferencePlanePresentation.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/OccReferencePlanePresentation.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ReferencePlanePicking.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ReferencePlanePicking.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ReferencePlaneTool.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ReferencePlaneTool.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/OccTransformPreview.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/OccTransformPreview.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ModelTransformTool.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ModelTransformTool.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/EdgeTreatmentTool.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/EdgeTreatmentTool.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/HoleTool.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/HoleTool.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateAdjustmentTool.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PlateAdjustmentTool.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ThicknessLabel.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ThicknessLabel.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ThicknessLabelEditor.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ThicknessLabelEditor.h")
+
+list(APPEND RM_SOURCES ${CMAKE_CURRENT_LIST_DIR}/PlateGenerationTool.cpp)
+list(APPEND RM_HEARDERS ${CMAKE_CURRENT_LIST_DIR}/PlateGenerationTool.h)
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateGenerationDiagram.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PlateGenerationDiagram.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/WorkbenchActionHelp.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/WorkbenchActionHelp.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/LocalReconstructionTool.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/LocalReconstructionTool.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateEditTool.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PlateEditTool.h")

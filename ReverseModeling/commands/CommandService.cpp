@@ -1,4 +1,5 @@
-﻿/* 文件描述：固定工作线程和有界 FIFO；界面、原生命令和 Python 使用同一执行队列。 */
+﻿#include "commands/PlateEditCommands.h"
+/* 文件描述：固定工作线程和有界 FIFO；界面、原生命令和 Python 使用同一执行队列。 */
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <utility>
 #ifdef _WIN32
 #include <Windows.h>
 #endif
@@ -17,6 +19,7 @@
 #include "commands/CommandFeedback.h"
 #include "commands/CommandService.h"
 #include "commands/MacroRecorder.h"
+#include "commands/ReplayJournal.h"
 #include "commands/ProjectOperations.h"
 #include "commands/TaskOutput.h"
 #include "commands/PythonRuntime.h"
@@ -52,8 +55,10 @@ struct CommandService::Impl
         std::stop_source cancellation;
         std::optional<CommandText> uiCommand;
         bool exclusive{};
+        std::string failureContext;
     };
     mutable std::mutex mutex;
+    std::mutex logMutex;
     std::condition_variable ready;
     std::deque<Job> queue;
     std::map<std::string, TaskSnapshot> tasks;
@@ -67,9 +72,7 @@ struct CommandService::Impl
     bool outputInitialized{};
     std::optional<std::filesystem::path> outputDirectory;
     std::atomic_bool exitRequested{};
-    std::vector<rm::ValidatedCommand> startupCommands;
-    std::uint64_t startupRevision{};
-    bool capturingStartup{};
+    ReplayJournal journal;
     std::atomic_bool workerExited{};
     bool committed{};
     bool inputReady{};
@@ -181,6 +184,7 @@ struct CommandService::Impl
     }
     void log(std::string_view text)
     {
+        std::lock_guard lock(logMutex);
         if (environment.logDirectory.empty())
         {
             return;
@@ -193,6 +197,17 @@ struct CommandService::Impl
         }
         std::ofstream file(environment.logDirectory / "commands.log", std::ios::app | std::ios::binary);
         file << text << '\n';
+    }
+    void reportFailure(std::string_view operation, std::string_view reason, const std::string &taskId = {})
+    {
+        const auto message = std::string(operation) + "失败：" + std::string(reason) + '\n';
+        log(message);
+        std::lock_guard lock(mutex);
+        uiEvents.push_back({taskId, {}, {}, message, false, UiCommandEventKind::Output});
+        while (uiEvents.size() > 1024)
+        {
+            uiEvents.pop_front();
+        }
     }
     rm::ValidatedCommand absoluteCommand(const rm::ValidatedCommand &command)
     {
@@ -209,11 +224,31 @@ struct CommandService::Impl
                     std::string(reinterpret_cast<const char *>(absolute.data()), absolute.size());
             }
         }
+        recorded.name = canonicalHistoryCommand(recorded.name);
         return recorded;
     }
-    void record(const rm::ValidatedCommand &command)
+    void recordSuccess(const rm::ValidatedCommand &command, const rm::CommandContext &context)
     {
-        recorder.record(manager.definitions().at(command.name), absoluteCommand(command));
+        try
+        {
+            const auto normalized = absoluteCommand(command);
+            const auto line = recordingLine(manager.definitions().at(normalized.name), normalized);
+            if (line.find_first_of("\r\n") != std::string::npos)
+                throw std::runtime_error("命令参数含换行，无法完整记录当前会话");
+            const bool wasComplete = journal.error().empty();
+            journal.append(normalized.name, line);
+            if (wasComplete && !journal.error().empty() && context.output)
+                context.output("会话补写不可用：" + journal.error() + "\n");
+            recorder.recordLine(line);
+        }
+        catch (const std::exception &error)
+        {
+            journal.invalidate(error.what());
+            if (recorder.recording()) recorder.fail(error.what());
+            if (context.output) context.output("会话记录失败：" + journal.error() + "\n");
+        }
+        publishRecording();
+        if (!recorder.state().error.empty()) log(recorder.state().error);
     }
     void publishRecording()
     {
@@ -245,27 +280,8 @@ struct CommandService::Impl
             command.name + " [" + (result.ok() ? "ok" : result.code) + "] " + std::to_string(elapsed) + " ms\n";
         log(message);
         committed = committed || result.committed;
-        if (result.kind == rm::ResultKind::Success && capturingStartup)
-        {
-            startupCommands.push_back(absoluteCommand(command));
-            startupRevision = operations.project().revision;
-        }
-        if (result.kind == rm::ResultKind::Success && recorder.recording())
-        {
-            try
-            {
-                record(command);
-            }
-            catch (const std::exception &error)
-            {
-                recorder.fail(error.what());
-            }
-            publishRecording();
-            if (!recorder.state().error.empty())
-            {
-                log(recorder.state().error);
-            }
-        }
+        const bool emptyTransform = !result.committed && (command.name == "model.move" || command.name == "model.rotate");
+        if (result.kind == rm::ResultKind::Success && !emptyTransform) recordSuccess(command, context);
         if (result.kind == rm::ResultKind::Success && command.name == "project.export_and_exit")
         {
             const bool wasRecording = recorder.recording();
@@ -289,12 +305,11 @@ struct CommandService::Impl
     rm::CommandResult executeStartup(const std::string &name, const rm::Array &args,
                                      const rm::Arguments &options, const rm::CommandContext &context)
     {
-        capturingStartup = true;
-        struct Reset { bool &flag; ~Reset() { flag = false; } } reset{capturingStartup};
         return manager.execute(name, args, options, context);
     }
     std::string submit(std::string operation, std::optional<std::uint64_t> revision, decltype(Job::run) run,
-                       std::optional<CommandText> uiCommand = {}, bool exclusive = false)
+                       std::optional<CommandText> uiCommand = {}, bool exclusive = false,
+                       std::string failureContext = {})
     {
         std::lock_guard lock(mutex);
         if (closing || exitRequested.load())
@@ -317,7 +332,8 @@ struct CommandService::Impl
             tasks.erase(taskOrder.front());
             taskOrder.pop_front();
         }
-        queue.push_back({id, revision, std::move(run), {}, std::move(uiCommand), exclusive});
+        queue.push_back({id, revision, std::move(run), {}, std::move(uiCommand), exclusive,
+                         std::move(failureContext)});
         submissionLocked = exclusive;
         ready.notify_one();
         return id;
@@ -326,6 +342,12 @@ struct CommandService::Impl
     {
         const auto start = std::chrono::steady_clock::now();
         committed = false;
+        if (!job.failureContext.empty())
+        {
+            // 内部检查/预览也将逐件诊断送到命令窗口，但不伪造可录制命令。
+            std::lock_guard lock(mutex);
+            activeUiTask = job.id;
+        }
         if (job.uiCommand)
         {
             std::lock_guard lock(mutex);
@@ -379,6 +401,12 @@ struct CommandService::Impl
         catch (...)
         {
             result = rm::CommandResult::error("unknown_error", "Unknown command failure");
+        }
+        // 内部预览/识别没有正式命令回显，但失败原因必须进入同一命令窗口。
+        // 取消不算生成失败，正式命令仍只由 Finished 事件报告一次。
+        if (!result.ok() && result.code != "cancelled" && !job.failureContext.empty())
+        {
+            reportFailure(job.failureContext, result.message, job.id);
         }
         result.committed = result.committed || committed;
         if (!result.ok())
@@ -550,6 +578,158 @@ std::string CommandService::submitCommand(std::string name, rm::Array positional
             return state->manager.execute(name, positional, options, context);
         });
 }
+void CommandService::reportUiFailure(std::string_view operation, std::string_view reason)
+{
+    impl_->reportFailure(operation, reason);
+}
+std::string CommandService::submitEdgePreview(const EdgeTreatment &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("EdgePreview", revision, [state,request,revision](const auto &context,auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewEdgeTreatment(request,revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；点击应用才修改模型。", {}, false};
+    }, {}, false, request.kind == EdgeTreatmentKind::Fillet ? "圆角预览" : "倒角预览");
+}
+std::string CommandService::submitThicknessPreview(const PlateThicknessChange &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("ThicknessPreview", revision, [state,request,revision](const auto &context,auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewThickness(request,revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；点击应用才修改模型。", {}, false};
+    }, {}, false, "修改板厚预览");
+}
+std::string CommandService::submitContourExpansionPreview(const PlateContourExpansion &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("ContourExpansionPreview", revision, [state,request,revision](const auto &context,auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewContourExpansion(request,revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；点击应用才修改模型。", {}, false};
+    }, {}, false, "外扩板件轮廓预览");
+}
+std::string CommandService::submitMirrorCompletionPreview(const MirrorCompletion &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("MirrorCompletionPreview", revision, [state,request,revision](const auto &context,auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewMirrorCompletion(request,revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；点击应用才修改模型。", {}, false};
+    }, {}, false, "镜像补全预览");
+}
+std::string CommandService::submitPlateEditPreview(const PlateEdit &request,std::uint64_t revision)
+{
+    auto *s=impl_.get();
+    return s->submit("PlateEditPreview",revision,[s,request,revision](const auto &context,auto &){
+        s->operations.setContext(context);
+        auto result=s->operations.previewPlateEdit(request,revision);
+        for (const auto &line:result.reports) if (context.output) context.output(line+"\n");
+        const auto value=rm::Value(plateEditArguments(result.request));
+        std::lock_guard lock(s->mutex);
+        s->tasks.at(s->active).edgePreview=result.changed?std::move(result.model):nullptr;
+        return rm::CommandResult{rm::ResultKind::Success,{},result.changed?"预览完成；应用后整批提交，可一次撤销。":"无需修改，模型保持不变。",value,false};
+    },{},false,plateEditTitle(request.operation)+"预览");
+}
+std::string CommandService::submitPlateReview(const std::vector<std::string> &parts,const PlateEdit &request,std::uint64_t revision)
+{
+    auto *s=impl_.get();
+    return s->submit("PlateReview",revision,[s,parts,request,revision](const auto &context,auto &){
+        s->operations.setContext(context);nlohmann::json rows=nlohmann::json::array();
+        for (const auto &id:parts)
+        {
+            if (context.stop.stop_requested()) throw GeometryError("cancelled","检查已取消。");
+            nlohmann::json row{{"part",id},{"supported",false},{"changed",false}};
+            try {
+                if (request.operation=="holes") {
+                    const auto bases=s->operations.inspectHoleBases(id,revision);row["edges"]=nlohmann::json::array();
+                    for (const auto &b:bases) row["edges"].push_back(b.edge);
+                    { std::lock_guard lock(s->mutex);s->tasks.at(s->active).batchHoleBases[id]=bases; }
+                    row["supported"]=!bases.empty();row["changed"]=!bases.empty();row["message"]="请逐板核对底边编号";
+                } else {
+                    auto single=request;single.parts={id};auto result=s->operations.previewPlateEdit(single,revision);
+                    row["supported"]=true;row["changed"]=result.changed;row["message"]=result.reports.empty()?"无需修改":result.reports.front();
+                }
+            } catch (const GeometryError &e) { if(e.code()=="cancelled") throw;row["message"]=e.what(); }
+            if(context.output) {
+                const auto message=row.at("message").get<std::string>();
+                context.output((message.starts_with(id)?message:id+"："+message)+"\n");
+            }
+            rows.push_back(std::move(row));
+        }
+        return rm::CommandResult{rm::ResultKind::Success,{},"检查完成，请核对并勾选处理项。",commandValue(rows),false};
+    },{},false,"板件检查");
+}
+std::string CommandService::submitLocalReconstructionPreview(const LocalReconstruction &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("LocalReconstructionPreview", revision, [state, request, revision](const auto &context, auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewLocalReconstruction(request, revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "局部重建预览完成；未选部件保持不变，点击应用才提交。", {}, false};
+    }, {}, false, "局部重建预览");
+}
+
+std::string CommandService::submitPlateGenerationPreview(const PlateGeneration &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("PlateGenerationPreview", revision, [state, request, revision](const auto &context, auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewPlateGeneration(request, revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；绿色为新板件，应用后加入模型。", {}, false};
+    }, {}, false, (request.kind == PlateGenerationKind::Cover ? "生成外扩贴板预览（部件 " : "生成下底板预览（部件 ") +
+        request.partId + (request.secondPartId.empty() ? "" : "、" + request.secondPartId) + "）");
+}
+std::string CommandService::submitThicknessInspection(const std::vector<std::string> &parts, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("ThicknessInspection", revision, [state, parts, revision](const auto &context, auto &) {
+        state->operations.setContext(context);
+        auto values = state->operations.inspectThickness(parts, revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).plateThicknesses = std::move(values);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "已读取当前实体板厚。", {}, false};
+    }, {}, false, "板厚识别");
+}
+std::string CommandService::submitHolePreview(const PlateHole &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("HolePreview", revision, [state,request,revision](const auto &context,auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewHole(request,revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；点击应用才修改模型。", {}, false};
+    }, {}, false, (request.kind == PlateHoleKind::Weld ? "过焊孔预览（部件 " : "底边孔预览（部件 ") + request.partId + "）");
+}
+std::string CommandService::submitHoleInspection(const std::string &partId, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("HoleInspection", revision, [state,partId,revision](const auto &context, auto &) {
+        state->operations.setContext(context);
+        auto bases = state->operations.inspectHoleBases(partId, revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).holeBases = std::move(bases);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "底边已识别；可切换底边并预览。", {}, false};
+    }, {}, false, "开孔底边识别（部件 " + partId + "）");
+}
+std::shared_ptr<const Model> CommandService::takeEdgePreview(const std::string &taskId)
+{
+    std::lock_guard lock(impl_->mutex);
+    return std::exchange(impl_->tasks.at(taskId).edgePreview, {});
+}
 std::string CommandService::submitLine(std::string line)
 {
     auto *state = impl_.get();
@@ -629,15 +809,33 @@ bool CommandService::provideInput(const std::string &id, std::uint64_t request, 
 std::string CommandService::submitStartRecording(const std::filesystem::path &path, bool overwrite)
 {
     auto *state = impl_.get();
-    return state->submit("StartRecording", {}, [state, path, overwrite](const auto &, auto &) {
-        auto result = state->recorder.start(path, overwrite);
-        if (result.ok())
+    return state->submit("StartRecording", {}, [state, path, overwrite](const auto &context, auto &) {
+        if (state->recorder.recording())
+            return rm::CommandResult::error("already_recording", "已在录制中，请先停止录制。");
+        bool opened{};
+        rm::CommandResult result;
+        try
         {
-            for (const auto &command : state->startupCommands) state->record(command);
-            if (!state->recorder.state().error.empty())
-                result = rm::CommandResult::error("recording_write_failed", state->recorder.state().error);
-            else if (state->operations.project().revision != state->startupRevision)
-                result.message += "\n已补写成功的启动命令；开始录制前的编辑未包含，请重新执行这些操作以完整复现。";
+            const auto prefix = state->journal.prefix(); // 先校验完整性与大小，再打开/覆盖文件。
+            if (context.stop.stop_requested()) return rm::CommandResult::error("cancelled", "录制任务已取消。");
+            result = state->recorder.start(path, overwrite);
+            opened = result.ok();
+            if (opened)
+            {
+                for (const auto &line : prefix)
+                {
+                    if (context.stop.stop_requested()) throw std::runtime_error("补写被取消，脚本前序命令不完整");
+                    state->recorder.recordLine(line);
+                    if (!state->recorder.recording()) throw std::runtime_error(state->recorder.state().error);
+                }
+                result.message += "\n已补写 " + std::to_string(prefix.size()) + " 条前序命令，后续命令将逐条录制。";
+            }
+        }
+        catch (const std::exception &error)
+        {
+            if (opened) state->recorder.fail(std::string("前序命令补写未完成：") + error.what());
+            result = rm::CommandResult::error("recording_prefix_failed",
+                std::string("未开始完整录制：") + error.what());
         }
         state->publishRecording();
         return result;

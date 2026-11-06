@@ -1,4 +1,4 @@
-/*
+﻿/*
  * 文件描述：
  * 定义 Qt 桌面工作台入口，界面通过命令服务访问点云、模型和后台任务。
  */
@@ -25,14 +25,19 @@ protected:
 private:
     struct State;
     std::unique_ptr<State> state_;
+    void modelContextMenu(const QPoint &position);
+    void beginPlateEdit(const std::string &operation, bool all=false);
     void importCloud();
     void importCloud(const QString& path);
     void restoreRecognition();
     bool applyParameters();
     void cancelTask();
     void refreshProjectPanels();
+    void restoreCommittedParameters();
     void reconstruct();
     void exportStep();
+    void exportCwrm();
+    void exportModelCloud();
     void exportAndExit();
     void continueStartup();
     void exportCloud();

@@ -1,10 +1,9 @@
 ﻿/*
  * 文件描述：
  * 按三角形部件归属拆分显示网格，保留稳定部件 ID，并从建模快照取得板厚。
- * 生成与显示原点一致的标注锚点及非金色配色，不改变业务几何、STEP 或工程参数。
+ * 生成与显示原点一致的标注锚点及统一灰色配色，不改变业务几何、STEP 或工程参数。
  */
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -12,54 +11,82 @@
 #include <unordered_map>
 
 #include "workbench/ModelDisplayData.h"
+#include "geometry/ModelTransform.h"
 
 namespace reverse::workbench
 {
-namespace
+std::vector<ModelSelection> updateModelSelection(std::vector<ModelSelection> selected,
+    const ModelSelection &clicked, CloudSelectionMode mode, bool toggle)
 {
-std::array<double, 3> partColor(std::string_view id)
-{
-    constexpr std::array<unsigned int, 9> colors{
-        0x80b8dc, 0xb4abc9, 0x8cc2bc, 0x8fc492, 0xd69d94, 0xb9a1d5, 0x92c9da, 0xd2abc5, 0x99b8c4};
-    std::size_t index = 0;
-    if (id.starts_with("imported-part-"))
-    {
-        unsigned int part = 1;
-        std::from_chars(id.data() + 14, id.data() + id.size(), part);
-        index = (part - 1) % colors.size();
-    }
-    else if (id == "flange-bottom")
-    {
-        index = 1;
-    }
-    else if (id == "flange-top")
-    {
-        index = 2;
-    }
-    else if (id != "web")
-    {
-        std::uint32_t hash = 2166136261u;
-        for (const unsigned char character : id)
-        {
-            hash = (hash ^ character) * 16777619u;
-        }
-        index = 3 + hash % (colors.size() - 3);
-        if (id.starts_with("rib-"))
-        {
-            unsigned int station = 0;
-            const auto parsed = std::from_chars(id.data() + 4, id.data() + id.size(), station);
-            const std::string_view side(parsed.ptr, static_cast<std::size_t>(id.data() + id.size() - parsed.ptr));
-            if (parsed.ec == std::errc{} && station > 0 && (side == "-left" || side == "-right"))
-            {
-                index = 3 + ((static_cast<std::size_t>(station) - 1) * 2 + (side == "-right" ? 1 : 0))
-                                % (colors.size() - 3);
-            }
-        }
-    }
-    const auto rgb = colors[index];
-    return {((rgb >> 16) & 255) / 255.0, ((rgb >> 8) & 255) / 255.0, (rgb & 255) / 255.0};
+    if (mode == CloudSelectionMode::Clear) return {};
+    if (toggle && clicked.partId.empty()) return selected;
+    if (toggle)
+        mode = std::find(selected.begin(), selected.end(), clicked) != selected.end()
+            ? CloudSelectionMode::Remove : CloudSelectionMode::Add;
+    if (mode == CloudSelectionMode::Replace) selected.clear();
+    if (clicked.partId.empty()) return selected;
+    if (mode == CloudSelectionMode::Remove) std::erase(selected, clicked);
+    else if (std::find(selected.begin(), selected.end(), clicked) == selected.end()) selected.push_back(clicked);
+    return selected;
 }
 
+std::vector<std::string> updateModelPartSelection(std::vector<std::string> selected,
+    const std::string &clicked, CloudSelectionMode mode, bool toggle)
+{
+    std::vector<ModelSelection> objects;
+    for (const auto &id : selected) objects.push_back({id, ModelPickMode::Body, 0});
+    selected.clear();
+    for (const auto &object : updateModelSelection(std::move(objects), {clicked, ModelPickMode::Body, 0}, mode, toggle))
+        selected.push_back(object.partId);
+    return selected;
+}
+
+std::vector<EdgeTreatmentTarget> edgeTreatmentTargets(
+    const MeshData &mesh, const std::vector<ModelSelection> &selections)
+{
+    std::vector<EdgeTreatmentTarget> targets;
+    for (const auto &selection : selections)
+    {
+        if (selection.kind != ModelPickMode::Edge || selection.partId.empty())
+            throw std::invalid_argument("圆角 / 倒角只能选择实体边线。");
+        std::size_t local = 0;
+        std::uint32_t topology = 0;
+        for (const auto &edge : mesh.edges)
+            if (mesh.partIds.at(edge.partIndex) == selection.partId && local++ == selection.index)
+            {
+                topology = edge.topologyIndex;
+                break;
+            }
+        if (topology == 0)
+            throw std::invalid_argument("选中的边已失效，请重新选择：" + selection.partId);
+        auto target = std::find_if(targets.begin(), targets.end(),
+            [&](const auto &item) { return item.partId == selection.partId; });
+        if (target == targets.end())
+            targets.push_back({selection.partId, {topology}});
+        else if (std::find(target->edges.begin(), target->edges.end(), topology) == target->edges.end())
+            target->edges.push_back(topology);
+    }
+    return targets;
+}
+
+bool isValidModelSelection(const ModelDisplayPart &part, const ModelSelection &selection)
+{
+    if (selection.partId.empty() || part.id != selection.partId) return false;
+    switch (selection.kind)
+    {
+    case ModelPickMode::Body: return selection.index == 0;
+    case ModelPickMode::Vertex: return selection.index < part.keyPoints.size();
+    case ModelPickMode::Edge:
+        return selection.index < part.edges.size() && part.edges[selection.index].size() >= 2;
+    case ModelPickMode::Face:
+        return std::find(part.triangleFaceIndices.begin(), part.triangleFaceIndices.end(), selection.index)
+            != part.triangleFaceIndices.end();
+    }
+    return false;
+}
+
+namespace
+{
 std::optional<double> partThickness(std::string_view id, const BeamParameters &parameters)
 {
     if (id == "web")
@@ -136,7 +163,8 @@ std::array<ModelLabelAnchor, 2> labelFaces(
 std::vector<ModelDisplayPart> makeModelDisplayParts(
     const MeshData &mesh, const ModelSummary &model, const Vec3 &displayOrigin)
 {
-    if (mesh.trianglePartIndices.size() != mesh.triangles.size() || mesh.partIds != model.partIds)
+    if (mesh.trianglePartIndices.size() != mesh.triangles.size() || mesh.partIds != model.partIds ||
+        (!mesh.triangleFaceIndices.empty() && mesh.triangleFaceIndices.size() != mesh.triangles.size()))
     {
         throw std::invalid_argument("显示网格的部件归属与模型快照不一致。");
     }
@@ -145,9 +173,9 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
     for (std::size_t index = 0; index < parts.size(); ++index)
     {
         parts[index].id = mesh.partIds[index];
-        parts[index].colorSrgb = partColor(parts[index].id);
+        parts[index].colorSrgb = ModelColors::surface;
         parts[index].thicknessMm = model.importedFormat.empty() ? partThickness(parts[index].id, model.parameters) : std::nullopt;
-        if (model.fromPointCloud)
+        if (model.fromPointCloud && !model.generatedPlates.contains(parts[index].id) && !model.mirroredParts.contains(parts[index].id))
         {
             const auto observed = std::find_if(model.plates.begin(), model.plates.end(),
                 [&](const auto &plate) { return plate.id == parts[index].id; });
@@ -158,6 +186,12 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
             parts[index].thicknessMm = observed->thicknessMm;
             parts[index].thicknessUnresolved = !observed->thicknessMm.has_value();
             parts[index].thicknessEstimated = observed->method == "inferred_side_plate_max";
+        }
+        if (const auto info = model.thicknessOverrides.find(parts[index].id); info != model.thicknessOverrides.end())
+        {
+            parts[index].thicknessMm = info->second.thicknessMm;
+            parts[index].thicknessUnresolved = false;
+            parts[index].thicknessEstimated = false;
         }
         if (parts[index].thicknessMm && (!std::isfinite(*parts[index].thicknessMm) || *parts[index].thicknessMm <= 0))
         {
@@ -207,6 +241,44 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
             triangle[corner] = entry->second;
         }
         part.triangles.push_back(triangle);
+        if (!mesh.triangleFaceIndices.empty())
+        {
+            part.triangleFaceIndices.push_back(mesh.triangleFaceIndices[index]);
+        }
+    }
+    for (const auto &face : mesh.planarFaces)
+    {
+        if (face[0] >= parts.size()) throw std::invalid_argument("平面包含无效部件编号。");
+        parts[face[0]].planarFaceIndices.push_back(face[1]);
+    }
+    for (const auto &keyPoint : mesh.keyPoints)
+    {
+        const auto &point = keyPoint.positionMm;
+        const Vec3 local{point.x - displayOrigin.x, point.y - displayOrigin.y, point.z - displayOrigin.z};
+        if (keyPoint.partIndex >= parts.size() || !std::isfinite(local.x) ||
+            !std::isfinite(local.y) || !std::isfinite(local.z))
+        {
+            throw std::invalid_argument("模型关键点包含无效的部件索引或坐标。");
+        }
+        parts[keyPoint.partIndex].keyPoints.push_back(local);
+    }
+    for (const auto &edge : mesh.edges)
+    {
+        if (edge.partIndex >= parts.size() || edge.pointsMm.size() < 2)
+        {
+            throw std::invalid_argument("模型边包含无效的部件索引或折线。");
+        }
+        std::vector<Vec3> local;
+        for (const auto &point : edge.pointsMm)
+        {
+            const Vec3 value{point.x - displayOrigin.x, point.y - displayOrigin.y, point.z - displayOrigin.z};
+            if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z))
+            {
+                throw std::invalid_argument("模型边包含非有限坐标。");
+            }
+            local.push_back(value);
+        }
+        parts[edge.partIndex].edges.push_back(std::move(local));
     }
     for (auto &part : parts)
     {
@@ -214,7 +286,20 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
         {
             throw std::invalid_argument("模型部件缺少显示网格。");
         }
-        part.labelFaces = labelFaces(part, model.frame, displayOrigin);
+        part.labelFaces = labelFaces(part, modelPartFrame(model, part.id), displayOrigin);
+        if (const auto info = model.thicknessOverrides.find(part.id); info != model.thicknessOverrides.end())
+        {
+            const auto &value = info->second;
+            for (std::size_t side = 0; side < 2; ++side)
+            {
+                const double sign = side == 0 ? -1 : 1;
+                auto &face = part.labelFaces[side];
+                face.normal = {sign * value.normal.x, sign * value.normal.y, sign * value.normal.z};
+                face.position = {value.centerMm.x - displayOrigin.x + face.normal.x * value.thicknessMm / 2,
+                    value.centerMm.y - displayOrigin.y + face.normal.y * value.thicknessMm / 2,
+                    value.centerMm.z - displayOrigin.z + face.normal.z * value.thicknessMm / 2};
+            }
+        }
     }
     return parts;
 }

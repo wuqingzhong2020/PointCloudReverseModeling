@@ -1,4 +1,4 @@
-/*
+﻿/*
  * 文件描述：
  * 使用原生 QWidget 窗口承载 OCCT/AIS，显示点云采样和模型三角化结果，
  * 实现缩放、平移、旋转、可点击视图立方体和底板正视；不执行建模算法。
@@ -23,16 +23,34 @@
 #include <AIS_AnimationCamera.hxx>
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_PointCloud.hxx>
+#include <AIS_TextLabel.hxx>
+#include <AIS_Shape.hxx>
+#include <AIS_Triangulation.hxx>
+#include <Poly_Triangulation.hxx>
+#include <BRep_Builder.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <TopoDS_Compound.hxx>
+#include <Prs3d_ShadingAspect.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <TopoDS_Edge.hxx>
 #include <AIS_RubberBand.hxx>
 #include <AIS_ViewCube.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Graphic3d_ArrayOfPoints.hxx>
+#include <Graphic3d_ClipPlane.hxx>
+#include <Graphic3d_MaterialAspect.hxx>
+#include <Graphic3d_RenderingParams.hxx>
 #include <Graphic3d_TransformPers.hxx>
+#include <Graphic3d_TypeOfLimit.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <Prs3d_DatumAspect.hxx>
 #include <Prs3d_Drawer.hxx>
+#include <Prs3d_LineAspect.hxx>
+#include <Prs3d_Presentation.hxx>
 #include <Quantity_Color.hxx>
 #include <Quantity_TypeOfColor.hxx>
+#include <SelectMgr_ViewerSelector.hxx>
+#include <SelectMgr_Filter.hxx>
 #include <Standard_Failure.hxx>
 #include <V3d_TypeOfOrientation.hxx>
 #include <V3d_View.hxx>
@@ -46,10 +64,49 @@
 #endif
 
 #include "workbench/OccModelPresentation.h"
+#include "workbench/OccTransformPreview.h"
+#include "workbench/OccMeasurementPresentation.h"
+#include "workbench/OccMeasurementPicking.h"
+#include "workbench/MeasurementSnap.h"
 #include "workbench/OccPicking.h"
+#include "workbench/ThicknessLabelEditor.h"
+#include "workbench/OccPartMesh.h"
 #include "workbench/OccViewport.h"
+#include "workbench/OccReferencePlanePresentation.h"
+#include "workbench/ReferencePlanePicking.h"
+#include "geometry/ReferencePlane.h"
+#include "geometry/PlateHoles.h"
 
 namespace reverse::workbench {
+
+namespace
+{
+class HolePreviewShape final : public AIS_Shape
+{
+public:
+    explicit HolePreviewShape(const TopoDS_Shape &shape) : AIS_Shape(shape) {}
+
+protected:
+    void Compute(const Handle(PrsMgr_PresentationManager) &manager,
+                 const Handle(Prs3d_Presentation) &presentation, int mode) override
+    {
+        // AIS_Shape 的无限对象会强制退化为线框；先生成实体，再排除它的显示包围盒。
+        AIS_Shape::Compute(manager, presentation, mode);
+        presentation->SetInfiniteState(true);
+    }
+};
+
+class ModelSelectionFilter final : public SelectMgr_Filter
+{
+public:
+    ModelPickMode mode{ModelPickMode::Body};
+    bool IsOk(const Handle(SelectMgr_EntityOwner) &owner) const override
+    {
+        const auto *object = dynamic_cast<const OccMeshOwner *>(owner.get());
+        return !object || object->kind == mode;
+    }
+};
+}
 
 struct OccViewport::State {
     Handle(Aspect_DisplayConnection) display;
@@ -60,17 +117,42 @@ struct OccViewport::State {
     Handle(AIS_PointCloud) cloud;
     Handle(AIS_ViewCube) viewCube;
     Handle(AIS_RubberBand) selectionBand;
+    std::vector<Handle(AIS_InteractiveObject)> holeGuide;
+    std::vector<Handle(AIS_InteractiveObject)> holePreview;
+    std::vector<Handle(AIS_InteractiveObject)> plateEditReference;
+    std::vector<std::pair<PlateHoleBase,PlateHole>> batchHolePreview;
+    bool plateCropEnabled{};
+    std::optional<PlateHoleBase> holePreviewBase;
+    PlateHole holePreviewRequest;
+    Vec3 holePreviewOrigin;
     std::shared_ptr<const CloudSelection> selection;
     CloudSelectionMode selectionMode{CloudSelectionMode::Replace};
     bool cloudEditingEnabled{};
     bool modelPickingEnabled{};
-    std::string selectedPart;
+    bool thicknessEditingEnabled{};
+    bool pressedThicknessLabel{};
+    ThicknessLabelEditor *thicknessEditor{};
+    ModelPickMode pickMode{ModelPickMode::Body};
+    Handle(ModelSelectionFilter) pickFilter = new ModelSelectionFilter();
+    ReferencePlanePickMode referencePickMode{ReferencePlanePickMode::None};
+    std::vector<Vec3> referencePoints;
+    std::optional<ReferencePlane> referencePlane;
+    PlaneSection section;
+    Handle(Graphic3d_ClipPlane) cloudClip;
+    std::unique_ptr<OccReferencePlanePresentation> referencePresentation;
+    bool measurementEnabled{};
+    PointMeasurement measurement;
+    std::optional<MeasurementPoint> measurementHover;
+    MeasurementSnap measurementSnap;
+    std::unique_ptr<OccMeasurementPresentation> measurementPresentation;
+    std::vector<ModelSelection> selectedObjects;
     bool selecting{};
     bool rightDragged{};
     QPoint rightPress;
     QTimer *navigationTimer{};
     double cubePixelRatio{};
     std::unique_ptr<OccModelPresentation> model;
+    std::unique_ptr<OccTransformPreview> transform;
     std::vector<CloudDisplayPoint> points;
     std::vector<ModelDisplayPart> parts;
     QPoint lastMouse;
@@ -91,7 +173,15 @@ OccViewport::OccViewport(QWidget* parent) : QWidget(parent), state_(std::make_un
     setAttribute(Qt::WA_NoSystemBackground);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
-    setToolTip(QStringLiteral("可选：体时左键选部件；可选：点时左键框选点云；右键拖动旋转，中键平移，Esc 清空选择"));
+    setToolTip(QStringLiteral("双击板厚标签修改；左键按点/线/面/体拾取模型；Shift 追加/取消；点模式拖动框选点云；右键旋转，中键平移，Esc 清空"));
+    state_->thicknessEditor = new ThicknessLabelEditor(this);
+    state_->thicknessEditor->onSubmitted = [this](const std::string &id, double thickness)
+    {
+        if (state_->thicknessEditingEnabled && onThicknessLabelSubmitted)
+        {
+            onThicknessLabelSubmitted(id, thickness);
+        }
+    };
     state_->navigationTimer = new QTimer(this);
     state_->navigationTimer->setInterval(16);
     connect(state_->navigationTimer, &QTimer::timeout, this, &OccViewport::advanceNavigationAnimation);
@@ -102,6 +192,11 @@ OccViewport::~OccViewport() { release(); }
 void OccViewport::release() noexcept {
     try {
         stopNavigationAnimation();
+        state_->holeGuide.clear();
+        state_->holePreview.clear();
+        state_->transform.reset();
+        state_->referencePresentation.reset();
+        state_->measurementPresentation.reset();
         if (!state_->context.IsNull()) state_->context->RemoveAll(false);
         state_->viewCube.Nullify();
         state_->selectionBand.Nullify();
@@ -162,17 +257,36 @@ void OccViewport::initialize() {
         state_->view->SetWindow(window);
         if (!window->IsMapped()) window->Map();
 #endif
+        // 原生 OCCT 视口不经过 Qt 绘制，必须在实际 OpenGL 上下文创建后启用 MSAA。
+        // 同时平滑实体轮廓、拓扑边和选择高亮；只影响显示，不增加模型细分。
+        const int maxSamples = state_->driver->InquireLimit(Graphic3d_TypeOfLimit_MaxMsaa);
+        auto &rendering = state_->view->ChangeRenderingParams();
+        rendering.NbMsaaSamples = 0;
+        for (const int samples : {8, 4, 2})
+        {
+            if (samples <= maxSamples)
+            {
+                rendering.NbMsaaSamples = samples;
+                break;
+            }
+        }
         state_->view->SetBackgroundColor(Quantity_Color(0.031, 0.082, 0.129, Quantity_TOC_sRGB));
         state_->view->SetProj(V3d_XposYnegZpos);
         state_->context = new AIS_InteractiveContext(state_->viewer);
+        state_->context->AddFilter(state_->pickFilter);
         state_->context->SelectionStyle()->SetColor(Quantity_Color(0.10, 0.66, 0.95, Quantity_TOC_sRGB));
         state_->context->SelectionStyle()->SetDisplayMode(0);
         state_->context->HighlightStyle()->SetColor(Quantity_Color(0.30, 0.82, 0.90, Quantity_TOC_sRGB));
         state_->context->HighlightStyle()->SetDisplayMode(0);
         createViewCube();
         state_->model = std::make_unique<OccModelPresentation>(state_->context, state_->view);
+        state_->measurementPresentation = std::make_unique<OccMeasurementPresentation>(state_->context, state_->view);
+        state_->referencePresentation = std::make_unique<OccReferencePlanePresentation>(state_->context);
         rebuildCloud();
         rebuildMesh();
+        rebuildHolePreview();
+        updateReferencePresentation();
+        updateMeasurementPicking();
         state_->view->MustBeResized();
         fitAll();
     } catch (const Standard_Failure& error) {
@@ -225,6 +339,7 @@ void OccViewport::paintEvent(QPaintEvent*) {
 }
 
 void OccViewport::resizeEvent(QResizeEvent* event) {
+    state_->thicknessEditor->hide();
     QWidget::resizeEvent(event);
     if (state_->failureLabel) state_->failureLabel->setGeometry(rect());
     if (!state_->view.IsNull() && isVisible() && event->size().isValid()) {
@@ -270,8 +385,10 @@ void OccViewport::rebuildCloud() {
     state_->cloud = new AIS_PointCloud();
     state_->cloud->SetDisplayMode(AIS_PointCloud::DM_Points);
     state_->cloud->SetPoints(points);
+    updateCloudClip();
     state_->cloud->SetColor(Quantity_Color(0.18, 0.56, 0.61, Quantity_TOC_sRGB));
     if (state_->cloudVisible) state_->context->Display(state_->cloud, 0, -1, false);
+    updateMeasurementPicking();
 }
 
 void OccViewport::rebuildMesh()
@@ -282,12 +399,290 @@ void OccViewport::rebuildMesh()
     }
     state_->model->rebuild(state_->parts);
     state_->model->setVisible(state_->modelVisible, state_->thicknessVisible);
-    state_->model->setSelectable(state_->modelPickingEnabled);
-    state_->model->selectPart(state_->selectedPart);
+    updateMeasurementPicking();
+    state_->model->selectObjects(state_->selectedObjects);
+}
+
+void OccViewport::updateMeasurementPicking()
+{
+    if (state_->context.IsNull())
+    {
+        return;
+    }
+    const bool pointPick = state_->measurementEnabled || state_->referencePickMode == ReferencePlanePickMode::ThreePoints;
+    const bool referencePick = state_->referencePickMode != ReferencePlanePickMode::None;
+    const auto mode = pointPick ? ModelPickMode::Body
+        : referencePick ? ModelPickMode::Face : state_->pickMode;
+    state_->pickFilter->mode = mode;
+    if (!state_->cloud.IsNull())
+    {
+        if (pointPick && state_->cloudVisible)
+        {
+            state_->context->Load(state_->cloud, AIS_PointCloud::SM_Points);
+            state_->context->Activate(state_->cloud, AIS_PointCloud::SM_Points);
+        }
+        else
+        {
+            state_->context->Deactivate(state_->cloud);
+        }
+    }
+    if (state_->model)
+    {
+        state_->model->setSelectable(state_->modelPickingEnabled || pointPick || referencePick, mode);
+    }
+    state_->context->SetPixelTolerance(state_->measurementEnabled
+        ? qRound(6 * devicePixelRatioF()) : qRound(5 * devicePixelRatioF()));
+}
+
+std::optional<MeasurementPoint> OccViewport::measurementPoint(const QPoint &pixel) const
+{
+    const auto &selector = state_->context->MainSelector();
+    selector->Pick(pixel.x(), pixel.y(), state_->view);
+    double nearest = std::numeric_limits<double>::max();
+    std::optional<Vec3> result;
+    for (int rank = 1; rank <= selector->NbPicked(); ++rank)
+    {
+        const auto owner = selector->Picked(rank);
+        if (isDetectedInteractive(owner, state_->viewCube))
+        {
+            return {}; // 导航立方体覆盖区域不穿透取点。
+        }
+        const bool cloud = state_->cloudVisible && isDetectedInteractive(owner, state_->cloud);
+        const bool model = state_->modelVisible && state_->model && state_->model->isSurfaceOwner(owner);
+        if (!(cloud || model) || selector->PickedData(rank).Depth >= nearest)
+        {
+            continue;
+        }
+        const auto point = selector->PickedPoint(rank);
+        if (cloud && state_->referencePlane && state_->section.enabled)
+        {
+            const auto e = sectionEquation(*state_->referencePlane, state_->section);
+            if (e[0] * point.X() + e[1] * point.Y() + e[2] * point.Z() + e[3] < -1e-7) continue;
+        }
+        nearest = selector->PickedData(rank).Depth;
+        result = Vec3{point.X(), point.Y(), point.Z()};
+    }
+    if (state_->modelVisible && state_->model)
+    {
+        const auto camera = state_->view->Camera();
+        const auto matrix = camera->ProjectionMatrix() * camera->OrientationMatrix();
+        MeasurementSnapView projection;
+        for (std::size_t row = 0; row < 4; ++row)
+        {
+            for (std::size_t col = 0; col < 4; ++col)
+            {
+                projection.viewProjection[row * 4 + col] = matrix.GetValue(row, col);
+            }
+        }
+        projection.width = qRound(width() * devicePixelRatioF());
+        projection.height = qRound(height() * devicePixelRatioF());
+        projection.zeroToOneDepth = camera->IsZeroToOneDepth();
+        state_->measurementSnap.setView(projection);
+        const auto captured = state_->measurementSnap.find(pixel.x(), pixel.y(),
+            MeasurementSnap::RadiusPixels * devicePixelRatioF(), [this](const Vec3 &point)
+            {
+                return isMeasurementPointVisible(gp_Pnt(point.x, point.y, point.z), state_->context,
+                    state_->view, [this](const auto &owner) { return state_->model->isSurfaceOwner(owner); });
+            });
+        if (captured)
+        {
+            return MeasurementPoint{*captured, true};
+        }
+    }
+    return result ? std::optional<MeasurementPoint>{{*result, false}} : std::nullopt;
+}
+
+void OccViewport::setHoleGuide(const std::vector<Vec3> &points)
+{
+    if (state_->context.IsNull()) return;
+    for (const auto &object : state_->holeGuide) state_->context->Remove(object, false);
+    state_->holeGuide.clear();
+    if (points.size() == 3)
+    {
+        const auto point = [](Vec3 p) { return gp_Pnt(p.x,p.y,p.z); };
+        Handle(AIS_Shape) edge = new AIS_Shape(BRepBuilderAPI_MakeEdge(point(points[0]),point(points[2])).Edge());
+        edge->SetColor(Quantity_Color(0.0, 0.48, 1.0, Quantity_TOC_sRGB)); edge->SetWidth(2);
+        edge->SetZLayer(Graphic3d_ZLayerId_Topmost);
+        state_->context->Display(edge,0,-1,false); state_->holeGuide.push_back(edge);
+        const QStringList names{QStringLiteral("● 1"),QStringLiteral("● 中"),QStringLiteral("● 2")};
+        for (int i=0;i<3;++i)
+        {
+            Handle(AIS_TextLabel) label = new AIS_TextLabel();
+            label->SetText(TCollection_ExtendedString(names[i].toUtf8().constData(),true));
+            label->SetPosition(point(points[i])); label->SetHeight(16); label->SetFont("Microsoft YaHei");
+            label->SetColor(Quantity_Color(0.0, 0.48, 1.0, Quantity_TOC_sRGB)); label->SetZLayer(Graphic3d_ZLayerId_Topmost);
+            state_->context->Display(label,0,-1,false); state_->holeGuide.push_back(label);
+        }
+    }
+    redraw();
+}
+
+void OccViewport::clearPlateEditReference()
+{
+    if(!state_->context.IsNull()) for(const auto &object:state_->plateEditReference)
+        state_->context->Remove(object,false);
+    state_->plateEditReference.clear();redraw();
+}
+
+void OccViewport::setPlateEditReference(const std::vector<ModelDisplayPart> &original,
+    const std::vector<std::string> &sources,const std::string &target,bool removedMaterial)
+{
+    clearPlateEditReference();if(state_->context.IsNull()) return;
+    for(const auto &part:original) {
+        const bool isTarget=part.id==target;
+        if(!isTarget&&std::find(sources.begin(),sources.end(),part.id)==sources.end()) continue;
+        if(removedMaterial&&!isTarget&&!part.triangles.empty()) {
+            Handle(Poly_Triangulation) mesh=new Poly_Triangulation(static_cast<int>(part.vertices.size()),static_cast<int>(part.triangles.size()),false);
+            for(std::size_t i=0;i<part.vertices.size();++i) {const auto &p=part.vertices[i];mesh->SetNode(static_cast<int>(i+1),gp_Pnt(p.x,p.y,p.z));}
+            for(std::size_t i=0;i<part.triangles.size();++i) {const auto &t=part.triangles[i];mesh->SetTriangle(static_cast<int>(i+1),Poly_Triangle(t[0]+1,t[1]+1,t[2]+1));}
+            mesh->ComputeNormals();Handle(AIS_Triangulation) ghost=new AIS_Triangulation(mesh);
+            ghost->SetColor(Quantity_Color(.95,.2,.18,Quantity_TOC_sRGB));ghost->SetTransparency(.55);
+            ghost->SetPolygonOffsets(1,2,2);ghost->SetInfiniteState(true);
+            state_->context->Display(ghost,0,-1,false);state_->plateEditReference.push_back(ghost);
+        }
+        TopoDS_Compound edges;BRep_Builder builder;builder.MakeCompound(edges);
+        for(const auto &points:part.edges) {
+            if(points.size()<2) continue;BRepBuilderAPI_MakePolygon polygon;
+            for(const auto &p:points) polygon.Add(gp_Pnt(p.x,p.y,p.z));
+            if(polygon.IsDone()) builder.Add(edges,polygon.Wire());
+        }
+        Handle(AIS_Shape) wire=new AIS_Shape(edges);
+        wire->SetColor(isTarget?Quantity_Color(1,.55,.08,Quantity_TOC_sRGB):Quantity_Color(.1,.65,.95,Quantity_TOC_sRGB));
+        wire->SetWidth(isTarget?2:1);wire->SetInfiniteState(true);
+        state_->context->Display(wire,0,-1,false);state_->plateEditReference.push_back(wire);
+    }
+    redraw();
+}
+
+void OccViewport::clearHolePreview()
+{
+    state_->holePreviewBase.reset();
+    state_->batchHolePreview.clear();
+    rebuildHolePreview();
+    update();
+}
+
+void OccViewport::setHolePreview(const PlateHoleBase &base, const PlateHole &request, const Vec3 &origin)
+{
+    state_->batchHolePreview.clear();
+    state_->holePreviewBase = base;
+    state_->holePreviewRequest = request;
+    state_->holePreviewOrigin = origin;
+    rebuildHolePreview();
+    update();
+}
+
+void OccViewport::setBatchHolePreview(const std::vector<std::pair<PlateHoleBase,PlateHole>> &items,const Vec3 &origin)
+{
+    state_->holePreviewBase.reset();state_->batchHolePreview=items;state_->holePreviewOrigin=origin;
+    rebuildHolePreview();update();
+}
+void OccViewport::setPlateCropEnabled(bool enabled)
+{
+    if (state_->plateCropEnabled == enabled) return;
+    state_->plateCropEnabled=enabled;clearSelectionRectangle();
+}
+void OccViewport::rebuildHolePreview()
+{
+    if (state_->context.IsNull())
+        return;
+    for (const auto &object : state_->holePreview)
+        state_->context->Remove(object, false);
+    state_->holePreview.clear();
+    if (!state_->holePreviewBase && state_->batchHolePreview.empty())
+        return;
+    try
+    {
+        std::vector<TopoDS_Shape> tools;
+        if (state_->holePreviewBase) tools=detail::plateHoleTools(*state_->holePreviewBase,state_->holePreviewRequest);
+        for (const auto &[base,request]:state_->batchHolePreview) {
+            const auto batch=detail::plateHoleTools(base,request);tools.insert(tools.end(),batch.begin(),batch.end());
+        }
+        const auto &origin = state_->holePreviewOrigin;
+        gp_Trsf local;
+        local.SetTranslation(gp_Vec(-origin.x, -origin.y, -origin.z));
+        const Quantity_Color green(0.18, 0.90, 0.24, Quantity_TOC_sRGB);
+        Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_Plastified);
+        material.SetSpecularColor(Quantity_NOC_BLACK);
+        for (const auto &tool : tools)
+        {
+            Handle(AIS_Shape) preview = new HolePreviewShape(tool);
+            preview->SetLocalTransformation(local);
+            preview->SetMaterial(material);
+            preview->SetColor(green);
+            preview->SetTransparency(0.45);
+            preview->SetOwnDeviationCoefficient(0.0005);
+            preview->Attributes()->SetFaceBoundaryDraw(true);
+            preview->Attributes()->SetFaceBoundaryAspect(
+                new Prs3d_LineAspect(Quantity_Color(0.10, 0.60, 0.15, Quantity_TOC_sRGB), Aspect_TOL_SOLID, 1.0));
+            // 切孔体需要透过目标板件可见；不参与拾取、包围盒、模型输出或历史。
+            preview->SetZLayer(Graphic3d_ZLayerId_Topmost);
+            state_->holePreview.push_back(preview);
+            state_->context->Display(preview, 1, -1, false);
+        }
+    }
+    catch (...)
+    {
+        clearHolePreview();
+        throw;
+    }
+}
+
+void OccViewport::setMeasurementEnabled(bool enabled)
+{
+    if (state_->measurementEnabled == enabled)
+    {
+        return;
+    }
+    if (enabled && state_->referencePickMode != ReferencePlanePickMode::None && onReferenceCancelled)
+        onReferenceCancelled();
+    state_->measurementEnabled = enabled;
+    state_->measurement.clear();
+    state_->measurementHover.reset();
+    setCursor(enabled ? Qt::CrossCursor : Qt::ArrowCursor);
+    try
+    {
+        clearSelectionRectangle();
+        if (!state_->context.IsNull())
+        {
+            if (enabled)
+            {
+                setSelectedPart({});
+                if (onModelObjectsSelected)
+                {
+                    onModelObjectsSelected({});
+                }
+            }
+            state_->context->ClearDetected(false);
+            updateMeasurementPicking();
+        }
+        if (state_->measurementPresentation)
+        {
+            state_->measurementPresentation->clear();
+        }
+        update();
+    }
+    catch (const Standard_Failure &error)
+    {
+        fail(QString::fromUtf8(error.what()));
+    }
+    if (onMeasurementModeChanged)
+    {
+        onMeasurementModeChanged(enabled);
+    }
 }
 
 void OccViewport::redraw()
 {
+    // 工具在主窗口构造/销毁阶段也会清理预览，此时 OpenGL 视图可能尚未创建。
+    if (state_->view.IsNull()) return;
+    if ((state_->measurementEnabled || state_->referencePickMode == ReferencePlanePickMode::ThreePoints) &&
+        state_->measurementPresentation)
+    {
+        const double ratio = devicePixelRatioF();
+        state_->measurementPresentation->update(state_->measurement, state_->measurementHover,
+            qRound(width() * ratio), qRound(height() * ratio), ratio);
+    }
     if (state_->model)
     {
         const double ratio = devicePixelRatioF();
@@ -299,6 +694,7 @@ void OccViewport::redraw()
 void OccViewport::setPointCloud(std::vector<CloudDisplayPoint> points,
                                 std::shared_ptr<const CloudSelection> selection)
 {
+    setMeasurementEnabled(false);
     state_->points = std::move(points);
     try {
         state_->selection = std::move(selection);
@@ -332,8 +728,12 @@ void OccViewport::setCloudHeightColors(bool enabled)
 
 void OccViewport::setModel(std::vector<ModelDisplayPart> parts)
 {
-    state_->selectedPart.clear();
+    state_->thicknessEditor->hide();
+    endTransformPreview();
+    setMeasurementEnabled(false);
+    state_->selectedObjects.clear();
     state_->parts = std::move(parts);
+    state_->measurementSnap.rebuild(state_->parts);
     try
     {
         rebuildMesh();
@@ -349,32 +749,111 @@ void OccViewport::setModel(std::vector<ModelDisplayPart> parts)
     }
 }
 
+void OccViewport::setThicknessEditingEnabled(bool enabled)
+{
+    state_->thicknessEditingEnabled = enabled;
+    if (!enabled)
+    {
+        state_->thicknessEditor->hide();
+    }
+}
+
 void OccViewport::setModelPickingEnabled(bool enabled)
 {
     if (state_->modelPickingEnabled == enabled) return;
     state_->modelPickingEnabled = enabled;
     try
     {
-        if (state_->model) state_->model->setSelectable(enabled);
+        updateMeasurementPicking();
         update();
     }
     catch (const Standard_Failure &error) { fail(QString::fromUtf8(error.what())); }
 }
 
-void OccViewport::setSelectedPart(const std::string &id)
+void OccViewport::setModelPickMode(ModelPickMode mode)
 {
-    const bool exists = state_->modelVisible && std::any_of(state_->parts.begin(), state_->parts.end(),
-        [&id](const auto &part) { return part.id == id; });
-    state_->selectedPart = exists ? id : std::string{};
+    if (state_->pickMode == mode) return;
+    state_->pickMode = mode;
     try
     {
-        if (state_->model) state_->model->selectPart(state_->selectedPart);
+        setSelectedPart({});
+        updateMeasurementPicking();
+        update();
+    }
+    catch (const Standard_Failure &error) { fail(QString::fromUtf8(error.what())); }
+}
+
+void OccViewport::detectObject(const QPoint &pixel)
+{
+    state_->context->MoveTo(pixel.x(), pixel.y(), state_->view, false);
+    const auto owner = state_->context->DetectedOwner();
+    if (!state_->model || state_->model->detectedPartId(owner).empty()) return;
+    const auto selector = state_->context->MainSelector();
+    std::optional<gp_Pnt> position;
+    for (int rank = 1; rank <= selector->NbPicked(); ++rank)
+    {
+        if (selector->Picked(rank) == owner)
+        {
+            position = selector->PickedPoint(rank);
+            break;
+        }
+    }
+    if (position && !isMeasurementPointVisible(*position, state_->context, state_->view,
+        [this](const auto &candidate) { return state_->model->isSurfaceOwner(candidate); }))
+    {
+        state_->context->ClearDetected(false);
+    }
+}
+
+void OccViewport::setSelectedPart(const std::string &id)
+{
+    setSelectedParts(id.empty() ? std::vector<std::string>{} : std::vector<std::string>{id});
+}
+
+std::vector<std::string> OccViewport::selectedParts() const
+{
+    std::vector<std::string> ids;
+    if (state_->pickMode == ModelPickMode::Body)
+        for (const auto &selection : state_->selectedObjects) ids.push_back(selection.partId);
+    return ids;
+}
+
+const std::vector<ModelSelection> &OccViewport::selectedObjects() const
+{
+    return state_->selectedObjects;
+}
+
+void OccViewport::setSelectedParts(const std::vector<std::string> &ids)
+{
+    std::vector<ModelSelection> selections;
+    for (const auto &id : ids) selections.push_back({id, ModelPickMode::Body, 0});
+    setSelectedObjects(selections);
+}
+
+void OccViewport::setSelectedObjects(const std::vector<ModelSelection> &selections)
+{
+    std::vector<ModelSelection> valid;
+    if (state_->modelVisible)
+        for (const auto &selection : selections)
+            if (selection.kind == state_->pickMode &&
+                std::any_of(state_->parts.begin(), state_->parts.end(),
+                    [&](const auto &part) { return isValidModelSelection(part, selection); }) &&
+                std::find(valid.begin(), valid.end(), selection) == valid.end())
+                valid.push_back(selection);
+    state_->selectedObjects = std::move(valid);
+    try
+    {
+        if (state_->model) state_->model->selectObjects(state_->selectedObjects);
         update();
     }
     catch (const Standard_Failure &error) { fail(QString::fromUtf8(error.what())); }
 }
 
 void OccViewport::setCloudVisible(bool visible) {
+    if (!visible)
+    {
+        setMeasurementEnabled(false);
+    }
     state_->cloudVisible = visible;
     if (!visible)
     {
@@ -384,6 +863,7 @@ void OccViewport::setCloudVisible(bool visible) {
         try {
             if (visible) state_->context->Display(state_->cloud, 0, -1, false);
             else state_->context->Erase(state_->cloud, false);
+            updateMeasurementPicking();
             update();
         } catch (const Standard_Failure& error) {
             fail(QString::fromUtf8(error.what()));
@@ -393,11 +873,16 @@ void OccViewport::setCloudVisible(bool visible) {
 
 void OccViewport::setModelVisible(bool visible)
 {
+    if (!visible)
+    {
+        setMeasurementEnabled(false);
+    }
     state_->modelVisible = visible;
-    if (!visible && !state_->selectedPart.empty())
+    state_->thicknessEditor->hide();
+    if (!visible)
     {
         setSelectedPart({});
-        if (onModelPartSelected) onModelPartSelected({});
+        if (onModelObjectsSelected) onModelObjectsSelected({});
     }
     try
     {
@@ -413,9 +898,128 @@ void OccViewport::setModelVisible(bool visible)
     }
 }
 
+void OccViewport::setReferencePlane(std::shared_ptr<const ReferencePlane> plane, PlaneSection section, const Vec3 &origin)
+{
+    state_->referencePlane = plane ? std::optional<ReferencePlane>(localReferencePlane(*plane, origin)) : std::nullopt;
+    state_->section = section;
+    try
+    {
+        updateCloudClip();
+        updateReferencePresentation();
+        update();
+    }
+    catch (const Standard_Failure &error) { fail(QString::fromUtf8(error.what())); }
+}
+
+void OccViewport::updateCloudClip()
+{
+    if (state_->cloud.IsNull()) return;
+    if (!state_->cloudClip.IsNull()) state_->cloud->RemoveClipPlane(state_->cloudClip);
+    state_->cloudClip.Nullify();
+    if (state_->referencePlane && state_->section.enabled)
+    {
+        const auto e = sectionEquation(*state_->referencePlane, state_->section);
+        state_->cloudClip = new Graphic3d_ClipPlane(NCollection_Vec4<double>(e[0], e[1], e[2], e[3]));
+        state_->cloud->AddClipPlane(state_->cloudClip);
+    }
+}
+
+void OccViewport::setReferencePlanePicking(ReferencePlanePickMode mode)
+{
+    if (mode != ReferencePlanePickMode::None) setMeasurementEnabled(false);
+    state_->referencePickMode = mode;
+    setSelectedPart({});
+    state_->referencePoints.clear();
+    state_->measurementHover.reset();
+    state_->measurement.clear();
+    if (state_->measurementPresentation) state_->measurementPresentation->clear();
+    clearSelectionRectangle();
+    setCursor(mode == ReferencePlanePickMode::None ? Qt::ArrowCursor : Qt::CrossCursor);
+    updateMeasurementPicking();
+    updateReferencePresentation();
+    update();
+}
+
+void OccViewport::setReferencePreview(std::vector<Vec3> points)
+{
+    state_->referencePoints = std::move(points);
+    updateReferencePresentation();
+    update();
+}
+
+void OccViewport::updateReferencePresentation()
+{
+    if (!state_->referencePresentation) return;
+    const bool picking = state_->referencePickMode != ReferencePlanePickMode::None;
+    auto plane = picking ? std::optional<ReferencePlane>{} : state_->referencePlane;
+    if (picking && state_->referencePoints.size() == 3)
+        plane = makeReferencePlane({state_->referencePoints[0], state_->referencePoints[1], state_->referencePoints[2]});
+    Vec3 low{}, high{};
+    bool first = true;
+    const auto include = [&](const Vec3 &p) {
+        if (first) { low = high = p; first = false; }
+        else
+        {
+            low = {std::min(low.x, p.x), std::min(low.y, p.y), std::min(low.z, p.z)};
+            high = {std::max(high.x, p.x), std::max(high.y, p.y), std::max(high.z, p.z)};
+        }
+    };
+    for (const auto &p : state_->points) include(p.position);
+    for (const auto &part : state_->parts) for (const auto &p : part.vertices) include(p);
+    for (const auto &p : state_->referencePoints) include(p);
+    state_->referencePresentation->update(picking ? state_->referencePoints : std::vector<Vec3>{}, plane,
+        low, high, !picking && state_->section.enabled ? state_->section.offsetMm : 0, devicePixelRatioF());
+}
+
+void OccViewport::pickReference(const QPoint &pixel)
+{
+    QString message;
+    try
+    {
+        if (state_->referencePickMode == ReferencePlanePickMode::ThreePoints)
+        {
+            const auto picked = measurementPoint(pixel);
+            if (!picked) return;
+            auto points = state_->referencePoints;
+            if (points.size() == 3) points.clear();
+            if (std::any_of(points.begin(), points.end(), [&](const Vec3 &p) {
+                return std::hypot(p.x - picked->position.x, p.y - picked->position.y, p.z - picked->position.z) < 1e-6;
+            })) throw std::invalid_argument("该点已选择，请选择其他位置。");
+            points.push_back(picked->position);
+            if (points.size() == 3) (void)makeReferencePlane({points[0], points[1], points[2]});
+            setReferencePreview(std::move(points));
+        }
+        else if (state_->model)
+        {
+            detectObject(pixel);
+            const auto owner = state_->context->DetectedOwner();
+            const auto selected = state_->model->detectedSelection(owner);
+            if (selected.partId.empty() || selected.kind != ModelPickMode::Face) return;
+            const auto part = std::find_if(state_->parts.begin(), state_->parts.end(),
+                [&](const auto &p) { return p.id == selected.partId; });
+            if (part == state_->parts.end()) return;
+            const auto plane = referencePlaneFromFace(*part, selected.index);
+            state_->model->selectOwner(owner);
+            setReferencePreview(std::vector<Vec3>(plane.pointsMm.begin(), plane.pointsMm.end()));
+        }
+    }
+    catch (const std::exception &error)
+    {
+        if (state_->referencePickMode == ReferencePlanePickMode::Face)
+        {
+            setSelectedPart({});
+            setReferencePreview({});
+        }
+        message = QString::fromUtf8(error.what());
+    }
+    if (onReferencePicked) onReferencePicked(state_->referencePoints, message);
+    redraw();
+}
+
 void OccViewport::setThicknessVisible(bool visible)
 {
     state_->thicknessVisible = visible;
+    state_->thicknessEditor->hide();
     setModelVisible(state_->modelVisible);
 }
 
@@ -531,6 +1135,46 @@ void OccViewport::showBottomView(const Vec3 &normal, const Vec3 &longitudinal)
     }
 }
 
+bool OccViewport::beginTransformPreview(const std::vector<std::string> &ids, Vec3 origin, const ModelTransform &request)
+{
+    endTransformPreview();
+    if (!state_->model || state_->view.IsNull()) return false;
+    const auto objects = state_->model->objectsForParts(ids);
+    if (objects.empty()) return false;
+    setMeasurementEnabled(false);
+    clearSelectionRectangle();
+    state_->model->setTransformPreview(true);
+    try
+    {
+        state_->transform = std::make_unique<OccTransformPreview>(state_->context,state_->view,objects,
+            state_->parts,ids,origin,request,devicePixelRatioF());
+        redraw();
+        return true;
+    }
+    catch (const Standard_Failure &error)
+    {
+        state_->model->setTransformPreview(false);
+        if (onError) onError(QString::fromUtf8(error.what()));
+        return false;
+    }
+}
+void OccViewport::updateTransformPreview(const ModelTransform &request)
+{
+    if (!state_->transform) return;
+    state_->transform->apply(request);
+    redraw();
+}
+void OccViewport::endTransformPreview()
+{
+    if (!state_->transform) return;
+    state_->transform.reset();
+    if (state_->model)
+    {
+        state_->model->setTransformPreview(false);
+        state_->model->selectObjects(state_->selectedObjects);
+    }
+    update();
+}
 void OccViewport::fitAll() {
     if (state_->view.IsNull()) return;
     try {
@@ -559,6 +1203,7 @@ void OccViewport::setCloudSelectionMode(CloudSelectionMode mode)
 
 void OccViewport::setCloudSelection(std::shared_ptr<const CloudSelection> selection)
 {
+    if (state_->selection == selection) return;
     state_->selection = std::move(selection);
     try
     {
@@ -628,6 +1273,7 @@ CloudSelectionRect OccViewport::selectionRectangle(const QPoint &current) const
 
 void OccViewport::mousePressEvent(QMouseEvent *event)
 {
+    state_->pressedThicknessLabel = false;
     setFocus(Qt::MouseFocusReason);
     const auto ratio = devicePixelRatioF();
     state_->lastMouse = QPoint(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
@@ -639,9 +1285,26 @@ void OccViewport::mousePressEvent(QMouseEvent *event)
         {
             clearSelectionRectangle();
             state_->leftPress = state_->lastMouse;
+            if (state_->thicknessEditingEnabled && state_->model &&
+                state_->model->labelAt(event->position(), ratio))
+            {
+                state_->pressedThicknessLabel = true;
+                event->accept();
+                return; // 标签不能穿透到背后的模型或启动点云框选。
+            }
             state_->context->MoveTo(state_->lastMouse.x(), state_->lastMouse.y(), state_->view, false);
-            state_->selecting = state_->cloudEditingEnabled && state_->cloudVisible &&
+            if (state_->transform)
+            {
+                state_->transform->startDrag(state_->lastMouse.x(),state_->lastMouse.y());
+                event->accept();
+                return;
+            }
+            state_->selecting = state_->referencePickMode == ReferencePlanePickMode::None && !state_->measurementEnabled && (state_->plateCropEnabled || (state_->cloudEditingEnabled && state_->cloudVisible)) &&
                 !isDetectedInteractive(state_->context->DetectedOwner(), state_->viewCube);
+            if (state_->measurementEnabled)
+            {
+                state_->context->ClearDetected(false);
+            }
         }
         if (event->button() == Qt::RightButton)
         {
@@ -664,7 +1327,13 @@ void OccViewport::mouseMoveEvent(QMouseEvent *event)
     const QPoint current(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
     try
     {
-        if (event->buttons().testFlag(Qt::RightButton))
+        if (event->buttons().testFlag(Qt::LeftButton) && state_->transform && state_->transform->dragging())
+        {
+            if (const auto request = state_->transform->drag(current.x(),current.y()); request && onTransformDragged)
+                onTransformDragged(*request);
+            redraw();
+        }
+        else if (event->buttons().testFlag(Qt::RightButton))
         {
             state_->rightDragged = state_->rightDragged || (current - state_->rightPress).manhattanLength() >
                                                                QApplication::startDragDistance() * ratio;
@@ -690,8 +1359,16 @@ void OccViewport::mouseMoveEvent(QMouseEvent *event)
         }
         else if (event->buttons() == Qt::NoButton)
         {
-            state_->context->MoveTo(current.x(), current.y(), state_->view, false);
-            state_->view->Redraw();
+            if (state_->measurementEnabled || state_->referencePickMode == ReferencePlanePickMode::ThreePoints)
+            {
+                state_->measurementHover = measurementPoint(current);
+                redraw();
+            }
+            else
+            {
+                detectObject(current);
+                state_->view->Redraw();
+            }
         }
     }
     catch (const Standard_Failure &error)
@@ -703,6 +1380,12 @@ void OccViewport::mouseMoveEvent(QMouseEvent *event)
 
 void OccViewport::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton && state_->pressedThicknessLabel)
+    {
+        state_->pressedThicknessLabel = false;
+        event->accept();
+        return;
+    }
     if (state_->view.IsNull())
     {
         return;
@@ -711,8 +1394,13 @@ void OccViewport::mouseReleaseEvent(QMouseEvent *event)
     const QPoint current(qRound(event->position().x() * ratio), qRound(event->position().y() * ratio));
     if (event->button() == Qt::RightButton)
     {
-        if (!state_->rightDragged && state_->cloudEditingEnabled && onCloudContextMenu)
+        if (!state_->rightDragged && (state_->pickMode==ModelPickMode::Body || state_->transform || state_->cloudEditingEnabled || state_->measurementEnabled || state_->referencePickMode != ReferencePlanePickMode::None || (hasEditContextMenu && hasEditContextMenu())) && onCloudContextMenu)
         {
+            if (state_->selectedObjects.empty() && state_->modelPickingEnabled && state_->pickMode==ModelPickMode::Body && state_->model) {
+                detectObject(current);
+                const auto hit=state_->model->detectedSelection(state_->context->DetectedOwner());
+                if (!hit.partId.empty()) { setSelectedObjects({hit});if(onModelObjectsSelected) onModelObjectsSelected(state_->selectedObjects); }
+            }
             onCloudContextMenu(event->globalPosition().toPoint());
         }
         return;
@@ -723,12 +1411,22 @@ void OccViewport::mouseReleaseEvent(QMouseEvent *event)
     }
     try
     {
+        if (state_->transform)
+        {
+            state_->transform->finishDrag();
+            redraw();
+            event->accept();
+            return;
+        }
         if (state_->selecting)
         {
             state_->selecting = false;
             if ((current - state_->leftPress).manhattanLength() > QApplication::startDragDistance() * ratio)
             {
                 const auto rectangle = selectionRectangle(current);
+                if (state_->plateCropEnabled) {
+                    drawSelectionRectangle(current);if(onPlateCrop) onPlateCrop(rectangle);return;
+                }
                 if (rectangle.minX < rectangle.maxX && rectangle.minY < rectangle.maxY && onCloudSelection)
                 {
                     drawSelectionRectangle(current);
@@ -736,18 +1434,19 @@ void OccViewport::mouseReleaseEvent(QMouseEvent *event)
                 }
                 return;
             }
-            // 单击空白清空当前选区；加选/减选模式的小幅点击不改变已有选区。
-            if (state_->selectionMode == CloudSelectionMode::Replace && onCloudSelection)
+            // 点模式单击优先拾取模型顶点，拖动仍用于框选点云。
+            if (!state_->modelPickingEnabled)
             {
-                onCloudSelection({}, CloudSelectionMode::Clear);
+                if (state_->selectionMode == CloudSelectionMode::Replace && onCloudSelection)
+                    onCloudSelection({}, CloudSelectionMode::Clear);
+                return;
             }
-            return;
         }
         if ((current - state_->leftPress).manhattanLength() > QApplication::startDragDistance() * ratio)
         {
             return;
         }
-        state_->context->MoveTo(current.x(), current.y(), state_->view, false);
+        detectObject(current);
         const auto owner = Handle(AIS_ViewCubeOwner)::DownCast(state_->context->DetectedOwner());
         if (!owner.IsNull() && isDetectedInteractive(owner, state_->viewCube))
         {
@@ -757,11 +1456,40 @@ void OccViewport::mouseReleaseEvent(QMouseEvent *event)
             event->accept();
             return;
         }
+        if (state_->referencePickMode != ReferencePlanePickMode::None)
+        {
+            pickReference(current);
+            event->accept();
+            return;
+        }
+        if (state_->measurementEnabled)
+        {
+            state_->context->ClearDetected(false);
+            state_->measurementHover = measurementPoint(current);
+            if (state_->measurementHover && state_->measurement.pick(state_->measurementHover->position,
+                                                                    state_->measurementHover->snapped))
+            {
+                if (const auto result = state_->measurement.result(); result && onMeasurementCompleted)
+                {
+                    onMeasurementCompleted(*result);
+                }
+            }
+            redraw();
+            event->accept();
+            return;
+        }
         if (state_->modelPickingEnabled && state_->model)
         {
-            const auto id = state_->model->detectedPartId(state_->context->DetectedOwner());
-            setSelectedPart(id);
-            if (onModelPartSelected) onModelPartSelected(id);
+            const auto selectedOwner = state_->context->DetectedOwner();
+            const auto selected = state_->model->detectedSelection(selectedOwner);
+            const auto modifiers = event->modifiers();
+            const bool toggle = modifiers.testFlag(Qt::ShiftModifier) || modifiers.testFlag(Qt::ControlModifier);
+            if (selected.partId.empty() && state_->cloudEditingEnabled &&
+                !toggle && state_->selectionMode == CloudSelectionMode::Replace && onCloudSelection)
+                onCloudSelection({}, CloudSelectionMode::Clear);
+            setSelectedObjects(updateModelSelection(state_->selectedObjects, selected, state_->selectionMode, toggle));
+            if (onModelObjectsSelected) onModelObjectsSelected(state_->selectedObjects);
+            redraw();
             event->accept();
         }
     }
@@ -775,9 +1503,28 @@ void OccViewport::keyPressEvent(QKeyEvent *event)
 {
     if (event->key() == Qt::Key_Escape)
     {
+        if (onEditEscape && onEditEscape()) { event->accept(); return; }
+        if (state_->transform)
+        {
+            if (onTransformCancelled) onTransformCancelled();
+            event->accept();
+            return;
+        }
+        if (state_->referencePickMode != ReferencePlanePickMode::None)
+        {
+            if (onReferenceCancelled) onReferenceCancelled();
+            event->accept();
+            return;
+        }
+        if (state_->measurementEnabled)
+        {
+            setMeasurementEnabled(false);
+            event->accept();
+            return;
+        }
         clearSelectionRectangle();
         setSelectedPart({});
-        if (onModelPartSelected) onModelPartSelected({});
+        if (onModelObjectsSelected) onModelObjectsSelected({});
         if (state_->cloudEditingEnabled && onCloudSelection)
         {
             onCloudSelection({}, CloudSelectionMode::Clear);
@@ -791,6 +1538,7 @@ void OccViewport::keyPressEvent(QKeyEvent *event)
 
 void OccViewport::leaveEvent(QEvent *event)
 {
+    state_->measurementHover.reset();
     QWidget::leaveEvent(event);
     if (!state_->context.IsNull())
     {
@@ -801,6 +1549,28 @@ void OccViewport::leaveEvent(QEvent *event)
 
 void OccViewport::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::LeftButton && state_->thicknessEditingEnabled && state_->model)
+    {
+        const double ratio = devicePixelRatioF();
+        if (const auto label = state_->model->labelAt(event->position(), ratio))
+        {
+            clearSelectionRectangle();
+            state_->pressedThicknessLabel = true;
+            if (onThicknessLabelEditRequested && onThicknessLabelEditRequested(label->partId))
+            {
+                const QPoint center(qRound(label->pixelRect.center().x() / ratio),
+                                    qRound(label->pixelRect.center().y() / ratio));
+                state_->thicknessEditor->open(label->partId, label->thicknessMm, mapToGlobal(center));
+            }
+            event->accept();
+            return;
+        }
+    }
+    if (state_->transform || state_->measurementEnabled || state_->referencePickMode != ReferencePlanePickMode::None)
+    {
+        event->accept();
+        return;
+    }
     if (!state_->context.IsNull())
     {
         const double ratio = devicePixelRatioF();

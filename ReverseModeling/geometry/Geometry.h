@@ -1,10 +1,11 @@
-/*
+﻿/*
  * 文件描述：
  * 声明点云导入、辅助 H 型钢建模、STEP 交换及有限板件偏差服务，隐藏第三方对象。
  */
 #pragma once
 
 #include "core/Types.h"
+#include "geometry/ModelTransform.h"
 
 #include <filesystem>
 #include <functional>
@@ -27,6 +28,8 @@ private:
     std::string code_;
 };
 
+struct PlateEdit;
+struct PlateEditResult;
 class Model {
 public:
     struct Impl;
@@ -35,10 +38,33 @@ public:
     [[nodiscard]] const MeshData& mesh() const noexcept;
 private:
     std::shared_ptr<const Impl> implementation_;
+    friend PlateEditResult editModelPlates(const Model&, PlateEdit, std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> associateModelCloud(const Model&, const CloudData&, std::stop_token);
+    friend std::shared_ptr<const Model> reconstructLocalParts(const Model&, const CloudData&,
+        const LocalReconstruction&, std::stop_token, const ProgressCallback&);
+    friend StepExportResult exportCwrm(const Model&, const std::filesystem::path&, std::stop_token, const ProgressCallback&);
     friend StepExportResult exportStep(const Model&, const std::filesystem::path&,
                                       std::stop_token, const ProgressCallback&);
     friend DeviationResult evaluateDeviation(const CloudData&, const Model&,
                                              std::stop_token, const ProgressCallback&);
+    friend std::map<std::string, PlateThicknessInfo> inspectModelThickness(
+        const Model&, const std::vector<std::string>&, std::stop_token);
+    friend std::shared_ptr<const Model> completeModelMirror(
+        const Model&, const MirrorCompletion&, std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> generateModelPlate(
+        const Model&, const PlateGeneration&, std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> expandModelContours(
+        const Model&, const PlateContourExpansion&, std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> changeModelThickness(
+        const Model&, const PlateThicknessChange&, std::stop_token, const ProgressCallback&);
+    friend std::vector<PlateHoleBase> inspectModelHoleBases(const Model&, const std::string&);
+    friend std::shared_ptr<const Model> addModelHole(const Model&, const PlateHole&, std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> treatModelEdges(const Model&, const EdgeTreatment&,
+        std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> transformModelParts(const Model&, const std::vector<std::string>&,
+        const ModelTransform&, std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> deleteModelParts(const Model&, const std::vector<std::string>&,
+                                                       std::stop_token, const ProgressCallback&);
 };
 
 [[nodiscard]] std::shared_ptr<const CloudData> loadPointCloud(
@@ -68,6 +94,43 @@ private:
 [[nodiscard]] std::shared_ptr<const Model> buildBeam(
     const BeamFrame& frame, const BeamParameters& parameters,
     std::stop_token stop = {}, const ProgressCallback& progress = {});
+
+// 按稳定部件 ID 删除真实几何；保留部件的 ID/坐标/板厚不变，全部删除返回 nullptr。
+[[nodiscard]] std::shared_ptr<const Model> deleteModelParts(
+    const Model &model, const std::vector<std::string> &partIds,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+
+[[nodiscard]] std::shared_ptr<const Model> transformModelParts(
+    const Model &model, const std::vector<std::string> &partIds, const ModelTransform &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+
+[[nodiscard]] std::shared_ptr<const Model> treatModelEdges(
+    const Model &model, const EdgeTreatment &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+
+[[nodiscard]] std::vector<PlateHoleBase> inspectModelHoleBases(const Model &model, const std::string &partId);
+[[nodiscard]] std::shared_ptr<const Model> addModelHole(const Model &model, const PlateHole &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+
+[[nodiscard]] std::map<std::string, PlateThicknessInfo> inspectModelThickness(
+    const Model &model, const std::vector<std::string> &partIds, std::stop_token stop = {});
+[[nodiscard]] std::shared_ptr<const Model> completeModelMirror(
+    const Model &model, const MirrorCompletion &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+[[nodiscard]] std::shared_ptr<const Model> generateModelPlate(
+    const Model &model, const PlateGeneration &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+[[nodiscard]] std::shared_ptr<const Model> expandModelContours(
+    const Model &model, const PlateContourExpansion &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+[[nodiscard]] std::shared_ptr<const Model> changeModelThickness(
+    const Model &model, const PlateThicknessChange &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+
+[[nodiscard]] std::shared_ptr<const Model> associateModelCloud(const Model &model, const CloudData &cloud,
+    std::stop_token stop = {});
+[[nodiscard]] std::shared_ptr<const Model> reconstructLocalParts(const Model &model, const CloudData &cloud,
+    const LocalReconstruction &request, std::stop_token stop = {}, const ProgressCallback &progress = {});
 
 // 默认拒绝覆盖已有文件；临时写出、独立回读及几何检查通过后才提交目标文件。
 [[nodiscard]] StepExportResult exportStep(

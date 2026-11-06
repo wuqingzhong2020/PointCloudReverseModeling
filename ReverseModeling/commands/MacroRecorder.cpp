@@ -32,8 +32,7 @@ rm::CommandResult MacroRecorder::start(const std::filesystem::path &path, bool o
     {
         return rm::CommandResult::error("recording_open_failed", "无法创建录制脚本，请检查目录和写入权限。");
     }
-    file << "# ReverseModeler 命令脚本（UTF-8）\n"
-            "# 每行一条命令，与命令窗口相同；失败停止，前序提交不自动回滚。\n\n";
+    file << header;
     file.flush();
     if (!file)
     {
@@ -74,43 +73,50 @@ void MacroRecorder::fail(std::string message)
     m_state.active = false;
     m_state.error = "录制已停止：" + std::move(message) + "。已执行的命令不会撤销。文件：" + m_state.pathUtf8;
 }
+std::string recordingLine(const rm::CommandDefinition &definition, const rm::ValidatedCommand &command)
+{
+    rm::Array positional;
+    rm::Arguments options;
+    std::map<std::size_t, rm::Value> ordered;
+    for (const auto &parameter : definition.parameters)
+    {
+        const auto value = command.arguments.find(parameter.name);
+        if (value == command.arguments.end())
+        {
+            continue;
+        }
+        if (parameter.binding == rm::Binding::Option)
+        {
+            options.emplace(value->first, value->second);
+        }
+        else
+        {
+            ordered.emplace(parameter.position, value->second);
+        }
+    }
+    for (const auto &[index, value] : ordered)
+    {
+        positional.push_back(value);
+    }
+    return commandText(definition, positional, options).native;
+}
 void MacroRecorder::record(const rm::CommandDefinition &definition, const rm::ValidatedCommand &command)
 {
-    if (!recording())
-    {
-        return;
-    }
+    if (!recording()) return;
+    try { recordLine(recordingLine(definition, command)); }
+    catch (const std::exception &error) { fail(error.what()); }
+}
+void MacroRecorder::recordLine(std::string_view command)
+{
+    if (!recording()) return;
     const auto offset = m_file.tellp();
     try
     {
-        rm::Array positional;
-        rm::Arguments options;
-        std::map<std::size_t, rm::Value> ordered;
-        for (const auto &parameter : definition.parameters)
-        {
-            const auto value = command.arguments.find(parameter.name);
-            if (value == command.arguments.end())
-            {
-                continue;
-            }
-            if (parameter.binding == rm::Binding::Option)
-            {
-                options.emplace(value->first, value->second);
-            }
-            else
-            {
-                ordered.emplace(parameter.position, value->second);
-            }
-        }
-        for (const auto &[index, value] : ordered)
-        {
-            positional.push_back(value);
-        }
-        const auto line = commandText(definition, positional, options).native + '\n';
-        if (line.find_first_of("\r\n") != line.size() - 1)
-        {
+        if (command.find_first_of("\r\n") != std::string_view::npos)
             throw std::runtime_error("命令参数含换行，无法按每行一条命令录制");
-        }
+        if (offset < 0 || static_cast<std::uint64_t>(offset) + command.size() + 1 > maxScriptBytes)
+            throw std::runtime_error("录制脚本超过 64 MiB 上限，已保留此前完整命令");
+        const auto line = std::string(command) + '\n';
         m_file.write(line.data(), static_cast<std::streamsize>(line.size()));
         m_file.flush();
         if (!m_file)

@@ -22,6 +22,7 @@
 #include <SARibbonToolButton.h>
 
 #include "workbench/RibbonBuilder.h"
+#include "workbench/WorkbenchActionHelp.h"
 #include "workbench/WorkbenchActions.h"
 #include "workbench/WorkbenchTheme.h"
 
@@ -64,7 +65,10 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     file->addLargeAction(actions.get(Open), QToolButton::MenuButtonPopup);
     file->actionToRibbonToolButton(actions.get(Open))->setMenu(openMenu);
     auto *exportMenu = menu(ribbon, QStringLiteral("导出"), actions,
-                            {ExportStep, ExportCloud, ExportModel, ExportParameters}, QStringLiteral("export"));
+                            {ExportStep, ExportModel, ExportCloud, ExportModelCloud, ExportParameters}, QStringLiteral("export"));
+    setActionHelp(exportMenu->menuAction(), QStringLiteral("保存当前点云或三维模型。"),
+                  QStringLiteral("点击展开菜单，选择导出 STEP/CWRM 模型、当前 PCD 点云或模型表面采样点云，再指定保存位置。"),
+                  QStringLiteral("STEP/CWRM 和模型采样需要已有模型；当前点云导出需要已有点云。"));
     file->addLargeMenu(exportMenu);
     file->addLargeAction(actions.get(ExportAndExit));
 
@@ -75,13 +79,6 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     auto *cloud = category->addPanel(QStringLiteral("点云"));
     cloud->addSmallAction(actions.get(CropCloud));
     cloud->addSmallAction(actions.get(DeleteCloud));
-    auto *more = menu(ribbon, QStringLiteral("更多"), actions, {AutoAlign, RemoveDuplicates}, QStringLiteral("more"));
-    more->addMenu(
-        menu(more, QStringLiteral("2D 识别精度"), actions, {PrecisionLow, PrecisionMedium, PrecisionHigh}, QString()));
-    more->addSeparator();
-    more->addAction(actions.get(Denoise));
-    more->addAction(actions.get(SplitBoards));
-    cloud->addLargeMenu(more);
 
     auto *reconstruct = category->addPanel(QStringLiteral("重建"));
     for (const auto id : {Parameters, Reconstruct, StopReconstruct, LocalReconstruct})
@@ -89,21 +86,32 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
         reconstruct->addLargeAction(actions.get(id));
     }
     auto *model = category->addPanel(QStringLiteral("模型修改"));
-    model->addLargeMenu(
-        menu(ribbon, QStringLiteral("选点建模"), actions, {BuildSelection, Obstacle}, QStringLiteral("cube")));
-    auto *adjust =
-        menu(ribbon, QStringLiteral("模型调整"), actions, {PlateThickness, ExtendContour}, QStringLiteral("cube"));
-    adjust->addSeparator();
-    adjust->addAction(actions.get(Channel));
-    adjust->addAction(actions.get(Angle));
-    adjust->addSeparator();
-    adjust->addAction(actions.get(OuterPlate));
-    adjust->addAction(actions.get(BottomPlate));
-    adjust->addSeparator();
-    adjust->addAction(actions.get(SteelStructure));
+    auto *adjust = menu(ribbon, QStringLiteral("模型调整"), actions, {}, QStringLiteral("cube"));
+    setActionHelp(adjust->menuAction(), QStringLiteral("修改板厚、外扩轮廓、生成贴板/底板或镜像补全。"),
+                  QStringLiteral("点击展开菜单并选择工具；按面板提示选板或选面，预览后应用。"),
+                  QStringLiteral("需要已有可见模型。钢结构是分组标题，不能点击。"));
+    for (const auto id : WorkbenchActions::modelAdjustmentIds)
+    {
+        if (id == OuterPlate)
+        {
+            adjust->addSeparator();
+        }
+        else if (id == MirrorComplete)
+        {
+            // 使用禁用文字项，避免当前菜单样式把带标题的 section 画成普通分隔线。
+            adjust->addSeparator();
+            auto *section = adjust->addAction(QStringLiteral("钢结构"));
+            section->setEnabled(false);
+        }
+        adjust->addAction(actions.get(id));
+    }
     model->addLargeMenu(adjust);
-    model->addLargeMenu(
-        menu(ribbon, QStringLiteral("添加孔"), actions, {WeldHole, BottomHole}, QStringLiteral("hole")));
+    auto *holeMenu = menu(ribbon, QStringLiteral("添加孔"), actions,
+                          {WeldHole, BottomHole}, QStringLiteral("hole"));
+    setActionHelp(holeMenu->menuAction(), QStringLiteral("给板件添加过焊孔或底边孔。"),
+                  QStringLiteral("展开后选择孔类型，再选择板件、底边和尺寸；查看绿色孔位，预览后应用。"),
+                  QStringLiteral("需要已有可见的等厚实体板件。"));
+    model->addLargeMenu(holeMenu);
     for (const auto id : {Fillet, Move, Rotate, DeleteModel})
     {
         model->addLargeAction(actions.get(id));
@@ -114,6 +122,10 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
         tools->addSmallAction(actions.get(id));
     }
     auto *windowPanel = category->addPanel(QStringLiteral("工作区"));
+    windows->setToolTipsVisible(true);
+    setActionHelp(windows->menuAction(), QStringLiteral("显示或隐藏工具窗口，恢复默认布局。"),
+                  QStringLiteral("点击展开菜单，勾选重建参数、操作面板、模型树、属性或命令窗口。"),
+                  QStringLiteral("隐藏窗口或恢复布局不会删除模型及点云。"));
     windowPanel->addLargeMenu(windows);
     auto *script = category->addPanel(QStringLiteral("脚本"));
     for (const auto id : {StartRecording, StopRecording, ExecuteScript})
@@ -143,7 +155,7 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
     }
     auto *filter = new QToolButton(toolbar);
     filter->setText(QStringLiteral("可选：点"));
-    for (const auto id : {SelectPoint, SelectSolid})
+    for (const auto id : {SelectPoint, SelectEdge, SelectFace, SelectSolid})
     {
         QObject::connect(actions.get(id), &QAction::toggled, filter, [filter, &actions, id](bool checked)
         {
@@ -151,8 +163,13 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
         });
     }
     filter->setPopupMode(QToolButton::InstantPopup);
-    filter->setMenu(menu(toolbar, QStringLiteral("选择过滤"), actions,
-                         {SelectPoint, SelectEdge, SelectFace, SelectSolid}, QString()));
+    auto *filterMenu = menu(toolbar, QStringLiteral("选择过滤"), actions,
+                            {SelectPoint, SelectEdge, SelectFace, SelectSolid}, QString());
+    setActionHelp(filterMenu->menuAction(), QStringLiteral("指定鼠标拾取点、线、面还是整个部件。"),
+                  QStringLiteral("点击选择类型，再左键拾取；Shift 点击追加/取消。点模式还可拖框选择点云。"),
+                  QStringLiteral("线、面、体需要可见模型；切换类型会清空已有选择。"));
+    filter->setMenu(filterMenu);
+    filter->setToolTip(filterMenu->menuAction()->toolTip());
     toolbar->addWidget(filter);
     toolbar->addSeparator();
     const auto split = [toolbar, &actions](ActionId action, std::initializer_list<ActionId> modes)
@@ -167,28 +184,7 @@ QWidget *createViewToolbar(QWidget *parent, WorkbenchActions &actions)
     split(ShowCloud, {CloudHeight, CloudSolid});
     split(ShowModel, {ModelSolid, ModelWire});
     toolbar->addAction(actions.get(ShowThickness));
-    auto *section = new QToolButton(toolbar);
-    section->setText(QStringLiteral("剖视"));
-    section->setIcon(WorkbenchTheme::icon(QStringLiteral("plane")));
-    section->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    section->setPopupMode(QToolButton::InstantPopup);
-    auto *sectionMenu = new QMenu(section);
-    auto *card = new QWidget(sectionMenu);
-    auto *form = new QFormLayout(card);
-    auto *plane = new QToolButton(card);
-    plane->setText(QStringLiteral("未选择平面"));
-    plane->setEnabled(false);
-    auto *offset = new QDoubleSpinBox(card);
-    offset->setSuffix(QStringLiteral(" mm"));
-    offset->setEnabled(false);
-    form->addRow(QStringLiteral("剖视"), plane);
-    form->addRow(QStringLiteral("偏移"), offset);
-    form->addRow(new QLabel(QStringLiteral("剖切功能待接入"), card));
-    auto *cardAction = new QWidgetAction(sectionMenu);
-    cardAction->setDefaultWidget(card);
-    sectionMenu->addAction(cardAction);
-    section->setMenu(sectionMenu);
-    toolbar->addWidget(section);
+    toolbar->addAction(actions.get(Section));
     toolbar->addSeparator();
     toolbar->addAction(actions.get(FitAll));
     layout->addWidget(toolbar, 1);

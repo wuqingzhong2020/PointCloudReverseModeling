@@ -193,21 +193,21 @@ std::string commandDetails(const std::string &name, const ProjectSnapshot &proje
         }
         warnings(project.warnings, "");
     }
-    if ((name == "model.reconstruct" || name == "model.parametric") && project.model)
+    if ((name == "model.reconstruct_local" || name == "model.reconstruct" || name == "model.parametric") && project.model)
     {
         out << "模型版本 " << project.revision << "；" << project.model->solidCount << " 个板件实体，"
             << project.model->surfaceCount << " 个观测面。\n";
-        out << (project.model->fromPointCloud ? "板厚采用点云识别结果，底板厚度估算会单独标记。"
+        out << (project.model->fromPointCloud ? "双击板厚标签可修改，厚度来源可在属性中查看。"
                                                             : "手动参数模型，标签不是点云识别厚度。") << '\n';
         warnings(project.model->warnings, "");
     }
-    if (name == "model.export_step" && project.lastExport)
+    if ((name == "model.export_step" || name == "model.export_cwrm") && project.lastExport)
     {
         const auto &result = *project.lastExport;
-        out << "STEP 回读：" << result.solidCount << " 个实体，" << result.surfaceCount << " 个观测面，"
+        out << (name == "model.export_cwrm" ? "CWRM 回读：" : "STEP 回读：") << result.solidCount << " 个实体，" << result.surfaceCount << " 个观测面，"
             << result.fileBytes << " 字节；文件：" << project.exportedPathUtf8 << '\n';
     }
-    if (name == "cloud.export" && project.lastCloudExport)
+    if ((name == "cloud.export" || name == "model.export_pcd") && project.lastCloudExport)
     {
         const auto &result = *project.lastCloudExport;
         out << "PCD 导出：" << result.pointCount << " 点，" << result.fileBytes

@@ -1,6 +1,6 @@
 ﻿/*
  * 文件描述：
- * 定义有效建模参数面板与尚未接入几何操作的表单容器。
+ * 定义建模参数面板和操作容器；模型调整下拉框与 Ribbon 复用动作入口。
  */
 #pragma once
 
@@ -73,17 +73,22 @@ class OperationPanel final : public QWidget
 {
     Q_OBJECT
   public:
-    explicit OperationPanel(QWidget *parent = nullptr);
+    explicit OperationPanel(WorkbenchActions &actions, QWidget *parent = nullptr);
     void showOperation(ActionId id, const QString &title);
+    void showCustom(const QString &title, QWidget *content, ActionId id = ActionId::Count);
 
   signals:
     void closeRequested();
 
   private:
     QLabel *m_title;
+    QComboBox *m_adjustment;
     QStackedWidget *m_stack;
+    QWidget *m_intro;
+    QWidget *m_footer;
     QWidget *m_form{};
     ActionId m_current{ActionId::Count};
     QString m_currentTitle;
+    void setOperationTitle(ActionId id, const QString &title);
 };
 } // namespace reverse::workbench

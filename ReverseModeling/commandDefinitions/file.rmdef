@@ -1,0 +1,10 @@
+# 独立文件转换，不替换当前工程。
+rm_module(name='file', summary='文件格式转换')
+rm_define(
+    name='convert', summary='转换 STEP/CWRM 模型格式或采样为 PCD',
+    usage='file.convert <input.step|input.cwrm> <output.step|output.cwrm|output.pcd> [--spacing 2]',
+    description='输入仅支持 STEP/STP、CWRM。禁止以 PCD 为输入（包括 PCD 转 PCD），点云正常导入、导出不受影响。输出 PCD 为模型表面采样，并非原始扫描数据；曲面受三角网格离散精度限制。转换不修改当前工程，不覆盖已有文件。',
+    params=[{'name': 'input', 'binding': 'positional', 'position': 1, 'type': 'path', 'required': True, 'min_size': 1}, {'name': 'output', 'binding': 'positional', 'position': 2, 'type': 'path', 'required': True, 'min_size': 1}, {'name': 'spacing', 'binding': 'option', 'option': '--spacing', 'type': 'float', 'ranges': [[0.01, 100000.0]], 'default': 2.0, 'unit': 'mm', 'description': '模型表面面积采样间距，越小点越密；最多五百万点。'}],
+    returns={'type':'object','description':'当前工程摘要，转换结果写入日志'},
+    examples=['file.convert "D:/data/model.step" "D:/data/model.cwrm"', 'file.convert "D:/data/model.cwrm" "D:/data/surface.pcd" --spacing 2'],
+)

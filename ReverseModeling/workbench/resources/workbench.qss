@@ -27,6 +27,12 @@ QComboBox QAbstractItemView { background: #0b202a; selection-background-color: #
 QComboBox::drop-down { width: 24px; border-left: 1px solid #235b71; }
 QGroupBox { background: #0b202a; border: 1px solid #17546a; border-radius: 6px; margin-top: 15px; padding: 13px 10px 10px; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #dce4ea; }
+QTabBar[holeSelector="true"]::tab { background: #0e2d3d; color: #a8bbc6; border: 1px solid #167d9a; padding: 7px 8px; min-height: 18px; }
+QTabBar[holeSelector="true"]::tab:first { border-top-left-radius: 5px; border-bottom-left-radius: 5px; border-right: none; }
+QTabBar[holeSelector="true"]::tab:last { border-top-right-radius: 5px; border-bottom-right-radius: 5px; }
+QTabBar[holeSelector="true"]::tab:selected { background: #16475b; color: #e2f5fc; }
+QTabBar[holeSelector="true"]::tab:hover { background: #194a64; color: #43c4f3; }
+QTabBar[holeSelector="true"]::tab:disabled { color: #617582; border-color: #263d48; }
 QCheckBox { spacing: 8px; padding: 4px 0; }
 QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #267694; border-radius: 3px; background: #102d3c; }
 QCheckBox::indicator:checked { background: #159dcc; border: 3px solid #a0dbee; }

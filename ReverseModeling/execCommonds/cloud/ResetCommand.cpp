@@ -7,9 +7,9 @@ rm::CommandDefinition ResetCommand::definition()
     rm::CommandDefinition d;
     d.name = name();
     d.module = "cloud";
-    d.summary = "恢复导入时的点云";
+    d.summary = "恢复导入状态（旧入口）";
     d.usage = "cloud.reset";
-    d.description = "";
+    d.description = "project.reset 的旧入口；现在作用于统一工程历史，新录制写入 project.reset。";
     d.returns = "object: 结果摘要；执行失败返回错误码";
     d.examples = {  };
     return d;

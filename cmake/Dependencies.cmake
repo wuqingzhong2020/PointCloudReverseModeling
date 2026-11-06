@@ -1,4 +1,4 @@
-include_guard(GLOBAL)
+﻿include_guard(GLOBAL)
 
 # VTK inspects Windows import libraries with dumpbin. A Visual Studio generator
 # can discover cl.exe without adding its directory to the launching shell PATH.
@@ -36,6 +36,6 @@ find_package(pybind11 CONFIG REQUIRED)
 # 两个程序共用的第三方库；各程序专用库在自己的 CMakeLists.txt 中链接。
 set(RM_COMMON_LIBRARIES
     Eigen3::Eigen nlohmann_json::nlohmann_json pcl_common pcl_io Threads::Threads OpenSSL::Crypto
-    TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKMesh
+    TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKMesh TKFillet TKOffset TKBO TKBool
     TKDESTEP TKXCAF TKLCAF TKCAF TKXSBase
     RmCommandDefinitions CPython::Python pybind11::headers)

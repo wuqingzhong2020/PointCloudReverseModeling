@@ -22,32 +22,22 @@ enum class ActionId
     ExportAndExit,
     ExportCloud,
     ExportModel,
+    ExportModelCloud,
     ExportParameters,
     Undo,
     Redo,
     Reset,
     CropCloud,
     DeleteCloud,
-    AutoAlign,
-    RemoveDuplicates,
-    PrecisionLow,
-    PrecisionMedium,
-    PrecisionHigh,
-    Denoise,
-    SplitBoards,
     Parameters,
     Reconstruct,
     StopReconstruct,
     LocalReconstruct,
-    BuildSelection,
-    Obstacle,
     PlateThickness,
     ExtendContour,
-    Channel,
-    Angle,
     OuterPlate,
     BottomPlate,
-    SteelStructure,
+    MirrorComplete,
     WeldHole,
     BottomHole,
     Fillet,
@@ -86,6 +76,9 @@ class WorkbenchActions final : public QObject
   public:
     explicit WorkbenchActions(QObject *parent);
     QAction *get(ActionId id) const;
+    static constexpr std::array modelAdjustmentIds{
+        ActionId::PlateThickness, ActionId::ExtendContour, ActionId::OuterPlate,
+        ActionId::BottomPlate, ActionId::MirrorComplete};
 
   private:
     std::array<QAction *, static_cast<std::size_t>(ActionId::Count)> m_actions{};

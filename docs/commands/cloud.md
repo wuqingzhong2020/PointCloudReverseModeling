@@ -135,14 +135,14 @@ rm.execute("cloud.delete", regions=[{'rectangle': {'viewProjection': [1, 0, 0, 0
 
 ## cloud.undo
 
-撤销点云编辑
+撤销工程编辑（旧入口）
 
 ```text
 cloud.undo
 cloud.undo --help
 ```
 
-
+project.undo 的旧入口；现在作用于统一工程历史，新录制写入 project.undo。
 
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -153,14 +153,14 @@ cloud.undo --help
 
 ## cloud.redo
 
-重做点云编辑
+重做工程编辑（旧入口）
 
 ```text
 cloud.redo
 cloud.redo --help
 ```
 
-
+project.redo 的旧入口；现在作用于统一工程历史，新录制写入 project.redo。
 
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -171,14 +171,14 @@ cloud.redo --help
 
 ## cloud.reset
 
-恢复导入时的点云
+恢复导入状态（旧入口）
 
 ```text
 cloud.reset
 cloud.reset --help
 ```
 
-
+project.reset 的旧入口；现在作用于统一工程历史，新录制写入 project.reset。
 
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |

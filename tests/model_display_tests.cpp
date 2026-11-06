@@ -53,6 +53,17 @@ TEST(ModelDisplay, PreservesPartMembershipAndModelMeasurements)
     {
         const auto &part = parts[index];
         EXPECT_EQ(offsets[index], part.triangles.size());
+        EXPECT_EQ(part.keyPoints.size(), 8u);
+        EXPECT_EQ(part.edges.size(), 12u);
+        EXPECT_EQ(part.triangleFaceIndices.size(), part.triangles.size());
+        EXPECT_EQ(std::set<std::uint32_t>(part.triangleFaceIndices.begin(), part.triangleFaceIndices.end()).size(), 6u);
+        for (const auto &edge : part.edges)
+        {
+            ASSERT_GE(edge.size(), 2u);
+            for (const auto &endpoint : {edge.front(), edge.back()})
+                EXPECT_TRUE(std::any_of(part.keyPoints.begin(), part.keyPoints.end(), [&](const auto &vertex)
+                { return std::hypot(vertex.x - endpoint.x, vertex.y - endpoint.y, vertex.z - endpoint.z) < 1e-8; }));
+        }
         ASSERT_TRUE(part.thicknessMm);
         EXPECT_FALSE(part.thicknessEstimated);
         EXPECT_DOUBLE_EQ(*part.thicknessMm, part.id == "web" ? 4 : part.id.starts_with("flange-") ? 5 : 3);
@@ -77,7 +88,8 @@ TEST(ModelDisplay, PreservesPartMembershipAndModelMeasurements)
             }
         }
     }
-    EXPECT_EQ(colors.size(), parts.size());
+    EXPECT_EQ(colors.size(), 1u); // 未选中的各部件统一灰色，由真实拓扑轮廓区分。
+    EXPECT_EQ(*colors.begin(), ModelColors::surface);
 }
 
 TEST(ModelDisplay, KeepsColorsAndLabelsWhenPartOrderingChanges)
@@ -108,6 +120,8 @@ TEST(ModelDisplay, KeepsColorsAndLabelsWhenPartOrderingChanges)
     {
         owner = static_cast<std::uint32_t>(mesh.partIds.size() - 1 - owner);
     }
+    for (auto &vertex : mesh.keyPoints) vertex.partIndex = static_cast<std::uint32_t>(mesh.partIds.size() - 1 - vertex.partIndex);
+    for (auto &edge : mesh.edges) edge.partIndex = static_cast<std::uint32_t>(mesh.partIds.size() - 1 - edge.partIndex);
     const auto reordered = makeModelDisplayParts(mesh, summary, {});
     for (std::size_t index = 0; index < original.size(); ++index)
     {

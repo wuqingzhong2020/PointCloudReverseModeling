@@ -1,6 +1,6 @@
 ﻿/*
  * 文件描述：
- * 为各板件创建独立的不透明 AIS 网格及带底色的板厚标签，移除原先的金色半透明整模型。
+ * 为各板件创建独立的灰色哑光 AIS 网格及带底色的板厚标签，配合真实拓扑轮廓区分板件。
  * 标签在 OCCT 场景中绘制，按屏幕矩形避让并用引线关联部件，不覆盖原生视口的 QWidget 输入层。
  */
 #include <algorithm>
@@ -36,6 +36,7 @@
 #include "workbench/ModelLabelVisibility.h"
 #include "workbench/OccPartMesh.h"
 #include "workbench/OccPicking.h"
+#include "workbench/ThicknessLabel.h"
 
 namespace reverse::workbench
 {
@@ -51,13 +52,15 @@ struct PartPresentation
     std::array<ModelLabelAnchor, 2> faces;
     gp_Pnt labelPosition;
     QString text;
+    std::optional<double> thicknessMm;
     double fontHeight{};
+    bool selected{};
 };
 
 Handle(OccPartMesh) makeMesh(const ModelDisplayPart &part)
 {
     const auto limit = static_cast<std::size_t>(std::numeric_limits<int>::max());
-    if (part.vertices.size() > limit || part.triangles.size() > limit)
+    if (part.vertices.size() > limit || part.triangles.size() > limit / 3)
     {
         throw std::runtime_error("部件显示网格超过 OCCT 数组容量。");
     }
@@ -75,39 +78,25 @@ Handle(OccPartMesh) makeMesh(const ModelDisplayPart &part)
             static_cast<int>(triangle[0] + 1), static_cast<int>(triangle[1] + 1), static_cast<int>(triangle[2] + 1)));
     }
     mesh->ComputeNormals();
-    Handle(OccPartMesh) result = new OccPartMesh(mesh);
-    // AIS_Triangulation 只支持模式 0；使用通用哑光材质保留部件自身配色。
+    Handle(OccPartMesh) result = new OccPartMesh(mesh, part);
+    // 模式 0 使用灰色哑光表面，关闭镜面高光，轮廓由 OccPartMesh 的真实拓扑边绘制。
     result->SetDisplayMode(0);
     Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_Plastified);
-    material.SetSpecularColor(Quantity_Color(0.08, 0.08, 0.08, Quantity_TOC_RGB));
+    material.SetSpecularColor(Quantity_NOC_BLACK);
     // AIS_Triangulation 的 Compute 直接读取 ShadingAspect，继承的 SetColor 不更新它。
     Handle(Prs3d_ShadingAspect) shading = new Prs3d_ShadingAspect();
     shading->SetMaterial(material);
     shading->SetColor(Quantity_Color(part.colorSrgb[0], part.colorSrgb[1], part.colorSrgb[2], Quantity_TOC_sRGB));
+    shading->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, 1.0f, 1.0f);
     result->Attributes()->SetShadingAspect(shading);
     result->SetTransparency(0.0);
     return result;
 }
 
-void makeLabel(PartPresentation &presentation, const std::optional<double> &thickness, bool estimated)
+void makeLabel(PartPresentation &presentation, const std::optional<double> &thickness)
 {
-    presentation.text = thickness ? QString::number(*thickness, 'f', 1) : QStringLiteral("未识别");
-    while (presentation.text.endsWith(QLatin1Char('0')))
-    {
-        presentation.text.chop(1);
-    }
-    if (presentation.text.endsWith(QLatin1Char('.')))
-    {
-        presentation.text.chop(1);
-    }
-    if (thickness)
-    {
-        presentation.text += QStringLiteral(" mm");
-        if (estimated)
-        {
-            presentation.text += QStringLiteral("（估算）");
-        }
-    }
+    presentation.text = thicknessLabelText(thickness);
+    presentation.thicknessMm = thickness;
     presentation.label = new AIS_TextLabel();
     const auto utf8 = presentation.text.toUtf8();
     presentation.label->SetText(TCollection_ExtendedString(utf8.constData(), true));
@@ -166,10 +155,13 @@ struct OccModelPresentation::State
     Handle(AIS_InteractiveContext) context;
     Handle(V3d_View) view;
     std::vector<PartPresentation> parts;
+    std::vector<ThicknessLabelTarget> labelTargets;
     std::unique_ptr<ModelLabelVisibility> visibility;
     bool modelVisible{true};
     bool labelsVisible{true};
     bool selectable{};
+    bool transformPreview{};
+    ModelPickMode mode{ModelPickMode::Body};
 
     bool updateAnchor(PartPresentation &part) const
     {
@@ -203,6 +195,7 @@ struct OccModelPresentation::State
             }
         }
         parts.clear();
+        labelTargets.clear();
     }
 
     void show(const Handle(AIS_InteractiveObject) &object, bool visible)
@@ -242,22 +235,36 @@ void OccModelPresentation::rebuild(const std::vector<ModelDisplayPart> &parts)
         presentation.anchor = gp_Pnt(anchor.x, anchor.y, anchor.z);
         if (part.thicknessMm || part.thicknessUnresolved)
         {
-            makeLabel(presentation, part.thicknessMm, part.thicknessEstimated);
+            makeLabel(presentation, part.thicknessMm);
         }
         m_state->parts.push_back(std::move(presentation));
     }
     setVisible(m_state->modelVisible, m_state->labelsVisible);
 }
 
+void OccModelPresentation::setTransformPreview(bool active)
+{
+    m_state->labelTargets.clear();
+    m_state->transformPreview = active;
+    setVisible(m_state->modelVisible,m_state->labelsVisible);
+}
+std::vector<Handle(AIS_InteractiveObject)> OccModelPresentation::objectsForParts(const std::vector<std::string> &ids) const
+{
+    std::vector<Handle(AIS_InteractiveObject)> objects;
+    for (const auto &part : m_state->parts)
+        if (std::find(ids.begin(),ids.end(),part.id) != ids.end()) objects.push_back(part.mesh);
+    return objects;
+}
 void OccModelPresentation::setVisible(bool modelVisible, bool labelsVisible)
 {
+    m_state->labelTargets.clear();
     m_state->modelVisible = modelVisible;
     m_state->labelsVisible = labelsVisible;
     for (const auto &part : m_state->parts)
     {
         m_state->show(part.mesh, modelVisible);
-        part.mesh->setSelectable(m_state->context, modelVisible && m_state->selectable);
-        if (!part.label.IsNull() && (!modelVisible || !labelsVisible))
+        part.mesh->setSelectable(m_state->context, modelVisible && m_state->selectable && !m_state->transformPreview, m_state->mode);
+        if (!part.label.IsNull() && (!modelVisible || !labelsVisible || m_state->transformPreview))
         {
             m_state->show(part.label, false);
             m_state->show(part.leader, false);
@@ -265,25 +272,79 @@ void OccModelPresentation::setVisible(bool modelVisible, bool labelsVisible)
     }
 }
 
-void OccModelPresentation::setSelectable(bool enabled)
+void OccModelPresentation::setSelectable(bool enabled, ModelPickMode mode)
 {
     m_state->selectable = enabled;
+    m_state->mode = mode;
     setVisible(m_state->modelVisible, m_state->labelsVisible);
     m_state->context->ClearDetected(false);
 }
 
+void OccModelPresentation::selectOwner(const Handle(SelectMgr_EntityOwner) &owner)
+{
+    const auto selection = detectedSelection(owner);
+    selectObjects(selection.partId.empty() ? std::vector<ModelSelection>{} : std::vector<ModelSelection>{selection});
+}
+
+ModelSelection OccModelPresentation::detectedSelection(const Handle(SelectMgr_EntityOwner) &owner) const
+{
+    const auto *object = dynamic_cast<const OccMeshOwner *>(owner.get());
+    return {detectedPartId(owner), object ? object->kind : ModelPickMode::Body, object ? object->index : 0};
+}
+
+bool OccModelPresentation::isSurfaceOwner(const Handle(SelectMgr_EntityOwner) &owner) const
+{
+    const auto selection = detectedSelection(owner);
+    return !selection.partId.empty() && selection.kind == ModelPickMode::Body;
+}
+
 void OccModelPresentation::selectPart(const std::string &id)
 {
-    m_state->context->ClearSelected(false);
-    if (!m_state->modelVisible || id.empty()) return;
-    for (const auto &part : m_state->parts)
+    selectParts(id.empty() ? std::vector<std::string>{} : std::vector<std::string>{id});
+}
+
+void OccModelPresentation::selectParts(const std::vector<std::string> &ids)
+{
+    std::vector<ModelSelection> selections;
+    for (const auto &id : ids) selections.push_back({id, ModelPickMode::Body, 0});
+    selectObjects(selections);
+}
+
+void OccModelPresentation::selectObjects(const std::vector<ModelSelection> &selections)
+{
+    for (auto &part : m_state->parts)
     {
-        if (part.id == id)
+        const bool selected = std::any_of(selections.begin(), selections.end(),
+            [&](const auto &selection) { return selection.partId == part.id; });
+        if (part.selected == selected) continue;
+        part.selected = selected;
+        if (!part.label.IsNull())
         {
-            m_state->context->SetSelected(part.mesh, false);
+            part.label->SetColor(selected ? Quantity_Color(Quantity_NOC_WHITE)
+                : Quantity_Color(0.78, 0.25, 0.15, Quantity_TOC_sRGB));
+            part.label->SetColorSubTitle(selected ? Quantity_Color(1.0, 0.49, 0.0, Quantity_TOC_sRGB)
+                : Quantity_Color(1.0, 0.97, 0.92, Quantity_TOC_sRGB));
+            m_state->context->Redisplay(part.label, false);
+        }
+    }
+    std::vector<Handle(SelectMgr_EntityOwner)> owners;
+    if (!m_state->modelVisible || selections.empty())
+    {
+        setSelectedMeshOwners(m_state->context, owners);
+        return;
+    }
+    for (const auto &selection : selections)
+    {
+        for (const auto &part : m_state->parts)
+        {
+            if (part.id != selection.partId) continue;
+            m_state->context->Load(part.mesh, static_cast<int>(selection.kind));
+            const auto owner = part.mesh->selectionOwner(selection.kind, selection.index);
+            if (!owner.IsNull()) owners.push_back(owner);
             break;
         }
     }
+    setSelectedMeshOwners(m_state->context, owners);
 }
 
 std::string OccModelPresentation::detectedPartId(const Handle(SelectMgr_EntityOwner) &owner) const
@@ -298,9 +359,15 @@ std::string OccModelPresentation::detectedPartId(const Handle(SelectMgr_EntityOw
     return {};
 }
 
+std::optional<ThicknessLabelTarget> OccModelPresentation::labelAt(const QPointF &position, double pixelRatio) const
+{
+    return hitThicknessLabel(m_state->labelTargets, position, pixelRatio);
+}
+
 void OccModelPresentation::updateLabels(int pixelWidth, int pixelHeight, double pixelRatio)
 {
-    if (!m_state->modelVisible || !m_state->labelsVisible || pixelWidth < 1 || pixelHeight < 1)
+    m_state->labelTargets.clear();
+    if (m_state->transformPreview || !m_state->modelVisible || !m_state->labelsVisible || pixelWidth < 1 || pixelHeight < 1)
     {
         return;
     }
@@ -334,6 +401,10 @@ void OccModelPresentation::updateLabels(int pixelWidth, int pixelHeight, double 
             m_state->show(part.label, false);
             m_state->show(part.leader, false);
             continue;
+        }
+        if (part.thicknessMm)
+        {
+            m_state->labelTargets.push_back({part.id, *part.thicknessMm, box});
         }
         occupied += box.adjusted(-margin / 2, -margin / 2, margin / 2, margin / 2);
         const gp_Pnt position = displacedAnchor(m_state->view, part.anchor, anchorPixel, box.center());

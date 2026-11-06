@@ -3,10 +3,12 @@
 #include "commands/CommandService.h"
 #include "commands/CommandFeedback.h"
 #include "commands/CommandScript.h"
+#include "geometry/Geometry.h"
 #include "CommandModules.h"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <gtest/gtest.h>
 #include <thread>
 namespace
@@ -234,7 +236,7 @@ TEST(UiCommandEcho, FailedAndCancelledUiTasksAreReportedOnceWithoutConsoleDuplic
     const auto cancelled = completedUiCommands(service);
     ASSERT_EQ(cancelled.size(), 1u);
     EXPECT_FALSE(cancelled.front().succeeded);
-    EXPECT_EQ(cancelled.front().commandLine, "cloud.reset");
+    EXPECT_EQ(cancelled.front().commandLine, "project.reset");
     (void)finished(service, service.submitLine("help"));
     (void)finished(service, service.submitCommand("project.snapshot"));
     EXPECT_TRUE(completedUiCommands(service).empty());
@@ -286,7 +288,7 @@ TEST(CloudEditCommands, UiCropAndDeleteReplayAloneWithNoOrDifferentLiveSelection
         }
     }
 }
-TEST(CloudEditCommands, MultipleCameraRegionsAndUndoKeepCompleteRecipe)
+TEST(CloudEditCommands, MultipleCameraRegionsRemainReplayableAfterUndoClearsSelection)
 {
     CloudFixture file;
     reverse::UiCommandEvent crop, remove;
@@ -321,12 +323,13 @@ TEST(CloudEditCommands, MultipleCameraRegionsAndUndoKeepCompleteRecipe)
         ASSERT_TRUE(
             finished(service, service.submitCloudHistory(reverse::CloudHistoryAction::Undo, service.project().revision))
                 .result.ok());
-        ASSERT_TRUE(service.project().selectionRecipe);
-        EXPECT_EQ(service.project().selectionRecipe->regions.size(), 3u);
-        ASSERT_TRUE(finished(service, service.submitCloudEdit(reverse::CloudEditMode::DeleteSelection,
-                                                              service.project().revision))
-                        .result.ok());
-        remove = completedUiCommands(service).back();
+        EXPECT_FALSE(service.project().selectionRecipe);
+        EXPECT_FALSE(service.project().selection);
+        // 编辑命令已携带全部框选参数；撤销清空临时选区后仍可直接复用。
+        auto removeLine = crop.commandLine;
+        removeLine.replace(0, std::string("cloud.crop").size(), "cloud.delete");
+        ASSERT_TRUE(finished(service, service.submitLine(removeLine)).result.ok());
+        remove.commandLine = removeLine;
         for (const auto &point : service.project().cloud->points)
             expectedRemove.push_back(point.sourceIndex);
     }
@@ -603,12 +606,12 @@ TEST(CommandMacros, ControlsFollowFifoAndReplayAppendsCommands)
     const auto replay = finished(service, service.submitScriptFile(path));
     ASSERT_TRUE(replay.result.ok()) << replay.message;
     EXPECT_TRUE(service.recordingState().active);
-    EXPECT_EQ(service.recordingState().commandCount, 1);
-    EXPECT_EQ(readScript(other), source);
+    EXPECT_EQ(service.recordingState().commandCount, 2); // 一条补写导入，加一条实际回放导入。
+    EXPECT_TRUE(readScript(other).starts_with(source));
     EXPECT_EQ(readScript(path), source);
     // Direct Python calls use the same recorder as commands from script files.
     ASSERT_TRUE(finished(service, service.submitPython("rm.execute('project.snapshot')")).result.ok());
-    EXPECT_EQ(service.recordingState().commandCount, 2);
+    EXPECT_EQ(service.recordingState().commandCount, 3);
     ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
 }
 TEST(CommandMacros, NativeScriptRecordsSuccessfulPrefixAndStopsAtInvalidParameter)
@@ -1338,4 +1341,376 @@ TEST(CommandTranscript, UiAndTypedReconstructionHaveIdenticalInputExecutionAndRe
     EXPECT_EQ(uiTranscript, typedTranscript);
     EXPECT_TRUE(typedTranscript.starts_with("rm> " + command + "\n// " + command + '\n'));
     EXPECT_EQ(typedTranscript.find("// " + command, typedTranscript.find("// " + command) + 1), std::string::npos);
+}
+
+TEST(ReferencePlaneCommands, ValidateAndCommitWithoutChangingGeometry)
+{
+    CloudFixture cloud;
+    reverse::CommandService service;
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+              reverse::TaskState::Succeeded);
+    const auto before = service.project();
+    auto result = finished(service, service.submitLine("project.set_reference_plane --points '[[0,0,0],[10,0,0],[0,10,0]]'"));
+    ASSERT_EQ(result.state, reverse::TaskState::Succeeded) << result.message;
+    const auto plane = service.project().referencePlane;
+    ASSERT_TRUE(plane);
+    EXPECT_EQ(before.cloud, service.project().cloud);
+    EXPECT_EQ(before.model, service.project().model);
+    EXPECT_EQ(before.cloudId, service.project().cloudId);
+    EXPECT_EQ(service.project().revision, before.revision + 1);
+    result = finished(service, service.submitLine("project.set_reference_plane --points '[[0,0,0],[10,0,0],[20,0,0]]'"));
+    EXPECT_EQ(result.state, reverse::TaskState::Failed);
+    EXPECT_EQ(result.errorCode, "invalid_plane");
+    EXPECT_EQ(service.project().referencePlane, plane);
+    result = finished(service, service.submitLine("project.set_reference_plane --points '[[0,0],[1,0,0],[0,1,0]]'"));
+    EXPECT_EQ(result.state, reverse::TaskState::Failed);
+    EXPECT_EQ(service.project().referencePlane, plane);
+    result = finished(service, service.submitLine("project.section --enabled true --offset 12.5 --reverse true"));
+    ASSERT_EQ(result.state, reverse::TaskState::Succeeded) << result.message;
+    EXPECT_TRUE(service.project().section.enabled);
+    EXPECT_DOUBLE_EQ(service.project().section.offsetMm, 12.5);
+    EXPECT_TRUE(service.project().section.reversed);
+    EXPECT_EQ(before.cloud, service.project().cloud);
+    ASSERT_EQ(finished(service, service.submitLine("project.clear_reference_plane")).state, reverse::TaskState::Succeeded);
+    EXPECT_FALSE(service.project().referencePlane);
+    EXPECT_FALSE(service.project().section.enabled);
+    EXPECT_EQ(finished(service, service.submitLine("project.section --enabled true")).errorCode, "no_reference_plane");
+}
+
+TEST(ReferencePlaneCommands, RecordingReplayAndImportReset)
+{
+    CloudFixture cloud;
+    reverse::CommandService service;
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+              reverse::TaskState::Succeeded);
+    const auto recording = cloud.directory / "plane.py";
+    ASSERT_EQ(finished(service, service.submitStartRecording(recording)).state, reverse::TaskState::Succeeded);
+    const std::array<reverse::Vec3, 3> points{reverse::Vec3{1000, 20, 30}, {1100, 20, 30}, {1000, 120, 30}};
+    ASSERT_EQ(finished(service, service.submitReferencePlane(points, service.project().revision)).state,
+              reverse::TaskState::Succeeded);
+    ASSERT_EQ(finished(service, service.submitSection({true, -3, true}, service.project().revision)).state,
+              reverse::TaskState::Succeeded);
+    ASSERT_EQ(finished(service, service.submitStopRecording()).state, reverse::TaskState::Succeeded);
+    std::ifstream input(recording);
+    const std::string contents((std::istreambuf_iterator<char>(input)), {});
+    EXPECT_NE(contents.find("project.set_reference_plane --points"), std::string::npos);
+    EXPECT_NE(contents.find("project.section --enabled true"), std::string::npos);
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+              reverse::TaskState::Succeeded);
+    EXPECT_FALSE(service.project().referencePlane);
+    EXPECT_FALSE(service.project().section.enabled);
+    const auto replay = finished(service, service.submitScriptFile(recording));
+    ASSERT_EQ(replay.state, reverse::TaskState::Succeeded) << replay.message;
+    ASSERT_TRUE(service.project().referencePlane);
+    EXPECT_DOUBLE_EQ(service.project().referencePlane->pointsMm[0].x, 1000);
+    EXPECT_DOUBLE_EQ(service.project().section.offsetMm, -3);
+    EXPECT_TRUE(service.project().section.reversed);
+}
+
+TEST(ReferencePlaneCommands, LegacyUndoUsesUnifiedPlaneAndGeometryHistory)
+{
+    CloudFixture cloud;
+    reverse::CommandService service;
+    ASSERT_EQ(finished(service, service.submitImport(cloud.path, reverse::LengthUnit::Millimeter)).state,
+              reverse::TaskState::Succeeded);
+    ASSERT_EQ(finished(service, service.submitLine("cloud.crop --indices '[0,1,2,3]' ")).state,
+              reverse::TaskState::Succeeded);
+    ASSERT_EQ(finished(service, service.submitLine("project.set_reference_plane --points '[[0,0,0],[10,0,0],[0,10,0]]' ")).state,
+              reverse::TaskState::Succeeded);
+    const auto plane = service.project().referencePlane;
+    ASSERT_EQ(finished(service, service.submitLine("cloud.undo")).state, reverse::TaskState::Succeeded);
+    EXPECT_FALSE(service.project().referencePlane);
+    EXPECT_EQ(service.project().cloud->points.size(), 4);
+    ASSERT_EQ(finished(service, service.submitLine("project.undo")).state, reverse::TaskState::Succeeded);
+    EXPECT_EQ(service.project().cloud->points.size(), 8);
+    ASSERT_EQ(finished(service, service.submitLine("project.redo")).state, reverse::TaskState::Succeeded);
+    ASSERT_EQ(finished(service, service.submitLine("project.redo")).state, reverse::TaskState::Succeeded);
+    EXPECT_EQ(service.project().referencePlane, plane);
+}
+
+TEST(ModelDeleteCommands, RecordsExplicitIdsReplaysAndExportsOnlyRemainingGeometry)
+{
+    CloudFixture file;
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    const reverse::BeamParameters parameters{100, 40, 60, 4, 5, 3, {25, 75}, false, true};
+    ASSERT_TRUE(finished(service, service.submitReconstruct(parameters, service.project().revision)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitLine(
+        "project.set_reference_plane --points '[[0,0,0],[10,0,0],[0,10,0]]'")).result.ok());
+    ASSERT_TRUE(finished(service, service.submitDeviation(service.project().revision)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitExport(file.directory / "before.step", service.project().revision)).result.ok());
+    const auto before = service.project();
+    ASSERT_TRUE(before.deviation);
+    ASSERT_TRUE(before.lastExport);
+    const auto recording = file.directory / "delete.py";
+    ASSERT_TRUE(finished(service, service.submitStartRecording(recording)).result.ok());
+    const auto result = finished(service, service.submitDeleteModelParts({"web", "rib-1-right"}, before.revision));
+    ASSERT_TRUE(result.result.ok()) << result.message;
+    const auto after = service.project();
+    ASSERT_TRUE(after.model);
+    EXPECT_EQ(after.model->solidCount, 5u);
+    EXPECT_EQ(after.cloud, before.cloud);
+    EXPECT_EQ(after.recognition.has_value(), before.recognition.has_value());
+    EXPECT_EQ(after.referencePlane, before.referencePlane);
+    EXPECT_FALSE(after.deviation);
+    EXPECT_FALSE(after.lastExport);
+    EXPECT_TRUE(after.exportedPathUtf8.empty());
+    EXPECT_NE(after.modelId, before.modelId);
+    EXPECT_EQ(before.model->solidCount, 7u);
+    EXPECT_NE(readScript(recording).find("model.delete --parts"), std::string::npos);
+    EXPECT_NE(readScript(recording).find("rib-1-right"), std::string::npos);
+    ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
+    const auto path = file.directory / std::filesystem::path(u8"删除后 模型.step");
+    ASSERT_TRUE(finished(service, service.submitExport(path, after.revision)).result.ok());
+    const auto imported = reverse::loadCadModel(path);
+    EXPECT_EQ(imported->summary().solidCount, 5u);
+    EXPECT_NEAR(imported->summary().volumeMm3, after.model->volumeMm3, 1e-4);
+    // 重建后回放，不需要当前选择、视图或模型版本；部件 ID 由原建模过程稳定生成。
+    ASSERT_TRUE(finished(service, service.submitReconstruct(parameters, service.project().revision)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitScriptFile(recording)).result.ok());
+    EXPECT_EQ(service.project().model->partIds, after.model->partIds);
+    EXPECT_DOUBLE_EQ(service.project().model->volumeMm3, after.model->volumeMm3);
+    // STEP 导入模型使用同一删除路径，全部删除后保留源文件但不可导出空模型。
+    ASSERT_TRUE(finished(service, service.submitImport(path, reverse::LengthUnit::Millimeter)).result.ok());
+    const auto ids = service.project().model->partIds;
+    ASSERT_TRUE(finished(service, service.submitDeleteModelParts({ids.front()}, service.project().revision)).result.ok());
+    EXPECT_EQ(service.project().model->solidCount, 4u);
+    ASSERT_TRUE(finished(service, service.submitDeleteModelParts(service.project().model->partIds,
+        service.project().revision)).result.ok());
+    EXPECT_FALSE(service.project().model);
+    EXPECT_FALSE(service.project().mesh);
+    EXPECT_TRUE(service.project().modelId.empty());
+    EXPECT_TRUE(std::filesystem::exists(path));
+    EXPECT_EQ(finished(service, service.submitExport(file.directory / "empty.step",
+        service.project().revision)).errorCode, "no_model");
+}
+
+TEST(ModelDeleteCommands, ValidatesArgumentsRevisionAndMissingPartsAtomically)
+{
+    CloudFixture file;
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(file.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitReconstruct({100, 40, 60, 4, 5, 3, {}, false, false},
+        service.project().revision)).result.ok());
+    const auto before = service.project();
+    for (const auto *line : {"model.delete", "model.delete --parts '[]'", "model.delete --parts '[12]'",
+                            "model.delete --parts '[\"web\",\"missing\"]'"})
+    {
+        const auto failed = finished(service, service.submitLine(line));
+        EXPECT_FALSE(failed.result.ok()) << line;
+        EXPECT_EQ(service.project().revision, before.revision);
+        EXPECT_EQ(service.project().model, before.model);
+    }
+    EXPECT_EQ(finished(service, service.submitDeleteModelParts({"web"}, before.revision - 1)).errorCode,
+              "stale_revision");
+    EXPECT_EQ(service.project().model, before.model);
+    const auto help = finished(service, service.submitLine("model.delete --help"));
+    EXPECT_EQ(help.result.kind, rm::ResultKind::Help);
+    EXPECT_NE(help.result.message.find("--parts"), std::string::npos);
+    ASSERT_TRUE(finished(service, service.submitDeleteModelParts(before.model->partIds, before.revision)).result.ok());
+    EXPECT_EQ(service.project().cloud, before.cloud);
+    EXPECT_FALSE(service.project().model);
+}
+
+TEST(EdgeTreatmentCommands, PreviewIsTransientAndApplicationsRecordReplayUndoRedo)
+{
+    CloudFixture files;
+    const auto script = files.directory / "edges.py";
+    reverse::CommandService service;
+    ASSERT_EQ(finished(service, service.submitImport(files.path, reverse::LengthUnit::Millimeter)).state,
+              reverse::TaskState::Succeeded);
+    ASSERT_EQ(finished(service, service.submitReconstruct({100, 40, 60, 4, 5, 3, {25}, false, false},
+                                                          service.project().revision))
+                  .state,
+              reverse::TaskState::Succeeded);
+    ASSERT_EQ(finished(service, service.submitStartRecording(script)).state, reverse::TaskState::Succeeded);
+    const auto original = service.project();
+    reverse::EdgeTreatment request{{{"web", {1}}}, reverse::EdgeTreatmentKind::Fillet, 1};
+    const auto previewId = service.submitEdgePreview(request, original.revision);
+    const auto previewTask = finished(service, previewId);
+    ASSERT_EQ(previewTask.state, reverse::TaskState::Succeeded) << previewTask.message;
+    ASSERT_TRUE(service.takeEdgePreview(previewId));
+    EXPECT_FALSE(service.takeEdgePreview(previewId));
+    EXPECT_EQ(service.project().revision, original.revision);
+    EXPECT_EQ(service.project().historySteps, original.historySteps);
+    EXPECT_EQ(service.project().model, original.model);
+    const auto applied = finished(service, service.submitEdgeTreatment(request, original.revision));
+    ASSERT_TRUE(applied.result.ok()) << applied.message;
+    const auto first = service.project();
+    EXPECT_LT(first.model->volumeMm3, original.model->volumeMm3);
+    ASSERT_TRUE(finished(service, service.submitLine("project.undo")).result.ok());
+    EXPECT_DOUBLE_EQ(service.project().model->volumeMm3, original.model->volumeMm3);
+    auto edited = finished(service, service.submitLine("model.fillet --part web --edges '[1]' --size 0.5"));
+    ASSERT_TRUE(edited.result.ok()) << edited.message;
+    const auto second = service.project();
+    EXPECT_GT(second.model->volumeMm3, first.model->volumeMm3);
+    ASSERT_TRUE(finished(service, service.submitLine("project.undo")).result.ok());
+    EXPECT_DOUBLE_EQ(service.project().model->volumeMm3, original.model->volumeMm3);
+    const auto failed = finished(service, service.submitLine("model.fillet --part web --edges '[1]' --size 100000"));
+    EXPECT_FALSE(failed.result.ok());
+    EXPECT_TRUE(service.project().canRedo);
+    ASSERT_TRUE(finished(service, service.submitLine("project.redo")).result.ok());
+    EXPECT_DOUBLE_EQ(service.project().model->volumeMm3, second.model->volumeMm3);
+    ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
+    std::ifstream file(script);
+    const std::string content((std::istreambuf_iterator<char>(file)), {});
+    EXPECT_NE(content.find("model.fillet"), std::string::npos);
+    EXPECT_EQ(content.find("--feature"), std::string::npos);
+    EXPECT_EQ(content.find("EdgePreview"), std::string::npos);
+    EXPECT_EQ(content.find("100000"), std::string::npos);
+    reverse::CommandService replay;
+    const auto result = finished(replay, replay.submitScriptFile(script));
+    ASSERT_TRUE(result.result.ok()) << result.message;
+    ASSERT_TRUE(replay.project().model);
+    EXPECT_NEAR(replay.project().model->volumeMm3, second.model->volumeMm3, 1e-6);
+    EXPECT_EQ(replay.project().model->edgeTreatedParts, second.model->edgeTreatedParts);
+}
+
+TEST(EdgeTreatmentCommands, CrossPartPreviewApplyFailureUndoAndReplayAreAtomic)
+{
+    CloudFixture files;
+    reverse::CommandService service;
+    ASSERT_TRUE(finished(service, service.submitImport(files.path, reverse::LengthUnit::Millimeter)).result.ok());
+    ASSERT_TRUE(finished(service, service.submitReconstruct({1000, 186.494, 627.8323, 6, 12, 8, {}, false, true},
+        service.project().revision)).result.ok());
+    const auto script = files.directory / "batch-edges.py";
+    ASSERT_TRUE(finished(service, service.submitStartRecording(script)).result.ok());
+    const auto original = service.project();
+    const auto initialCount = service.recordingState().commandCount;
+    reverse::EdgeTreatment request{{{"flange-bottom", {1}}, {"flange-top", {1}}}, reverse::EdgeTreatmentKind::Fillet, 20};
+    const auto previewId = service.submitEdgePreview(request, original.revision);
+    ASSERT_TRUE(finished(service, previewId).result.ok());
+    const auto preview = service.takeEdgePreview(previewId);
+    ASSERT_TRUE(preview);
+    EXPECT_EQ(service.project().model, original.model);
+    EXPECT_EQ(service.recordingState().commandCount, initialCount);
+    const auto applied = finished(service, service.submitEdgeTreatment(request, original.revision));
+    ASSERT_TRUE(applied.result.ok()) << applied.message;
+    const auto edited = service.project();
+    EXPECT_EQ(edited.historySteps, original.historySteps + 1);
+    EXPECT_EQ(service.recordingState().commandCount, initialCount + 1);
+    EXPECT_DOUBLE_EQ(edited.model->volumeMm3, preview->summary().volumeMm3);
+    EXPECT_EQ(edited.model->edgeTreatedParts, (std::vector<std::string>{"flange-bottom", "flange-top"}));
+    ASSERT_TRUE(finished(service, service.submitLine("project.undo")).result.ok());
+    EXPECT_DOUBLE_EQ(service.project().model->volumeMm3, original.model->volumeMm3);
+    EXPECT_TRUE(service.project().model->edgeTreatedParts.empty());
+    const auto beforeFailure = service.project();
+    const auto countBeforeFailure = service.recordingState().commandCount;
+    request.targets[1].edges = {99999};
+    const auto failed = finished(service, service.submitEdgeTreatment(request, beforeFailure.revision));
+    EXPECT_FALSE(failed.result.ok());
+    EXPECT_NE(failed.message.find("flange-top"), std::string::npos);
+    EXPECT_EQ(service.project().model, beforeFailure.model);
+    EXPECT_EQ(service.project().revision, beforeFailure.revision);
+    EXPECT_EQ(service.recordingState().commandCount, countBeforeFailure);
+    EXPECT_TRUE(service.project().canRedo);
+    ASSERT_TRUE(finished(service, service.submitLine("project.redo")).result.ok());
+    ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
+    std::ifstream file(script);
+    const std::string content((std::istreambuf_iterator<char>(file)), {});
+    EXPECT_NE(content.find("--targets"), std::string::npos);
+    EXPECT_EQ(content.find("EdgePreview"), std::string::npos);
+    EXPECT_EQ(content.find("99999"), std::string::npos);
+    reverse::CommandService replay;
+    const auto result = finished(replay, replay.submitScriptFile(script));
+    ASSERT_TRUE(result.result.ok()) << result.message;
+    ASSERT_TRUE(replay.project().model);
+    EXPECT_NEAR(replay.project().model->volumeMm3, edited.model->volumeMm3, 1e-6);
+    EXPECT_EQ(replay.project().model->edgeTreatedParts, edited.model->edgeTreatedParts);
+}
+
+TEST(EdgeTreatmentCommands, RejectsIncompleteConflictingAndMalformedTargets)
+{
+    reverse::CommandService service;
+    for (const auto *command : {
+        "model.fillet --size 1",
+        "model.fillet --part web --size 1",
+        "model.fillet --edges '[1]' --size 1",
+        "model.fillet --targets '[]' --size 1",
+        "model.fillet --targets '[{\"part\":\"web\"}]' --size 1",
+        "model.fillet --targets '[{\"part\":\"web\",\"edges\":[0]}]' --size 1",
+        "model.fillet --targets '[{\"part\":\"web\",\"edges\":[1]}]' --part web --size 1"})
+    {
+        const auto result = finished(service, service.submitLine(command));
+        EXPECT_FALSE(result.result.ok()) << command;
+        EXPECT_NE(result.result.code, "no_model") << result.message;
+        EXPECT_EQ(service.project().revision, 0);
+    }
+}
+
+
+TEST(UiOperationFeedback, InternalFailuresIncludeOperationAndReasonOnceWithoutRecording)
+{
+    using namespace reverse;
+    CloudFixture files;
+    CommandService service;
+    const auto script = files.directory / "failure.py";
+    ASSERT_TRUE(finished(service, service.submitStartRecording(script)).result.ok());
+    const auto before = readScript(script);
+    const std::vector<std::pair<std::string, std::function<std::string()>>> previews{
+        {"圆角预览", [&] { return service.submitEdgePreview({}, 0); }},
+        {"倒角预览", [&] { EdgeTreatment r; r.kind = EdgeTreatmentKind::Chamfer; return service.submitEdgePreview(r, 0); }},
+        {"修改板厚预览", [&] { return service.submitThicknessPreview({}, 0); }},
+        {"外扩板件轮廓预览", [&] { return service.submitContourExpansionPreview({}, 0); }},
+        {"生成外扩贴板预览", [&] { return service.submitPlateGenerationPreview({}, 0); }},
+        {"生成下底板预览", [&] { PlateGeneration r; r.kind = PlateGenerationKind::Base; return service.submitPlateGenerationPreview(r, 0); }},
+        {"板厚识别", [&] { return service.submitThicknessInspection({"web"}, 0); }},
+        {"过焊孔预览", [&] { return service.submitHolePreview({}, 0); }},
+        {"底边孔预览", [&] { PlateHole r; r.kind = PlateHoleKind::Bottom; return service.submitHolePreview(r, 0); }},
+        {"开孔底边识别", [&] { return service.submitHoleInspection("web", 0); }}
+    };
+    for (const auto &[label, submit] : previews)
+    {
+        SCOPED_TRACE(label);
+        const auto task = finished(service, submit());
+        ASSERT_EQ(task.state, TaskState::Failed);
+        ASSERT_FALSE(task.message.empty());
+        const auto events = service.takeUiCommandEvents();
+        ASSERT_EQ(events.size(), 1u);
+        EXPECT_EQ(events.front().taskId, task.id);
+        EXPECT_EQ(events.front().kind, UiCommandEventKind::Output);
+        EXPECT_TRUE(events.front().commandLine.empty());
+        EXPECT_NE(events.front().message.find(label), std::string::npos);
+        EXPECT_NE(events.front().message.find(task.message), std::string::npos);
+        EXPECT_TRUE(service.takeUiCommandEvents().empty());
+    }
+    EXPECT_EQ(service.project().revision, 0);
+    EXPECT_EQ(service.recordingState().commandCount, 0);
+    EXPECT_EQ(readScript(script), before);
+    ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
+}
+
+TEST(UiOperationFeedback, LocalFailureIsOutputOnlyAndDoesNotChangeRecordingOrHistory)
+{
+    using namespace reverse;
+    CloudFixture files;
+    CommandService service;
+    const auto script = files.directory / "local-failure.py";
+    ASSERT_TRUE(finished(service, service.submitStartRecording(script)).result.ok());
+    const auto before = readScript(script);
+    service.reportUiFailure("设置基准面", "三点共线，请重新选择不共线的点。");
+    const auto events = service.takeUiCommandEvents();
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events.front().kind, UiCommandEventKind::Output);
+    EXPECT_EQ(events.front().message, "设置基准面失败：三点共线，请重新选择不共线的点。\n");
+    EXPECT_TRUE(events.front().commandLine.empty());
+    EXPECT_EQ(service.project().revision, 0);
+    EXPECT_FALSE(service.project().canUndo);
+    EXPECT_EQ(service.recordingState().commandCount, 0);
+    EXPECT_EQ(readScript(script), before);
+    ASSERT_TRUE(finished(service, service.submitStopRecording()).result.ok());
+}
+
+TEST(UiOperationFeedback, CancellingInternalPreviewDoesNotReportGenerationFailure)
+{
+    using namespace reverse;
+    CommandService service;
+    const auto blocked = service.submitPython("input('waiting')");
+    const auto waiting = waitingForInput(service, blocked);
+    const auto preview = service.submitPlateGenerationPreview({}, 0);
+    ASSERT_TRUE(service.cancel(preview));
+    ASSERT_TRUE(service.provideInput(blocked, waiting.inputRequest, std::string("continue")));
+    ASSERT_TRUE(finished(service, blocked).result.ok());
+    EXPECT_EQ(finished(service, preview).state, TaskState::Cancelled);
+    EXPECT_TRUE(service.takeUiCommandEvents().empty());
 }

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * 文件描述：
  * 装配 SARibbon / ADS 桌面工作台，协调有效参数、现有异步命令、任务进度及 OCCT 显示。
  * 工具窗口仅管理 UI；未接入的操作表单不提交命令，关闭主窗口时等待后台任务安全退出。
@@ -15,6 +15,7 @@
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QLabel>
+#include <QInputDialog>
 #include <QMenu>
 #include <QMessageBox>
 #include <QProgressBar>
@@ -34,12 +35,23 @@
 #include "workbench/DockWorkspace.h"
 #include "workbench/CommandConsoleWidget.h"
 #include "workbench/MainWindow.h"
+#include "workbench/PlateEditTool.h"
+#include "commands/PlateEditCommands.h"
+#include <QTreeWidget>
 #include "workbench/ModelDisplayData.h"
 #include "workbench/ModelInspector.h"
 #include "workbench/OccViewport.h"
+#include "workbench/ReferencePlaneTool.h"
+#include "workbench/ModelTransformTool.h"
+#include "workbench/EdgeTreatmentTool.h"
+#include "workbench/HoleTool.h"
+#include "workbench/PlateAdjustmentTool.h"
+#include "workbench/LocalReconstructionTool.h"
+#include "workbench/PlateGenerationTool.h"
 #include "workbench/PointCloudDisplayData.h"
 #include "workbench/RecentFilesMenu.h"
 #include "workbench/RibbonBuilder.h"
+#include "workbench/WorkbenchActionHelp.h"
 #include "workbench/WorkbenchActions.h"
 #include "workbench/WorkbenchPanels.h"
 #include "workbench/WorkbenchTheme.h"
@@ -104,11 +116,14 @@ struct MainWindow::State
         ExportAndExit,
         Import,
         Reconstruct,
+        DeleteModel,
+        EditThickness,
         Export,
         ExportCloud,
         Deviation,
         SelectCloud,
-        EditCloud
+        EditCloud,
+        History
     };
     CommandService service{commandEnvironment()};
     std::string activeTask;
@@ -126,6 +141,20 @@ struct MainWindow::State
     DockWorkspace *workspace{};
     ReconstructionPanel *parameters{};
     OperationPanel *operation{};
+    ReferencePlaneTool *referenceTool{};
+    ModelTransformTool *transformTool{};
+    EdgeTreatmentTool *edgeTool{};
+    HoleTool *holeTool{};
+    PlateAdjustmentTool *thicknessTool{};
+    std::uint64_t thicknessEditRevision{};
+    std::string thicknessEditPart;
+    PlateAdjustmentTool *contourTool{};
+    PlateAdjustmentTool *mirrorTool{};
+    LocalReconstructionTool *localTool{};
+    PlateEditTool *plateEditTool{};
+    PlateGenerationTool *generationTool{};
+    std::string displayedCloudId, displayedModelId;
+    std::uint64_t displayedHistoryRestoreRevision{};
     ModelInspector *inspector{};
     CommandConsoleWidget *console{};
     QLabel *taskDetails{};
@@ -166,36 +195,159 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     viewLayout->addWidget(createViewToolbar(viewContainer, actions));
     viewLayout->addWidget(state_->viewport, 1);
     auto *hint =
-        label(QStringLiteral("左键选部件 / 框选点云 · 右键拖动旋转 · 中键平移 · 滚轮缩放 · Esc 清空选择"), viewContainer);
+        label(QStringLiteral("左键拾取 · Shift 点击追加/取消 · 拖动框选点云 · 右键旋转 · 中键平移 · 滚轮缩放 · Esc 清空"), viewContainer);
     hint->setProperty("muted", true);
     hint->setContentsMargins(12, 5, 6, 5);
     viewLayout->addWidget(hint);
     state_->inspector = new ModelInspector(this);
-    state_->inspector->onPartSelected = [this](const std::string &id)
+    state_->inspector->onPartsSelected = [this](const std::vector<std::string> &ids)
     {
-        if (!id.empty())
+        const bool switching = !state_->actions->get(ActionId::SelectSolid)->isChecked() ||
+            !state_->actions->get(ActionId::ShowModel)->isChecked();
+        if (!ids.empty())
         {
             state_->actions->get(ActionId::ShowModel)->setChecked(true);
             state_->actions->get(ActionId::SelectSolid)->setChecked(true);
         }
-        state_->viewport->setSelectedPart(id);
+        state_->viewport->setSelectedParts(ids);
+        if (state_->thicknessTool)
+        {
+            state_->thicknessTool->selectionChanged(state_->viewport->selectedObjects());
+            state_->contourTool->selectionChanged(state_->viewport->selectedObjects());
+            state_->mirrorTool->selectionChanged(state_->viewport->selectedObjects());
+            state_->generationTool->selectionChanged(state_->viewport->selectedObjects());
+            state_->localTool->selectionChanged(state_->viewport->selectedObjects());
+            state_->plateEditTool->selectionChanged(state_->viewport->selectedObjects());
+        }
+        // 普通树多选保留 QItemSelectionModel 的锚点，只有模式切换清掉选择时才恢复。
+        if (switching && !ids.empty()) state_->inspector->selectParts(ids);
+        updateActions();
     };
-    state_->viewport->onModelPartSelected = [this](const std::string &id)
+    state_->viewport->onModelObjectsSelected = [this](const std::vector<ModelSelection> &selections)
     {
-        state_->inspector->selectPart(id);
-        if (!id.empty())
+        state_->inspector->selectObjects(selections);
+        if (state_->plateEditTool) state_->plateEditTool->selectionChanged(selections);
+        if (state_->edgeTool) state_->edgeTool->selectionChanged(selections);
+        if (state_->holeTool) state_->holeTool->selectionChanged(selections);
+        if (state_->thicknessTool) state_->thicknessTool->selectionChanged(selections);
+        if (state_->contourTool) state_->contourTool->selectionChanged(selections);
+        if (state_->mirrorTool) state_->mirrorTool->selectionChanged(selections);
+        if (state_->generationTool) state_->generationTool->selectionChanged(selections);
+        if (state_->localTool) state_->localTool->selectionChanged(selections);
+        if (!selections.empty())
         {
             state_->workspace->showPanel(QStringLiteral("dock.modelTree"));
             state_->workspace->showPanel(QStringLiteral("dock.properties"));
         }
+        updateActions();
     };
     state_->parameters = new ReconstructionPanel(this);
-    state_->operation = new OperationPanel(this);
+    state_->operation = new OperationPanel(actions, this);
+    state_->referenceTool = new ReferencePlaneTool(state_->service, *state_->viewport, state_->operation);
+    state_->referenceTool->hide();
+    state_->transformTool = new ModelTransformTool(state_->service, *state_->viewport, state_->operation);
+    state_->transformTool->hide();
+    state_->transformTool->onChanged = [this] { updateActions(); };
+    state_->transformTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->edgeTool = new EdgeTreatmentTool(state_->service, *state_->viewport, state_->operation);
+    state_->edgeTool->hide();
+    state_->edgeTool->onChanged = [this] { updateActions(); };
+    state_->edgeTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->holeTool = new HoleTool(state_->service, *state_->viewport, state_->operation);
+    state_->holeTool->hide();
+    state_->holeTool->onChanged = [this] { updateActions(); };
+    state_->holeTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->thicknessTool = new PlateAdjustmentTool(state_->service, *state_->viewport, PlateAdjustmentKind::Thickness, state_->operation);
+    state_->thicknessTool->hide();
+    state_->thicknessTool->onChanged = [this] { updateActions(); };
+    state_->thicknessTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->contourTool = new PlateAdjustmentTool(state_->service, *state_->viewport, PlateAdjustmentKind::Contour, state_->operation);
+    state_->mirrorTool = new PlateAdjustmentTool(state_->service, *state_->viewport, PlateAdjustmentKind::Mirror, state_->operation);
+    state_->contourTool->hide();
+    state_->mirrorTool->hide();
+    state_->contourTool->onChanged = [this] { updateActions(); };
+    state_->mirrorTool->onChanged = [this] { updateActions(); };
+    state_->contourTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->mirrorTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->plateEditTool = new PlateEditTool(state_->service,*state_->viewport,state_->operation);
+    state_->plateEditTool->hide();
+    state_->plateEditTool->onChanged=[this]{updateActions();};
+    state_->plateEditTool->onCommitted=[this]{refreshDisplay(false);};
+    state_->viewport->onPlateCrop=[this](const auto &rectangle){state_->plateEditTool->crop(rectangle);};
+    state_->inspector->onContextMenu=[this](const QPoint &point){modelContextMenu(point);};
+    state_->localTool = new LocalReconstructionTool(state_->service, *state_->viewport, state_->operation);
+    state_->localTool->hide();
+    state_->localTool->onChanged = [this] { updateActions(); };
+    state_->localTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->generationTool = new PlateGenerationTool(state_->service, *state_->viewport, state_->operation);
+    state_->generationTool->hide();
+    state_->generationTool->onChanged = [this] { updateActions(); };
+    state_->generationTool->onCommitted = [this] { refreshDisplay(false); };
+    state_->viewport->onThicknessLabelEditRequested = [this](const std::string &id)
+    {
+        if (!state_->activeTask.empty() || state_->closing || !state_->service.isIdle())
+        {
+            return false;
+        }
+        const auto project = state_->service.project();
+        if (!project.model || std::find(project.model->partIds.begin(), project.model->partIds.end(), id) ==
+                                  project.model->partIds.end())
+        {
+            return false;
+        }
+        state_->thicknessEditRevision = project.revision;
+        state_->thicknessEditPart = id;
+        state_->thicknessTool->cancel();
+        state_->contourTool->cancel();
+        state_->mirrorTool->cancel();
+        state_->generationTool->cancel();
+        state_->localTool->cancel();
+        state_->plateEditTool->cancel();
+        state_->edgeTool->cancel();
+        state_->holeTool->cancel();
+        state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        state_->viewport->setSelectedParts({id});
+        state_->inspector->selectParts({id});
+        updateActions();
+        return true;
+    };
+    state_->viewport->onThicknessLabelSubmitted = [this](const std::string &id, double thickness)
+    {
+        if (!state_->activeTask.empty() || state_->closing || !state_->service.isIdle())
+        {
+            return;
+        }
+        try
+        {
+            state_->activeTask = state_->service.submitThickness({{id}, thickness}, state_->thicknessEditRevision);
+            state_->pending = State::Operation::EditThickness;
+            state_->cancellationRequested = false;
+            state_->progress->setValue(0);
+            updateActions();
+        }
+        catch (const std::exception &error)
+        {
+            appendLog(text(error.what()));
+        }
+    };
+    state_->viewport->hasEditContextMenu = [this] { return state_->localTool->active() || state_->edgeTool->active() || state_->holeTool->active() || state_->thicknessTool->active() || (state_->contourTool->active() || state_->mirrorTool->active()) || state_->generationTool->active(); };
+    state_->viewport->onEditEscape = [this] {
+        if (state_->plateEditTool->active()) {state_->plateEditTool->cancel();return true;}
+        if (state_->generationTool->active()) { state_->generationTool->cancel(); return true; }
+        if (state_->contourTool->active()) { state_->contourTool->cancel(); return true; }
+        if (state_->localTool->active()) { state_->localTool->cancel(); return true; }
+        if (state_->mirrorTool->active()) { state_->mirrorTool->cancel(); return true; }
+        if (state_->thicknessTool->active()) { state_->thicknessTool->cancel(); return true; }
+        if (state_->holeTool->active()) { state_->holeTool->cancel(); return true; }
+        if (!state_->edgeTool->active()) return false;
+        state_->edgeTool->cancel();return true;
+    };
+    state_->referenceTool->onChanged = [this] { refreshProjectPanels(); };
     auto *console = new CommandConsoleWidget(state_->service, actions, this);
     state_->console = console;
     console->onShowRequested = [this] { state_->workspace->showPanel(QStringLiteral("dock.commands")); };
-    // 先建立“上方工作区 + 底部命令”，再在工作区左侧加工具页、最外层右侧加模型树/属性。
-    // 这样命令窗口横跨左侧工具页和三维视图，而右侧栏始终占满工作区高度。
+    // 先建立中央“上方三维视图 + 下方命令”，再在最外层左右加入工具页和模型树/属性。
+    // 左侧工具页贯穿全高，命令窗口只占中央列；中央与右侧均上下平分。
     state_->workspace->addPanel(QStringLiteral("dock.commands"), QStringLiteral("命令窗口"), console, DockPosition::Bottom);
     state_->workspace->addPanel(QStringLiteral("dock.reconstruction"), QStringLiteral("重建参数"), state_->parameters,
                                 DockPosition::Left);
@@ -205,22 +357,25 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
                                 DockPosition::Right);
     state_->workspace->addPanel(QStringLiteral("dock.properties"), QStringLiteral("属性"), state_->inspector->properties(),
                                 DockPosition::Right, QStringLiteral("dock.modelTree"));
-    console->onProjectChanged = [this, lastCloud = std::string{}, lastModel = std::string{}]() mutable
+    console->onProjectChanged = [this]()
     {
         const auto project = state_->service.project();
-        state_->parameters->setRecognition(project.recognition);
-        state_->parameters->setSourceText(text(project.sourcePathUtf8));
-        state_->parameters->setModelText(project.model
-            ? QStringLiteral("命令已更新模型，当前版本 %1").arg(project.revision)
-            : QStringLiteral("尚无模型。"));
-        state_->parametersDirty = !project.model;
-        state_->appliedParameters.reset();
+        const bool geometryChanged = state_->displayedCloudId != project.cloudId || state_->displayedModelId != project.modelId;
+        const bool historyRestored = project.historyRestoreRevision > state_->displayedHistoryRestoreRevision;
+        if (!geometryChanged && !historyRestored)
+        {
+            state_->viewport->setCloudSelection(project.selection);
+            refreshProjectPanels();
+            updateActions();
+            return;
+        }
+        restoreCommittedParameters();
         state_->actions->get(ActionId::ShowCloud)->setChecked(static_cast<bool>(project.cloud));
         state_->actions->get(ActionId::ShowModel)->setChecked(static_cast<bool>(project.model));
-        const bool geometryChanged = lastCloud != project.cloudId || lastModel != project.modelId;
-        lastCloud = project.cloudId;
-        lastModel = project.modelId;
-        refreshDisplay(geometryChanged);
+        const bool inPlaceEdit = project.model &&
+            (!project.model->partTransforms.empty() || !project.model->thicknessOverrides.empty()) &&
+            state_->displayedCloudId == project.cloudId;
+        refreshDisplay(!historyRestored && !inPlaceEdit);
         refreshProjectPanels();
         updateActions();
     };
@@ -259,8 +414,24 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
             {
                 exportStep();
             });
+    connect(actions.get(ExportModel), &QAction::triggered, this, [this] { exportCwrm(); });
+    connect(actions.get(ExportModelCloud), &QAction::triggered, this, [this] { exportModelCloud(); });
     connect(actions.get(ExportAndExit), &QAction::triggered, this, [this] { exportAndExit(); });
     connect(actions.get(ExportCloud), &QAction::triggered, this, [this] { exportCloud(); });
+    connect(actions.get(DeleteModel), &QAction::triggered, this, [this] {
+        if (!state_->actions->get(ActionId::DeleteModel)->isEnabled()) return;
+        const auto ids = state_->viewport->selectedParts();
+        if (ids.empty()) return;
+        try
+        {
+            state_->activeTask = state_->service.submitDeleteModelParts(ids, state_->service.project().revision);
+            state_->pending = State::Operation::DeleteModel;
+            state_->cancellationRequested = false;
+            state_->progress->setValue(0);
+            updateActions();
+        }
+        catch (const std::exception &error) { appendLog(QString::fromUtf8(error.what())); }
+    });
     connect(actions.get(Reconstruct), &QAction::triggered, this,
             [this]
             {
@@ -340,20 +511,75 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
     };
     state_->viewport->onCloudContextMenu = [this](const QPoint &position)
     {
+        if (state_->plateEditTool->active()) {
+            QMenu menu(this);menu.addAction(QStringLiteral("退出板件编辑"),this,[this]{state_->plateEditTool->cancel();});menu.exec(position);return;
+        }
+        if (state_->actions->get(ActionId::SelectSolid)->isChecked() && !state_->actions->get(ActionId::Measure)->isChecked() &&
+            !state_->referenceTool->picking() && !state_->transformTool->active() && !state_->generationTool->active() &&
+            !state_->contourTool->active() && !state_->localTool->active() && !state_->mirrorTool->active() &&
+            !state_->thicknessTool->active() && !state_->holeTool->active() && !state_->edgeTool->active()) {modelContextMenu(position);return;}
         QMenu menu(this);
+        if (state_->generationTool->active())
+            menu.addAction(QStringLiteral("退出生成板件"), this, [this] { state_->generationTool->cancel(); });
+        if (state_->contourTool->active())
+            menu.addAction(QStringLiteral("退出外扩板件轮廓"), this, [this] { state_->contourTool->cancel(); });
+        if (state_->localTool->active())
+            menu.addAction(QStringLiteral("退出局部重建"), this, [this] { state_->localTool->cancel(); });
+        if (state_->mirrorTool->active())
+            menu.addAction(QStringLiteral("退出镜像补全"), this, [this] { state_->mirrorTool->cancel(); });
+        if (state_->thicknessTool->active())
+            menu.addAction(QStringLiteral("退出修改板厚"), this, [this] { state_->thicknessTool->cancel(); });
+        if (state_->holeTool->active())
+            menu.addAction(QStringLiteral("退出添加孔"), this, [this] { state_->holeTool->cancel(); });
+        if (state_->edgeTool->active())
+            menu.addAction(QStringLiteral("退出圆角 / 倒角"), this, [this] { state_->edgeTool->cancel(); });
+        if (state_->transformTool->active())
+        {
+            menu.addAction(QStringLiteral("取消移动 / 旋转"), this, [this] { state_->transformTool->cancel(); });
+            menu.exec(position);
+            return;
+        }
+        if (state_->referenceTool->picking())
+        {
+            menu.addAction(QStringLiteral("退出基准面设置"), this, [this] { state_->referenceTool->cancel(); });
+            menu.exec(position);
+            return;
+        }
+        auto *measure = state_->actions->get(ActionId::Measure);
+        if (measure->isChecked())
+        {
+            menu.addAction(measure->icon(), QStringLiteral("退出测量"), this,
+                           [measure] { measure->setChecked(false); });
+            menu.addSeparator();
+        }
         menu.addAction(state_->actions->get(ActionId::CropCloud));
         menu.addAction(state_->actions->get(ActionId::DeleteCloud));
         menu.exec(position);
     };
 
+    connect(actions.get(Measure), &QAction::toggled, state_->viewport, &OccViewport::setMeasurementEnabled);
+    state_->viewport->onMeasurementModeChanged = [this, hint](bool enabled)
+    {
+        state_->actions->get(ActionId::Measure)->setChecked(enabled);
+        hint->setText(enabled
+            ? QStringLiteral("测量：依次左键选两点，第三次点击开始下一组 · 右键菜单 / Esc 退出 · 单位 mm")
+            : QStringLiteral("左键拾取 · Shift 点击追加/取消 · 拖动框选点云 · 右键旋转 · 中键平移 · 滚轮缩放 · Esc 清空"));
+    };
+    state_->viewport->onMeasurementCompleted = [this](const PointMeasurementResult &result)
+    {
+        appendLog(QStringLiteral("测量：距离 %1 mm；X %2 mm；Y %3 mm；Z %4 mm（工程坐标轴）。")
+            .arg(result.distanceMm, 0, 'f', 2).arg(result.componentsMm.x, 0, 'f', 2)
+            .arg(result.componentsMm.y, 0, 'f', 2).arg(result.componentsMm.z, 0, 'f', 2));
+    };
+
     connect(actions.get(CloudHeight), &QAction::toggled, state_->viewport, &OccViewport::setCloudHeightColors);
     connect(actions.get(ShowModel), &QAction::toggled, state_->viewport, &OccViewport::setModelVisible);
     connect(actions.get(ShowModel), &QAction::toggled, this, [this] { updateActions(); });
-    for (const auto id : {SelectPoint, SelectSolid})
+    for (const auto id : {SelectPoint, SelectEdge, SelectFace, SelectSolid})
     {
-        connect(actions.get(id), &QAction::toggled, this, [this, id](bool checked)
+        connect(actions.get(id), &QAction::toggled, this, [this](bool checked)
         {
-            if (checked && id == ActionId::SelectPoint)
+            if (checked)
             {
                 state_->viewport->setSelectedPart({});
                 state_->inspector->selectPart({});
@@ -367,7 +593,11 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
             [this]
             {
                 const auto project = state_->service.project();
-                if (project.model)
+                if (project.referencePlane)
+                {
+                    state_->viewport->showBottomView(project.referencePlane->normal, project.referencePlane->xAxis);
+                }
+                else if (project.model)
                 {
                     const auto &frame = project.model->frame;
                     state_->viewport->showBottomView(frame.yAxis, frame.xAxis);
@@ -378,16 +608,130 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
                     state_->viewport->showBottomView(frame.yAxis, frame.xAxis);
                 }
             });
-    for (const auto id : {BuildSelection, Obstacle, PlateThickness, ExtendContour, Channel, Angle, OuterPlate,
-                          BottomPlate, WeldHole, BottomHole, Fillet, Move, Rotate, Measure, BasePlane})
+    for (const auto id : {OuterPlate, BottomPlate})
     {
-        connect(actions.get(id), &QAction::triggered, this,
-                [this, id]
-                {
-                    state_->operation->showOperation(id, state_->actions->get(id)->text());
-                    state_->workspace->showPanel(QStringLiteral("dock.operation"));
-                });
+        connect(actions.get(id), &QAction::triggered, this, [this, id] {
+            state_->thicknessTool->cancel();
+            state_->contourTool->cancel();
+            state_->mirrorTool->cancel();
+            state_->holeTool->cancel();
+            state_->edgeTool->cancel();
+            state_->transformTool->cancel();
+            state_->referenceTool->cancel();
+            state_->generationTool->cancel();
+            state_->localTool->cancel();
+        state_->plateEditTool->cancel();
+            state_->actions->get(ActionId::Measure)->setChecked(false);
+            state_->actions->get(id == OuterPlate ? ActionId::SelectFace : ActionId::SelectSolid)->setChecked(true);
+            state_->operation->showCustom(state_->actions->get(id)->text(), state_->generationTool, id);
+            state_->workspace->showPanel(QStringLiteral("dock.operation"));
+            state_->generationTool->begin(id == OuterPlate ? PlateGenerationKind::Cover : PlateGenerationKind::Base);
+        });
     }
+    connect(actions.get(LocalReconstruct), &QAction::triggered, this, [this] {
+        state_->mirrorTool->cancel();
+        state_->generationTool->cancel();
+        state_->contourTool->cancel();
+        state_->thicknessTool->cancel();
+        state_->holeTool->cancel();
+        state_->edgeTool->cancel();
+        state_->transformTool->cancel();
+        state_->referenceTool->cancel();
+        state_->actions->get(ActionId::Measure)->setChecked(false);
+        state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        state_->operation->showCustom(QStringLiteral("局部重建"), state_->localTool);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+        state_->localTool->begin();
+    });
+    connect(actions.get(ExtendContour), &QAction::triggered, this, [this] {
+        state_->mirrorTool->cancel();
+        state_->generationTool->cancel();
+        state_->localTool->cancel();
+        state_->plateEditTool->cancel();
+        state_->thicknessTool->cancel();
+        state_->holeTool->cancel();
+        state_->edgeTool->cancel();
+        state_->transformTool->cancel();
+        state_->referenceTool->cancel();
+        state_->actions->get(ActionId::Measure)->setChecked(false);
+        state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        state_->operation->showCustom(QStringLiteral("外扩板件轮廓"), state_->contourTool, ActionId::ExtendContour);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+        state_->contourTool->begin();
+    });
+    connect(actions.get(MirrorComplete), &QAction::triggered, this, [this] {
+        state_->generationTool->cancel();
+        state_->localTool->cancel();
+        state_->plateEditTool->cancel();
+        state_->contourTool->cancel();
+        state_->thicknessTool->cancel();
+        state_->holeTool->cancel();
+        state_->edgeTool->cancel();
+        state_->transformTool->cancel();
+        state_->referenceTool->cancel();
+        state_->actions->get(ActionId::Measure)->setChecked(false);
+        state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        state_->operation->showCustom(QStringLiteral("镜像补全"), state_->mirrorTool, ActionId::MirrorComplete);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+        state_->mirrorTool->begin();
+    });
+    connect(actions.get(PlateThickness), &QAction::triggered, this, [this] {
+        state_->contourTool->cancel();
+        state_->mirrorTool->cancel();
+        state_->generationTool->cancel();
+        state_->localTool->cancel();
+        state_->plateEditTool->cancel();
+        state_->holeTool->cancel();
+        state_->edgeTool->cancel();
+        state_->transformTool->cancel();
+        state_->referenceTool->cancel();
+        state_->actions->get(ActionId::Measure)->setChecked(false);
+        state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        state_->operation->showCustom(QStringLiteral("修改板厚"), state_->thicknessTool, ActionId::PlateThickness);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+        state_->thicknessTool->begin();
+    });
+    for (const auto id : {WeldHole, BottomHole})
+    {
+        connect(actions.get(id), &QAction::triggered, this, [this,id] {
+            state_->transformTool->cancel(); state_->referenceTool->cancel(); state_->edgeTool->cancel();
+            state_->actions->get(ActionId::Measure)->setChecked(false);
+            state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+            state_->operation->showCustom(QStringLiteral("添加孔"), state_->holeTool);
+            state_->workspace->showPanel(QStringLiteral("dock.operation"));
+            if(id==WeldHole && state_->viewport->selectedParts().size()>1) beginPlateEdit("holes");
+            else state_->holeTool->begin(id == WeldHole ? PlateHoleKind::Weld : PlateHoleKind::Bottom);
+        });
+    }
+    connect(actions.get(Fillet), &QAction::triggered, this, [this] {
+        state_->holeTool->cancel();
+        state_->transformTool->cancel();state_->referenceTool->cancel();
+        state_->actions->get(ActionId::Measure)->setChecked(false);
+        state_->actions->get(ActionId::SelectEdge)->setChecked(true);
+        state_->operation->showCustom(QStringLiteral("圆角 / 倒角"),state_->edgeTool);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+        state_->edgeTool->begin();
+    });
+    for (const auto id : {Move, Rotate})
+    {
+        connect(actions.get(id), &QAction::triggered, this, [this,id] {
+            state_->referenceTool->cancel();
+            state_->operation->showCustom(state_->actions->get(id)->text(),state_->transformTool);
+            state_->workspace->showPanel(QStringLiteral("dock.operation"));
+            state_->transformTool->begin(id == ActionId::Move ? ModelTransformKind::Move : ModelTransformKind::Rotate);
+        });
+    }
+    connect(actions.get(BasePlane), &QAction::triggered, this, [this] {
+        state_->operation->showCustom(QStringLiteral("设置基准面"), state_->referenceTool);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+        state_->referenceTool->begin();
+        updateActions();
+    });
+    connect(actions.get(Section), &QAction::triggered, this, [this] {
+        state_->referenceTool->cancel();
+        state_->operation->showCustom(QStringLiteral("基准面 / 点云剖视"), state_->referenceTool);
+        state_->workspace->showPanel(QStringLiteral("dock.operation"));
+    });
     connect(state_->parameters, &ReconstructionPanel::edited, this,
             [this]
             {
@@ -514,26 +858,59 @@ void MainWindow::updateActions()
     actions.get(ActionId::Open)->setEnabled(idle);
     const bool cloudAvailable =
         idle && project.cloud && !project.cloud->points.empty() && actions.get(ActionId::ShowCloud)->isChecked();
-    const bool cloudEditable = cloudAvailable && actions.get(ActionId::SelectPoint)->isChecked();
+    const bool transformActive = state_->transformTool->active() || state_->edgeTool->showingPreview() || state_->holeTool->showingPreview() || state_->thicknessTool->showingPreview() || state_->contourTool->showingPreview() || state_->mirrorTool->showingPreview() || state_->generationTool->showingPreview() || (state_->localTool->showingPreview() || state_->plateEditTool->showingPreview());
+    const bool cloudEditable = cloudAvailable && !transformActive && actions.get(ActionId::SelectPoint)->isChecked();
     const bool modelAvailable = idle && project.model && actions.get(ActionId::ShowModel)->isChecked();
+    actions.get(ActionId::Measure)->setEnabled(cloudAvailable || modelAvailable);
+    if (!(cloudAvailable || modelAvailable))
+    {
+        actions.get(ActionId::Measure)->setChecked(false);
+    }
+    if (state_->edgeTool->active() && !actions.get(ActionId::SelectEdge)->isChecked())
+        actions.get(ActionId::SelectEdge)->setChecked(true);
+    if ((state_->holeTool->active() || state_->thicknessTool->active() || (state_->contourTool->active() || state_->mirrorTool->active())) && !actions.get(ActionId::SelectSolid)->isChecked())
+        actions.get(ActionId::SelectSolid)->setChecked(true);
+    if (state_->localTool->active() && !actions.get(ActionId::SelectSolid)->isChecked())
+        actions.get(ActionId::SelectSolid)->setChecked(true);
+    if (state_->generationTool->active())
+        actions.get(state_->generationTool->pickMode() == ModelPickMode::Face ? ActionId::SelectFace : ActionId::SelectSolid)->setChecked(true);
     state_->viewport->setCloudEditingEnabled(cloudEditable);
-    state_->viewport->setModelPickingEnabled(modelAvailable && actions.get(ActionId::SelectSolid)->isChecked());
+    state_->viewport->setModelPickMode(actions.get(ActionId::SelectPoint)->isChecked() ? ModelPickMode::Vertex
+        : actions.get(ActionId::SelectEdge)->isChecked() ? ModelPickMode::Edge
+        : actions.get(ActionId::SelectFace)->isChecked() ? ModelPickMode::Face : ModelPickMode::Body);
+    state_->viewport->setModelPickingEnabled(modelAvailable && !transformActive);
+    state_->viewport->setThicknessEditingEnabled(modelAvailable && !transformActive &&
+        !state_->referenceTool->picking() && !actions.get(ActionId::Measure)->isChecked() &&
+        actions.get(ActionId::ShowThickness)->isChecked());
+    state_->inspector->tree()->setEnabled(!transformActive && ((!state_->thicknessTool->active() && !(state_->contourTool->active() || state_->mirrorTool->active())) || idle));
     actions.get(ActionId::Select)->setEnabled(cloudEditable || modelAvailable);
-    actions.get(ActionId::SelectPoint)->setEnabled(cloudAvailable);
+    actions.get(ActionId::SelectPoint)->setEnabled(cloudAvailable || modelAvailable);
+    actions.get(ActionId::SelectEdge)->setEnabled(modelAvailable);
+    actions.get(ActionId::SelectFace)->setEnabled(modelAvailable);
     actions.get(ActionId::SelectSolid)->setEnabled(modelAvailable);
     for (const auto id : {ActionId::AddSelection, ActionId::RemoveSelection})
     {
-        actions.get(id)->setEnabled(cloudEditable);
+        actions.get(id)->setEnabled(cloudEditable || modelAvailable);
     }
     const bool selected = cloudEditable && project.selection && !project.selection->empty();
     actions.get(ActionId::CropCloud)->setEnabled(selected);
     actions.get(ActionId::DeleteCloud)->setEnabled(selected);
-    actions.get(ActionId::Undo)->setEnabled(idle && project.canUndoCloud);
-    actions.get(ActionId::Redo)->setEnabled(idle && project.canRedoCloud);
-    actions.get(ActionId::Reset)->setEnabled(idle && project.canResetCloud);
+    actions.get(ActionId::Undo)->setEnabled(idle && project.canUndo);
+    actions.get(ActionId::Redo)->setEnabled(idle && project.canRedo);
+    actions.get(ActionId::Reset)->setEnabled(idle && project.canReset);
+    setActionHelpContext(actions.get(ActionId::Undo), project.canUndo ? QStringLiteral("撤销：") + text(project.undoLabel)
+        : QStringLiteral("没有可撤销的工程编辑（最多保留 10 步）"));
+    setActionHelpContext(actions.get(ActionId::Redo), project.canRedo ? QStringLiteral("重做：") + text(project.redoLabel)
+        : QStringLiteral("没有可重做的工程编辑"));
 
     state_->recentFiles->menuAction()->setEnabled(idle);
-    actions.get(ActionId::BottomView)->setEnabled(idle && ((project.model && project.model->importedFormat.empty()) || project.recognition.has_value()));
+    actions.get(ActionId::BottomView)->setEnabled(idle && (project.referencePlane ||
+        (project.model && project.model->importedFormat.empty()) || project.recognition.has_value()));
+    actions.get(ActionId::BottomView)->setText(project.referencePlane ? QStringLiteral("基准面") : QStringLiteral("底板面"));
+    setActionHelpContext(actions.get(ActionId::BottomView), project.referencePlane
+        ? QStringLiteral("正对自定义基准面并适合视图") : QStringLiteral("正对底板观测面，长边横向放置并适合视图"));
+    actions.get(ActionId::BasePlane)->setEnabled(cloudAvailable || modelAvailable);
+    actions.get(ActionId::Section)->setEnabled(idle && static_cast<bool>(project.referencePlane));
     actions.get(ActionId::Reconstruct)->setEnabled(idle && project.cloud &&
         (state_->parameters->usePointCloud() ? project.recognition.has_value() : project.estimate.has_value()));
     state_->parameters->setEditable(idle && project.cloud && project.estimate.has_value(),
@@ -541,6 +918,8 @@ void MainWindow::updateActions()
     const bool currentModel = idle && project.model && (!project.model->importedFormat.empty() ||
         (!state_->parametersDirty && !state_->parameters->hasEdits()));
     actions.get(ActionId::ExportStep)->setEnabled(currentModel);
+    actions.get(ActionId::ExportModel)->setEnabled(currentModel);
+    actions.get(ActionId::ExportModelCloud)->setEnabled(currentModel);
     const bool initialized = state_->service.outputInitialized();
     const auto outputDirectory = state_->service.outputDirectory();
     auto *deliver = actions.get(ActionId::ExportAndExit);
@@ -571,12 +950,84 @@ void MainWindow::updateActions()
         reason += QStringLiteral("\n目标：") +
                   QString::fromStdWString((*outputDirectory / "reserveModel.step").wstring());
     }
-    deliver->setToolTip(reason);
+    setActionHelpContext(deliver, reason);
     actions.get(ActionId::ExportCloud)->setEnabled(idle && project.cloud && !project.cloud->points.empty());
-    actions.get(ActionId::Deviation)->setEnabled(currentModel && project.cloud && project.model->importedFormat.empty());
+    actions.get(ActionId::Deviation)->setEnabled(currentModel && project.cloud && project.model->importedFormat.empty() && project.model->edgeTreatedParts.empty() && project.model->holeEditedParts.empty() && project.model->thicknessOverrides.empty() && project.model->contourExpandedParts.empty() && project.model->mirroredParts.empty() && project.model->mirrorCompletedParts.empty() && project.model->locallyReconstructedParts.empty());
     const bool cancellable = !state_->activeTask.empty() && !state_->closing && !state_->cancellationRequested;
     actions.get(ActionId::CancelTask)->setEnabled(cancellable);
     actions.get(ActionId::StopReconstruct)->setEnabled(cancellable && state_->pending == State::Operation::Reconstruct);
+    state_->referenceTool->sync(project, idle, cloudAvailable, modelAvailable);
+    state_->transformTool->sync(project, idle, modelAvailable);
+    state_->edgeTool->sync(project, idle);
+    state_->holeTool->sync(project, idle);
+    state_->thicknessTool->sync(project, idle);
+    state_->contourTool->sync(project, idle);
+    state_->mirrorTool->sync(project, idle);
+    state_->generationTool->sync(project, idle);
+    state_->localTool->sync(project, idle);
+    state_->plateEditTool->sync(project,idle);
+    actions.get(ActionId::LocalReconstruct)->setEnabled(modelAvailable && project.cloud &&
+        !project.cloud->points.empty() && !project.model->reconstructableParts.empty() && !state_->transformTool->active());
+    for (const auto id : {ActionId::OuterPlate, ActionId::BottomPlate, ActionId::MirrorComplete})
+        actions.get(id)->setEnabled(modelAvailable && !state_->transformTool->active());
+    actions.get(ActionId::ExtendContour)->setEnabled(modelAvailable && !state_->transformTool->active());
+    actions.get(ActionId::PlateThickness)->setEnabled(modelAvailable && !state_->transformTool->active());
+    for (const auto id : {ActionId::WeldHole, ActionId::BottomHole})
+        actions.get(id)->setEnabled(modelAvailable && !state_->transformTool->active());
+    actions.get(ActionId::Fillet)->setEnabled(modelAvailable && !state_->transformTool->active());
+    actions.get(ActionId::DeleteModel)->setEnabled(modelAvailable && actions.get(ActionId::SelectSolid)->isChecked() &&
+        !actions.get(ActionId::Measure)->isChecked() && !state_->referenceTool->picking() &&
+        !state_->viewport->selectedParts().empty());
+    const bool editablePart = modelAvailable && actions.get(ActionId::SelectSolid)->isChecked() &&
+        !actions.get(ActionId::Measure)->isChecked() && !state_->referenceTool->picking() &&
+        !state_->viewport->selectedParts().empty();
+    actions.get(ActionId::Move)->setEnabled(editablePart);
+    actions.get(ActionId::Rotate)->setEnabled(editablePart);
+    if (state_->transformTool->active())
+    {
+        state_->viewport->setCloudEditingEnabled(false);
+        state_->viewport->setModelPickingEnabled(false);
+        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::SelectSolid,
+            ActionId::Select, ActionId::AddSelection, ActionId::RemoveSelection, ActionId::Measure, ActionId::BasePlane,
+            ActionId::DeleteModel, ActionId::CropCloud, ActionId::DeleteCloud, ActionId::ShowModel})
+            actions.get(id)->setEnabled(false);
+    }
+    else actions.get(ActionId::ShowModel)->setEnabled(true);
+    if (state_->edgeTool->active())
+    {
+        for (const auto id : {ActionId::SelectPoint,ActionId::SelectFace,ActionId::SelectSolid,
+            ActionId::Measure,ActionId::Move,ActionId::Rotate,ActionId::BasePlane,ActionId::DeleteModel,
+            ActionId::ShowModel,ActionId::ExportStep,ActionId::ExportModel,ActionId::ExportModelCloud,ActionId::ExportAndExit}) actions.get(id)->setEnabled(false);
+    }
+    if (state_->holeTool->active() || state_->thicknessTool->active() || (state_->contourTool->active() || state_->mirrorTool->active()))
+    {
+        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace,
+            ActionId::Measure, ActionId::Move, ActionId::Rotate, ActionId::BasePlane, ActionId::DeleteModel,
+            ActionId::ShowModel, ActionId::ExportStep, ActionId::ExportModel, ActionId::ExportModelCloud, ActionId::ExportAndExit}) actions.get(id)->setEnabled(false);
+    }
+    if (state_->generationTool->active())
+    {
+        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::SelectSolid,
+            ActionId::Measure, ActionId::Move, ActionId::Rotate, ActionId::BasePlane, ActionId::DeleteModel,
+            ActionId::ShowModel, ActionId::ExportStep, ActionId::ExportModel, ActionId::ExportModelCloud, ActionId::ExportAndExit}) actions.get(id)->setEnabled(false);
+    }
+    if (state_->localTool->active() || state_->plateEditTool->active())
+    {
+        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace,
+            ActionId::Measure, ActionId::Move, ActionId::Rotate, ActionId::BasePlane, ActionId::DeleteModel,
+            ActionId::ShowModel, ActionId::ExportStep, ActionId::ExportModel, ActionId::ExportModelCloud, ActionId::ExportAndExit}) actions.get(id)->setEnabled(false);
+    }
+    if (state_->referenceTool->picking())
+    {
+        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::SelectSolid,
+                              ActionId::CropCloud, ActionId::DeleteCloud}) actions.get(id)->setEnabled(false);
+    }
+    setActionHelpContext(actions.get(ActionId::BasePlane), !idle
+        ? QStringLiteral("请等待当前任务完成。")
+        : !(cloudAvailable || modelAvailable) ? QStringLiteral("请先导入并显示点云或模型。")
+        : !actions.get(ActionId::BasePlane)->isEnabled()
+            ? QStringLiteral("请先退出当前添加孔、板件修改或其他编辑操作，再设置基准面。")
+            : QString());
 }
 
 void MainWindow::importCloud()
@@ -737,6 +1188,43 @@ void MainWindow::exportStep()
     }
 }
 
+void MainWindow::exportCwrm()
+{
+    auto path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 CWRM 模型（请选择新文件名）"), {},
+        QStringLiteral("CWRM 模型 (*.cwrm)"));
+    if (path.isEmpty()) return;
+    if (!path.endsWith(QStringLiteral(".cwrm"), Qt::CaseInsensitive)) path += QStringLiteral(".cwrm");
+    try
+    {
+        state_->activeTask = state_->service.submitExportCwrm(nativePath(path), state_->service.project().revision);
+        state_->pending = State::Operation::Export;
+        state_->cancellationRequested = false;
+        state_->progress->setValue(0);
+        updateActions();
+    }
+    catch (const std::exception &error) { reportError(text(error.what())); }
+}
+void MainWindow::exportModelCloud()
+{
+    bool accepted = false;
+    const double spacing = QInputDialog::getDouble(this, QStringLiteral("模型表面采样"),
+        QStringLiteral("采样间距（mm），导出的是模型表面点，不是原始扫描点云："), 2.0, 0.01, 100000.0, 2, &accepted);
+    if (!accepted) return;
+    auto path = QFileDialog::getSaveFileName(this, QStringLiteral("模型采样导出（请选择新文件名）"), {},
+        QStringLiteral("PCD 点云 (*.pcd)"));
+    if (path.isEmpty()) return;
+    if (!path.endsWith(QStringLiteral(".pcd"), Qt::CaseInsensitive)) path += QStringLiteral(".pcd");
+    try
+    {
+        state_->activeTask = state_->service.submitExportModelCloud(nativePath(path), spacing, state_->service.project().revision);
+        state_->pending = State::Operation::ExportCloud;
+        state_->cancellationRequested = false;
+        state_->progress->setValue(0);
+        updateActions();
+    }
+    catch (const std::exception &error) { reportError(text(error.what())); }
+}
+
 void MainWindow::exportAndExit()
 {
     // 当前产品没有可取消的工程保存询问；点击本按钮即确认当前完整模型。
@@ -810,13 +1298,17 @@ void MainWindow::editCloud(ActionId action)
         }
         else
         {
+            state_->referenceTool->cancel();
+            state_->viewport->setMeasurementEnabled(false);
+            state_->actions->get(ActionId::Measure)->setChecked(false);
             state_->activeTask =
-                state_->service.submitCloudHistory(action == ActionId::Undo   ? CloudHistoryAction::Undo
+                state_->service.submitProjectHistory(action == ActionId::Undo   ? CloudHistoryAction::Undo
                                                    : action == ActionId::Redo ? CloudHistoryAction::Redo
                                                                               : CloudHistoryAction::Reset,
                                                    project.revision);
         }
-        state_->pending = State::Operation::EditCloud;
+        state_->pending = action == ActionId::CropCloud || action == ActionId::DeleteCloud
+            ? State::Operation::EditCloud : State::Operation::History;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
         updateActions();
@@ -829,7 +1321,19 @@ void MainWindow::editCloud(ActionId action)
 
 void MainWindow::refreshDisplay(bool fitView)
 {
+    state_->edgeTool->cancel();
+    state_->holeTool->cancel();
+    state_->thicknessTool->cancel();
+    state_->contourTool->cancel();
+    state_->mirrorTool->cancel();
+    state_->generationTool->cancel();
+    state_->localTool->cancel();
+    state_->transformTool->cancel();
+    state_->referenceTool->cancel();
     const auto project = state_->service.project();
+    state_->displayedCloudId = project.cloudId;
+    state_->displayedModelId = project.modelId;
+    state_->displayedHistoryRestoreRevision = project.historyRestoreRevision;
     std::vector<CloudDisplayPoint> points;
     Vec3 origin = project.model ? project.model->frame.originMm : Vec3{};
     if (project.cloud)
@@ -858,6 +1362,7 @@ void MainWindow::refreshDisplay(bool fitView)
         state_->viewport->setModel({});
         state_->actions->get(ActionId::SelectPoint)->setChecked(true);
     }
+    state_->viewport->setReferencePlane(project.referencePlane, project.section, origin);
     if (fitView)
     {
         state_->viewport->fitAll();
@@ -868,6 +1373,46 @@ void MainWindow::refreshDisplay(bool fitView)
 void MainWindow::refreshProjectPanels()
 {
     state_->inspector->setProject(state_->service.project());
+}
+
+void MainWindow::restoreCommittedParameters()
+{
+    const auto project = state_->service.project();
+    state_->referenceTool->cancel();
+    state_->viewport->setMeasurementEnabled(false);
+    state_->actions->get(ActionId::Measure)->setChecked(false);
+    state_->parameters->setRecognition(project.recognition);
+    BeamParameters parameters;
+    if (project.estimate)
+    {
+        parameters.length = project.estimate->length;
+        parameters.width = project.estimate->width;
+        parameters.height = project.estimate->height;
+    }
+    state_->parameters->setValues(parameters);
+    ModelSummary settings;
+    if (project.committedParameters)
+    {
+        settings.parameters = *project.committedParameters;
+        state_->parameters->setModelValues(settings);
+    }
+    else if (project.committedRecognitionOptions)
+    {
+        settings.fromPointCloud = true;
+        settings.recognitionOptions = *project.committedRecognitionOptions;
+        state_->parameters->setModelValues(settings);
+    }
+    else if (project.model && project.model->importedFormat.empty()) state_->parameters->setModelValues(*project.model);
+    state_->appliedParameters = project.committedParameters;
+    state_->parametersDirty = !project.model;
+    state_->parameters->acceptEdits();
+    state_->parameters->setSourceText(text(project.sourcePathUtf8));
+    state_->parameters->setFrameText(project.estimate
+        ? QStringLiteral("点云框架中心 %1 mm").arg(vectorText(project.estimate->frame.originMm))
+        : QStringLiteral("当前没有点云估计框架。"));
+    state_->parameters->setModelText(project.model
+        ? QStringLiteral("模型版本 %1；当前 %2 个部件。").arg(project.revision).arg(project.model->partIds.size())
+        : QStringLiteral("尚无模型。"));
 }
 
 void MainWindow::pollTask()
@@ -925,6 +1470,25 @@ void MainWindow::pollTask()
                 state_->status->setText(QStringLiteral("已选择 %1 个点；右键截取或删除，Esc 清空选区").arg(count));
                 refreshProjectPanels();
             }
+            else if (operation == State::Operation::History)
+            {
+                restoreCommittedParameters();
+                refreshDisplay(false);
+            }
+            else if (operation == State::Operation::EditThickness)
+            {
+                refreshDisplay(false);
+                state_->viewport->setSelectedParts({state_->thicknessEditPart});
+                state_->inspector->selectParts({state_->thicknessEditPart});
+            }
+            else if (operation == State::Operation::DeleteModel)
+            {
+                state_->parameters->setModelText(project.model
+                    ? QStringLiteral("删除后剩余 %1 个部件。重新重建将按点云/参数重新生成模型。")
+                        .arg(project.model->partIds.size())
+                    : QStringLiteral("模型部件已全部删除。"));
+                refreshDisplay(false);
+            }
             else if (operation == State::Operation::EditCloud && project.cloudId == state_->cloudBeforeEdit)
             {
                 state_->status->setText(QStringLiteral("点云未变化，保留当前模型和选区。"));
@@ -970,8 +1534,8 @@ void MainWindow::pollTask()
                 if (operation == State::Operation::EditCloud)
                 {
                     state_->parameters->setModelText(
-                        project.model ? QStringLiteral("已恢复编辑前的模型。")
-                                      : QStringLiteral("点云已更新，旧模型已清除；请检查识别结果后重新建模。"));
+                        project.model ? QStringLiteral("点云已更新，原模型保留；可选择部件进行局部重建。")
+                                      : QStringLiteral("点云已更新；请检查识别结果后重建。"));
                     if (project.model)
                     {
                         state_->parameters->setModelValues(*project.model);
@@ -1012,7 +1576,7 @@ void MainWindow::pollTask()
                         .arg(static_cast<qulonglong>(project.revision))
                         .arg(static_cast<qulonglong>(project.model->solidCount))
                         .arg(static_cast<qulonglong>(project.model->surfaceCount))
-                        .arg(project.model->fromPointCloud ? QStringLiteral("标签区分识别厚度与底板最大值估算厚度。")
+                        .arg(project.model->fromPointCloud ? QStringLiteral("双击板厚标签可修改，厚度来源可在属性中查看。")
                             : QStringLiteral("手动参数模型，标签不是点云识别厚度。")));
                 refreshDisplay();
             }
@@ -1066,6 +1630,14 @@ void MainWindow::pollTask()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    state_->edgeTool->cancel();
+    state_->holeTool->cancel();
+    state_->thicknessTool->cancel();
+    state_->contourTool->cancel();
+    state_->mirrorTool->cancel();
+    state_->generationTool->cancel();
+    state_->localTool->cancel();
+    state_->transformTool->cancel();
     state_->service.requestShutdown();
     if (!state_->service.shutdownComplete())
     {
@@ -1079,4 +1651,31 @@ void MainWindow::closeEvent(QCloseEvent *event)
     state_->workspace->saveLayout();
     event->accept();
 }
+void MainWindow::beginPlateEdit(const std::string &operation,bool all)
+{
+    if(!state_->service.isIdle()||state_->closing) return;
+    const auto ids=state_->viewport->selectedParts();
+    state_->plateEditTool->cancel();state_->localTool->cancel();state_->generationTool->cancel();
+    state_->contourTool->cancel();state_->mirrorTool->cancel();state_->thicknessTool->cancel();
+    state_->holeTool->cancel();state_->edgeTool->cancel();state_->transformTool->cancel();state_->referenceTool->cancel();
+    state_->actions->get(ActionId::Measure)->setChecked(false);state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+    state_->operation->showCustom(text(plateEditTitle(operation)),state_->plateEditTool);
+    state_->workspace->showPanel(QStringLiteral("dock.operation"));state_->plateEditTool->begin(operation,ids,all);
+}
+void MainWindow::modelContextMenu(const QPoint &position)
+{
+    QMenu menu(this);const auto project=state_->service.project();const auto ids=state_->viewport->selectedParts();
+    auto *title=menu.addAction(QStringLiteral("已选 %1 个部件").arg(ids.size()));title->setEnabled(false);
+    const bool ready=state_->service.isIdle()&&project.model&&state_->actions->get(ActionId::SelectSolid)->isChecked();
+    const auto add=[&](ActionId id) {auto *source=state_->actions->get(id);auto *action=menu.addAction(source->icon(),source->text());
+        action->setEnabled(ready&&!ids.empty()&&source->isEnabled());connect(action,&QAction::triggered,source,&QAction::trigger);};
+    const auto operation=[&](const char *op,bool all=false) {auto *a=menu.addAction(all?QStringLiteral("修复全部板件孔洞…"):text(plateEditTitle(op))+QStringLiteral("…"));
+        a->setEnabled(ready&&(all||!ids.empty()));connect(a,&QAction::triggered,this,[this,op,all]{beginPlateEdit(op,all);});};
+    add(ActionId::DeleteModel);menu.addSeparator();
+    for(const auto *op:{"extend","trim","merge","split","crop"}) operation(op);
+    menu.addSeparator();operation("repair");operation("repair",true);operation("holes");
+    menu.addSeparator();add(ActionId::MirrorComplete);add(ActionId::Move);add(ActionId::LocalReconstruct);
+    menu.exec(position);
+}
+
 } // namespace reverse::workbench

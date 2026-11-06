@@ -154,8 +154,9 @@ rm_define(
 
 rm_define(
     name='undo',
-    summary='撤销点云编辑',
+    summary='撤销工程编辑（旧入口）',
     usage='cloud.undo',
+    description='project.undo 的旧入口；现在作用于统一工程历史，新录制写入 project.undo。',
     params=[],
     returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
     examples=[],
@@ -163,8 +164,9 @@ rm_define(
 
 rm_define(
     name='redo',
-    summary='重做点云编辑',
+    summary='重做工程编辑（旧入口）',
     usage='cloud.redo',
+    description='project.redo 的旧入口；现在作用于统一工程历史，新录制写入 project.redo。',
     params=[],
     returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
     examples=[],
@@ -172,8 +174,9 @@ rm_define(
 
 rm_define(
     name='reset',
-    summary='恢复导入时的点云',
+    summary='恢复导入状态（旧入口）',
     usage='cloud.reset',
+    description='project.reset 的旧入口；现在作用于统一工程历史，新录制写入 project.reset。',
     params=[],
     returns={'type': 'object', 'description': '结果摘要；执行失败返回错误码'},
     examples=[],

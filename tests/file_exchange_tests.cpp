@@ -27,6 +27,7 @@
 #include "commands/Json.h"
 #include "geometry/CloudEditing.h"
 #include "geometry/ModelImport.h"
+#include "geometry/ModelExchange.h"
 #include "workbench/ModelDisplayData.h"
 namespace
 {
@@ -190,7 +191,7 @@ TEST_F(FileExchange, StepImportsNestedPlacedInstancesAndConvertsDeclaredUnits)
     const auto display =
         reverse::workbench::makeModelDisplayParts(model->mesh(), model->summary(), model->summary().frame.originMm);
     ASSERT_EQ(display.size(), 2);
-    EXPECT_NE(display[0].colorSrgb, display[1].colorSrgb);
+    EXPECT_EQ(display[0].colorSrgb, display[1].colorSrgb); // 统一浅灰实体，使用深色轮廓区分部件。
     EXPECT_FALSE(display[0].thicknessMm);
     EXPECT_FALSE(display[0].thicknessUnresolved);
     EXPECT_THROW((void)reverse::evaluateDeviation(cloud(), *model), reverse::GeometryError);
@@ -230,6 +231,33 @@ TEST_F(FileExchange, InvalidCwrmAndStepAreRejected)
     write(file(u8"坏文件.step"), "not a step file");
     EXPECT_THROW((void)reverse::loadCadModel(file(u8"坏文件.step")), reverse::GeometryError);
     EXPECT_THROW((void)reverse::loadCadModel(file(u8"不存在.step")), reverse::GeometryError);
+}
+
+TEST_F(FileExchange, CwrmHistoryRestoresSolidsAndStandaloneFacesAfterDeleteAll)
+{
+    TopoDS_Compound compound;
+    BRep_Builder builder;
+    builder.MakeCompound(compound);
+    builder.Add(compound, BRepPrimAPI_MakeBox(10, 20, 30).Shape());
+    builder.Add(compound, BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 40), gp_Dir(0, 0, 1)), 0, 10, 0, 20).Shape());
+    const auto input = file(u8"基线.cwrm");
+    write(input, cwrm(compound));
+    reverse::CommandService service;
+    ASSERT_TRUE(finish(service, service.submitImport(input, reverse::LengthUnit::Millimeter)).result.ok());
+    const auto baseline = service.project();
+    ASSERT_TRUE(finish(service, service.submitDeleteModelParts(baseline.model->partIds, baseline.revision)).result.ok());
+    EXPECT_FALSE(service.project().model);
+    ASSERT_TRUE(finish(service, service.submitLine("project.undo")).result.ok());
+    EXPECT_EQ(service.project().model, baseline.model);
+    ASSERT_TRUE(finish(service, service.submitLine("project.redo")).result.ok());
+    EXPECT_FALSE(service.project().model);
+    ASSERT_TRUE(finish(service, service.submitLine("project.reset")).result.ok());
+    ASSERT_TRUE(finish(service, service.submitExport(file(u8"恢复.step"), service.project().revision)).result.ok());
+    ASSERT_TRUE(service.project().lastExport);
+    EXPECT_EQ(service.project().lastExport->solidCount, 1);
+    EXPECT_EQ(service.project().lastExport->surfaceCount, 1);
+    ASSERT_TRUE(finish(service, service.submitLine("project.undo")).result.ok());
+    EXPECT_FALSE(service.project().model);
 }
 
 TEST_F(FileExchange, ServiceSwitchesCloudAndCadAndPreservesStateOnFailure)
@@ -291,4 +319,135 @@ TEST_F(FileExchange, OptionalLocalSamplesReadAndCadRoundtrip)
     }
     EXPECT_GE(count, 5);
 }
+
+TEST_F(FileExchange, CwrmExportRoundtripPreservesPartsAndPlacedSurfaces)
+{
+    TopoDS_Compound compound;
+    BRep_Builder builder;
+    builder.MakeCompound(compound);
+    builder.Add(compound, BRepPrimAPI_MakeBox(gp_Pnt(100,200,300),10,20,30).Shape());
+    builder.Add(compound, BRepPrimAPI_MakeBox(gp_Pnt(-30,-40,0),4,5,6).Shape());
+    builder.Add(compound, BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0,0,60),gp_Dir(0,0,1)),0,5,0,8).Shape());
+    write(file(u8"源.cwrm"), cwrm(compound));
+    const auto model=reverse::loadCadModel(file(u8"源.cwrm"));
+    const auto output=file(u8"写出模型（中文）.cwrm");
+    const auto result=reverse::exportCwrm(*model,output);
+    EXPECT_TRUE(result.valid);
+    EXPECT_EQ(result.solidCount,2);
+    EXPECT_EQ(result.surfaceCount,1);
+    const auto restored=reverse::loadCadModel(output);
+    EXPECT_NEAR(restored->summary().volumeMm3,6120,1e-6);
+    EXPECT_NEAR(restored->summary().frame.originMm.x,40,1e-6);
+    EXPECT_NEAR(restored->summary().frame.originMm.z,165,1e-6);
+    EXPECT_TRUE(reverse::exportStep(*restored,file(u8"回读.step")).valid);
+    EXPECT_THROW((void)reverse::exportCwrm(*model,output),reverse::GeometryError);
+    EXPECT_EQ(std::filesystem::file_size(output),result.fileBytes);
+}
+
+TEST_F(FileExchange, CwrmCancelNeverPublishesPartialFile)
+{
+    write(file(u8"源.cwrm"), cwrm(BRepPrimAPI_MakeBox(10,20,30).Shape()));
+    const auto model=reverse::loadCadModel(file(u8"源.cwrm"));
+    std::stop_source stop;
+    EXPECT_THROW((void)reverse::exportCwrm(*model,file(u8"取消.cwrm"),stop.get_token(),
+        [&](double p, auto){if(p>=0.5)stop.request_stop();}),reverse::GeometryError);
+    EXPECT_FALSE(std::filesystem::exists(file(u8"取消.cwrm")));
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(directory),std::filesystem::directory_iterator{}),1);
+}
+
+TEST_F(FileExchange, ModelSamplingIsDeterministicAndOnWorldSpaceSurface)
+{
+    write(file(u8"源.cwrm"),cwrm(BRepPrimAPI_MakeBox(gp_Pnt(100,200,300),10,20,30).Shape()));
+    const auto model=reverse::loadCadModel(file(u8"源.cwrm"));
+    const auto a=reverse::sampleModelSurface(*model,2), b=reverse::sampleModelSurface(*model,2);
+    ASSERT_EQ(a->points.size(),b->points.size());
+    EXPECT_GT(a->points.size(),reverse::sampleModelSurface(*model,4)->points.size());
+    for(std::size_t i=0;i<a->points.size();++i)
+    {
+        const auto &v=a->points[i];
+        EXPECT_DOUBLE_EQ(v.position.x,b->points[i].position.x);
+        EXPECT_EQ(v.sourceIndex,i);
+        const double x=v.position.x+a->originMm.x, y=v.position.y+a->originMm.y, z=v.position.z+a->originMm.z;
+        EXPECT_GE(x,100-1e-9); EXPECT_LE(x,110+1e-9);
+        EXPECT_GE(y,200-1e-9); EXPECT_LE(y,220+1e-9);
+        EXPECT_GE(z,300-1e-9); EXPECT_LE(z,330+1e-9);
+        EXPECT_LT(std::min({std::abs(x-100),std::abs(x-110),std::abs(y-200),std::abs(y-220),std::abs(z-300),std::abs(z-330)}),1e-8);
+    }
+    EXPECT_FALSE(a->hasIntensity);
+    EXPECT_THROW((void)reverse::sampleModelSurface(*model,0),reverse::GeometryError);
+    EXPECT_THROW((void)reverse::sampleModelSurface(*model,0.01),reverse::GeometryError);
+    std::stop_source stop;stop.request_stop();
+    EXPECT_THROW((void)reverse::sampleModelSurface(*model,2,stop.get_token()),reverse::GeometryError);
+}
+
+TEST_F(FileExchange, CadConversionMatrixAndPcdInputBan)
+{
+    write(file(u8"源.CWRM"),cwrm(BRepPrimAPI_MakeBox(10,20,30).Shape()));
+    EXPECT_GT(reverse::convertModelFile(file(u8"源.CWRM"),file(u8"源.STEP")).fileBytes,0);
+    for(const auto &source:{file(u8"源.CWRM"),file(u8"源.STEP")})
+    {
+        for(const auto &suffix:{u8".step",u8".cwrm",u8".pcd"})
+        {
+            const auto output=directory/(source.stem().u8string()+source.extension().u8string()+suffix);
+            const auto result=reverse::convertModelFile(source,output,3);
+            EXPECT_GT(result.fileBytes,0);
+            if(result.outputFormat=="pcd") EXPECT_EQ(reverse::loadPointCloud(output,reverse::LengthUnit::Millimeter)->points.size(),result.pointCount);
+            else EXPECT_NEAR(reverse::loadCadModel(output)->summary().volumeMm3,6000,1e-6);
+        }
+    }
+    (void)reverse::exportPointCloud(cloud(),file(u8"源.PCD"));
+    for(const auto &suffix:{u8".step",u8".cwrm",u8".pcd"})
+    {
+        const auto output=directory/(std::u8string(u8"拒绝")+suffix);
+        try { (void)reverse::convertModelFile(file(u8"源.PCD"),output); FAIL()<<"PCD conversion allowed"; }
+        catch(const reverse::GeometryError &error) { EXPECT_EQ(error.code(),"pcd_conversion_disabled"); }
+        EXPECT_FALSE(std::filesystem::exists(output));
+    }
+    // PCD 导入导出仍保持可用。
+    EXPECT_EQ(reverse::exportPointCloud(*reverse::loadPointCloud(file(u8"源.PCD"),reverse::LengthUnit::Millimeter),file(u8"正常导出.pcd")).pointCount,4);
+}
+
+TEST_F(FileExchange, ConversionRejectsOverwriteBadExtensionAndInvalidModel)
+{
+    write(file(u8"源.cwrm"),cwrm(BRepPrimAPI_MakeBox(10,20,30).Shape()));
+    write(file(u8"已有.step"),"keep existing");
+    EXPECT_THROW((void)reverse::convertModelFile(file(u8"源.cwrm"),file(u8"已有.step")),reverse::GeometryError);
+    EXPECT_EQ(std::filesystem::file_size(file(u8"已有.step")),13);
+    EXPECT_THROW((void)reverse::convertModelFile(file(u8"源.cwrm"),file(u8"无效.stl")),reverse::GeometryError);
+    write(file(u8"坏.step"),"broken");
+    EXPECT_THROW((void)reverse::convertModelFile(file(u8"坏.step"),file(u8"拒绝.cwrm")),reverse::GeometryError);
+    EXPECT_FALSE(std::filesystem::exists(file(u8"拒绝.cwrm")));
+}
+
+TEST_F(FileExchange, ConversionAndNewExportsRecordWithoutChangingProjectHistory)
+{
+    const auto source=file(u8"源.cwrm");
+    write(source,cwrm(BRepPrimAPI_MakeBox(10,20,30).Shape()));
+    reverse::CommandService service;
+    const auto text=[](const std::filesystem::path &p){auto s=p.u8string();return std::string(reinterpret_cast<const char*>(s.data()),s.size());};
+    ASSERT_TRUE(finish(service,service.submitImport(source,reverse::LengthUnit::Millimeter)).result.ok());
+    const auto before=service.project();
+    ASSERT_TRUE(finish(service,service.submitStartRecording(file(u8"记录.py"))).result.ok());
+    const auto count=service.recordingState().commandCount;
+    auto task=finish(service,service.submitCommand("file.convert",{text(source),text(file(u8"转换.pcd"))},{{"spacing",4.0}}));
+    ASSERT_TRUE(task.result.ok())<<task.result.message;
+    ASSERT_TRUE(finish(service,service.submitExportCwrm(file(u8"导出.cwrm"),before.revision)).result.ok());
+    ASSERT_TRUE(finish(service,service.submitExportModelCloud(file(u8"采样.pcd"),3,before.revision)).result.ok());
+    EXPECT_EQ(service.recordingState().commandCount,count+3);
+    EXPECT_EQ(service.project().model,before.model);
+    EXPECT_EQ(service.project().revision,before.revision);
+    EXPECT_EQ(service.project().canUndo,before.canUndo);
+    EXPECT_FALSE(service.project().cloud);
+    (void)reverse::exportPointCloud(cloud(),file(u8"点云.pcd"));
+    task=finish(service,service.submitCommand("file.convert",{text(file(u8"点云.pcd")),text(file(u8"禁止.pcd"))}));
+    EXPECT_EQ(task.errorCode,"pcd_conversion_disabled");
+    EXPECT_EQ(service.recordingState().commandCount,count+3);
+    ASSERT_TRUE(finish(service,service.submitStopRecording()).result.ok());
+    // 中途重新录制不补写既往导出/转换副作用，也不破坏会话补写能力。
+    ASSERT_TRUE(finish(service,service.submitStartRecording(file(u8"新记录.py"))).result.ok());
+    EXPECT_EQ(service.recordingState().commandCount,count);
+    ASSERT_TRUE(finish(service,service.submitStopRecording()).result.ok());
+    EXPECT_TRUE(finish(service,service.submitLine("file.convert --help")).result.ok());
+}
+
 } // namespace

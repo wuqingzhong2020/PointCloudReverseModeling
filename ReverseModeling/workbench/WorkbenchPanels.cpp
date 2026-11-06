@@ -1,11 +1,12 @@
 ﻿/*
  * 文件描述：
  * 管理 H 型钢模板入口、逐板识别结果、手动参数与重建选项。
- * 构建移动、旋转、孔洞、基准面等共用操作表单，提供局部复位与取消但不提交几何命令。
+ * 承载各操作工具及待接入表单，模型调整下拉框触发与 Ribbon 相同的动作，切换本身不提交命令。
  */
 #include <cmath>
 #include <stdexcept>
 
+#include <QAction>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
@@ -133,6 +134,11 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     for (std::size_t i = 0; i < m_dimensions.size(); ++i)
     {
         auto *spin = number(m_basic);
+        if (i >= 3)
+        {
+            spin->setDecimals(1);
+            spin->setMinimum(0.1);
+        }
         spin->setObjectName(QStringLiteral("parameters.") + ids[static_cast<qsizetype>(i)]);
         m_dimensions[i] = spin;
         form->addRow(names[static_cast<qsizetype>(i)], spin);
@@ -170,7 +176,7 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     form->addRow(m_frame);
     body->addWidget(m_basic);
     m_basic->hide();
-    m_hint = paragraph(QStringLiteral("导入后逐板识别板厚和位置；底板按两侧板厚最大值估算，侧板证据不足时保留观测面。"), content);
+    m_hint = paragraph(QStringLiteral("导入后逐板识别板厚和位置；底板取两侧板厚最大值，侧板证据不足时保留观测面。"), content);
     body->addWidget(m_hint);
     m_model = paragraph(QStringLiteral("尚无模型。"), content);
     body->addWidget(m_model);
@@ -369,14 +375,14 @@ void ReconstructionPanel::setRecognition(const std::optional<PlateRecognition> &
             const QString thickness = plate.thicknessMm ? QString::number(*plate.thicknessMm, 'f', 1)
                 : QStringLiteral("未识别");
             const bool estimated = plate.method == "inferred_side_plate_max";
-            const QString method = estimated ? QStringLiteral("侧板最大值（估算）")
+            const QString method = estimated ? QStringLiteral("侧板最大值")
                 : plate.thicknessMm ? QStringLiteral("顶边宽度") : QStringLiteral("仅观测面");
             const QString tooltip = estimated
                 ? QStringLiteral("底板厚度 = max（侧板 1 识别厚度，侧板 2 识别厚度）。\n"
-                                 "使用未取整的识别值取较大者；属于估算，不是底板实测厚度。\n"
+                                 "使用两侧识别厚度中的较大值。\n"
                                  "底板夹在两翼板内侧，翼板下沿贴合底板底面；保留底板上表面和肋板位置。")
                 : QStringLiteral("支持点：%1；截面板厚四分位差：%2 mm")
-                    .arg(plate.supportPoints).arg(plate.thicknessSpreadMm, 0, 'f', 2);
+                    .arg(plate.supportPoints).arg(plate.thicknessSpreadMm, 0, 'f', 1);
             const QStringList values{name, thickness, method};
             for (int column = 0; column < values.size(); ++column)
             {
@@ -386,13 +392,13 @@ void ReconstructionPanel::setRecognition(const std::optional<PlateRecognition> &
             }
         }
     }
-    m_hint->setText(recognition ? QStringLiteral("侧板、肋板按顶边宽度识别；底板取两侧板厚最大值（估算），依据不足时保留观测面。")
+    m_hint->setText(recognition ? QStringLiteral("侧板、肋板按顶边宽度识别；底板取两侧板厚最大值，依据不足时保留观测面。")
         : QStringLiteral("当前没有可用的板件识别结果；不会使用经验板厚自动建模。"));
     m_settingValues = false;
     m_hasEdits = false;
 }
 
-OperationPanel::OperationPanel(QWidget *parent)
+OperationPanel::OperationPanel(WorkbenchActions &actions, QWidget *parent)
     : QWidget(parent)
 {
     setObjectName(QStringLiteral("panel.operation"));
@@ -401,8 +407,53 @@ OperationPanel::OperationPanel(QWidget *parent)
     m_title = new QLabel(QStringLiteral("操作面板"), this);
     m_title->setProperty("panelTitle", true);
     layout->addWidget(m_title);
-    layout->addWidget(
-        paragraph(QStringLiteral("选择上方工具以设置参数。几何操作待接入，当前输入不会修改模型。"), this));
+    m_adjustment = new QComboBox(this);
+    m_adjustment->setObjectName(QStringLiteral("operation.modelAdjustment"));
+    m_adjustment->setAccessibleName(QStringLiteral("模型调整选项"));
+    m_adjustment->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_adjustment->setMinimumHeight(34);
+    m_adjustment->setToolTip(QStringLiteral("切换模型调整操作；未应用的预览会取消，已应用的模型保持不变。"));
+    for (const auto id : WorkbenchActions::modelAdjustmentIds)
+    {
+        if (id == ActionId::MirrorComplete)
+        {
+            m_adjustment->addItem(QStringLiteral("钢结构"));
+            auto *model = qobject_cast<QStandardItemModel *>(m_adjustment->model());
+            auto *section = model->item(m_adjustment->count() - 1);
+            section->setFlags(Qt::NoItemFlags);
+            auto font = section->font();
+            font.setBold(true);
+            section->setFont(font);
+        }
+        auto *action = actions.get(id);
+        const int row = m_adjustment->count();
+        m_adjustment->addItem(action->text(), static_cast<int>(id));
+        const auto syncAction = [this, action, row]
+        {
+            m_adjustment->setItemText(row, action->text());
+            m_adjustment->setItemData(row, action->toolTip(), Qt::ToolTipRole);
+            auto *model = qobject_cast<QStandardItemModel *>(m_adjustment->model());
+            model->item(row)->setEnabled(action->isEnabled());
+        };
+        syncAction();
+        connect(action, &QAction::changed, this, syncAction);
+    }
+    m_adjustment->setMaxVisibleItems(m_adjustment->count());
+    connect(m_adjustment, &QComboBox::activated, this, [this, &actions](int row)
+    {
+        const auto value = m_adjustment->itemData(row);
+        if (!value.isValid())
+        {
+            return;
+        }
+        const auto id = static_cast<ActionId>(value.toInt());
+        // 由已存在的动作处理清除预览、选择模式及工具启动；不另建业务执行路径。
+        m_adjustment->setCurrentIndex(m_adjustment->findData(static_cast<int>(m_current)));
+        actions.get(id)->trigger();
+    });
+    layout->addWidget(m_adjustment);
+    m_intro = paragraph(QStringLiteral("选择上方工具以设置参数。几何操作待接入，当前输入不会修改模型。"), this);
+    layout->addWidget(m_intro);
     auto *scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     m_stack = new QStackedWidget(scroll);
@@ -410,6 +461,7 @@ OperationPanel::OperationPanel(QWidget *parent)
     layout->addWidget(scroll, 1);
     auto *footer = new QWidget(this);
     footer->setProperty("panelFooter", true);
+    m_footer = footer;
     auto *buttons = new QHBoxLayout(footer);
     auto *reset = new QPushButton(QStringLiteral("复位"), footer);
     auto *apply = new QPushButton(QStringLiteral("确定（待接入）"), footer);
@@ -435,12 +487,31 @@ OperationPanel::OperationPanel(QWidget *parent)
     showOperation(ActionId::Count, QStringLiteral("操作面板"));
 }
 
-void OperationPanel::showOperation(ActionId id, const QString &title)
+void OperationPanel::setOperationTitle(ActionId id, const QString &title)
 {
-    using enum ActionId;
     m_current = id;
     m_currentTitle = title;
-    m_title->setText(title);
+    const int row = m_adjustment->findData(static_cast<int>(id));
+    m_title->setText(row >= 0 ? QStringLiteral("模型调整") : title);
+    m_adjustment->setCurrentIndex(row);
+    m_adjustment->setVisible(row >= 0);
+}
+
+void OperationPanel::showCustom(const QString &title, QWidget *content, ActionId id)
+{
+    setOperationTitle(id, title);
+    m_intro->hide();
+    m_footer->hide();
+    if (m_stack->indexOf(content) < 0) m_stack->addWidget(content);
+    m_stack->setCurrentWidget(content);
+}
+
+void OperationPanel::showOperation(ActionId id, const QString &title)
+{
+    m_intro->show();
+    m_footer->show();
+    using enum ActionId;
+    setOperationTitle(id, title);
     if (m_form)
     {
         m_stack->removeWidget(m_form);
@@ -476,53 +547,6 @@ void OperationPanel::showOperation(ActionId id, const QString &title)
             label->setStyleSheet(QStringLiteral("color: %1").arg(colors[i]));
             form->addRow(label, number(group, QStringLiteral(" mm"), true));
         }
-    }
-    else if (id == BasePlane)
-    {
-        auto *choices = new QWidget(group);
-        auto *row = new QHBoxLayout(choices);
-        auto *buttons = new QButtonGroup(choices);
-        buttons->setExclusive(true);
-        for (const auto &label : {QStringLiteral("3 点"), QStringLiteral("特征面")})
-        {
-            auto *button = new QPushButton(WorkbenchTheme::icon(QStringLiteral("plane")), label, choices);
-            button->setCheckable(true);
-            button->setMinimumHeight(75);
-            buttons->addButton(button);
-            row->addWidget(button);
-            if (label == QStringLiteral("3 点"))
-            {
-                button->setChecked(true);
-            }
-        }
-        form->addRow(choices);
-        form->addRow(paragraph(QStringLiteral("已选择 0 个对象 · 视图拾取待接入"), group));
-    }
-    else if (id == Measure)
-    {
-        addChoice(form, QStringLiteral("测量方式"),
-                  {QStringLiteral("两点距离"), QStringLiteral("夹角"), QStringLiteral("半径")});
-        form->addRow(paragraph(QStringLiteral("选择几何对象后在此显示测量结果。"), group));
-    }
-    else if (id == Fillet)
-    {
-        addChoice(form, QStringLiteral("类型"), {QStringLiteral("圆角"), QStringLiteral("倒角")});
-        value(QStringLiteral("尺寸"), QStringLiteral(" mm"));
-    }
-    else if (id == WeldHole || id == BottomHole)
-    {
-        addChoice(form, QStringLiteral("孔型"), {QStringLiteral("圆形"), QStringLiteral("长圆形")});
-        value(QStringLiteral("半径"), QStringLiteral(" mm"));
-        value(QStringLiteral("偏移"), QStringLiteral(" mm"), true);
-    }
-    else if (id == PlateThickness)
-    {
-        value(QStringLiteral("板厚"), QStringLiteral(" mm"));
-    }
-    else if (id == BuildSelection || id == Obstacle)
-    {
-        addChoice(form, QStringLiteral("构建类型"), {QStringLiteral("平板"), QStringLiteral("实体")});
-        form->addRow(paragraph(QStringLiteral("尚未选择点云。选点交互待接入。"), group));
     }
     else
     {

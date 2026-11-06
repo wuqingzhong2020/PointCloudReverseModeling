@@ -17,13 +17,14 @@
 #include <FloatingDockContainer.h>
 
 #include "workbench/DockWorkspace.h"
+#include "workbench/WorkbenchActionHelp.h"
 #include "workbench/WorkbenchTheme.h"
 
 namespace reverse::workbench
 {
 namespace
 {
-constexpr int layoutVersion = 3;
+constexpr int layoutVersion = 4;
 
 void recoverWindow(QWidget *window)
 {
@@ -99,12 +100,14 @@ void DockWorkspace::addPanel(const QString &id, const QString &title, QWidget *c
         const auto area = position == DockPosition::Left    ? ads::LeftDockWidgetArea
                           : position == DockPosition::Right ? ads::RightDockWidgetArea
                                                             : ads::BottomDockWidgetArea;
-        // 左侧工具页仅分割中央视图，底部命令窗口仍跨越两者。
-        auto *relativeArea = position == DockPosition::Left ? m_manager->centralWidget()->dockAreaWidget() : nullptr;
+        // 底部工具页只分割中央视图，左右侧栏保持贯穿工作区全高。
+        auto *relativeArea = position == DockPosition::Bottom ? m_manager->centralWidget()->dockAreaWidget() : nullptr;
         m_manager->addDockWidget(area, dock, relativeArea);
         m_anchors.insert(position, dock);
     }
     dock->toggleViewAction()->setObjectName(QStringLiteral("window.") + id);
+    setActionHelp(dock->toggleViewAction(), QStringLiteral("显示或隐藏“%1”窗口。").arg(title),
+                  QStringLiteral("点击菜单项切换，勾选表示窗口已显示；关闭后可从此处重新打开。"));
     m_menu->addAction(dock->toggleViewAction());
     m_panels.insert(id, dock);
 }
@@ -122,6 +125,8 @@ void DockWorkspace::initializeLayout()
     m_menu->addSeparator();
     auto *hide = m_menu->addAction(QStringLiteral("隐藏所有辅助窗口"));
     hide->setObjectName(QStringLiteral("window.hideAll"));
+    setActionHelp(hide, QStringLiteral("隐藏辅助面板，保留三维视图和顶部工具栏。"),
+                  QStringLiteral("点击隐藏；之后通过“窗口”菜单重新显示所需面板。"));
     connect(hide, &QAction::triggered, this,
             [this]
             {
@@ -129,6 +134,8 @@ void DockWorkspace::initializeLayout()
             });
     auto *reset = m_menu->addAction(QStringLiteral("恢复默认布局"));
     reset->setObjectName(QStringLiteral("window.resetLayout"));
+    setActionHelp(reset, QStringLiteral("恢复左侧操作面板、底部命令窗口和右侧模型树/属性布局。"),
+                  QStringLiteral("点击恢复窗口排列；不会重置点云、模型、参数或日志。"));
     connect(reset, &QAction::triggered, this,
             [this]
             {
@@ -140,8 +147,9 @@ void DockWorkspace::restoreLayout()
 {
     QSettings settings;
     // 新布局首次启用只继承旧主窗大小，避免旧停靠状态覆盖新的初始排列。
-    const auto previousGeometry = settings.value(QStringLiteral("ui/layout/v2/geometry")).toByteArray();
-    settings.beginGroup(QStringLiteral("ui/layout/v3"));
+    const auto previousGeometry = settings.value(QStringLiteral("ui/layout/v3/geometry"),
+                                                 settings.value(QStringLiteral("ui/layout/v2/geometry"))).toByteArray();
+    settings.beginGroup(QStringLiteral("ui/layout/v4"));
     const auto geometry = settings.value(QStringLiteral("geometry"), previousGeometry).toByteArray();
     if (!geometry.isEmpty())
     {
@@ -162,7 +170,7 @@ void DockWorkspace::restoreLayout()
 void DockWorkspace::saveLayout() const
 {
     QSettings settings;
-    settings.beginGroup(QStringLiteral("ui/layout/v3"));
+    settings.beginGroup(QStringLiteral("ui/layout/v4"));
     settings.setValue(QStringLiteral("geometry"), m_window->saveGeometry());
     settings.setValue(QStringLiteral("docks"), m_manager->saveState(layoutVersion));
 }
@@ -186,28 +194,23 @@ void DockWorkspace::applyDefaultSizes()
 {
     const int width = m_manager->width();
     const int height = m_manager->height();
-    auto *right = m_anchors.value(DockPosition::Right);
-    // 右侧上下分区外面的水平分割器，负责整列与左侧工作区的宽度。
-    if (right)
-    {
-        for (auto *parent = right->dockAreaWidget()->parentWidget(); parent; parent = parent->parentWidget())
-        {
-            auto *splitter = qobject_cast<QSplitter *>(parent);
-            if (splitter && splitter->orientation() == Qt::Horizontal && splitter->count() == 2)
-            {
-                splitter->setSizes({qMax(1, width - 344), 340});
-                break;
-            }
-        }
-        m_manager->setSplitterSizes(right->dockAreaWidget(), {height / 2, height / 2});
-    }
+    // 外层三列：左侧工具页、中央视图/命令、右侧模型树/属性。
     if (auto *left = m_anchors.value(DockPosition::Left))
     {
-        m_manager->setSplitterSizes(left->dockAreaWidget(), {340, qMax(1, width - 688)});
+        auto *columns = qobject_cast<QSplitter *>(left->dockAreaWidget()->parentWidget());
+        if (columns && columns->orientation() == Qt::Horizontal && columns->count() == 3)
+        {
+            const int centerWidth = qMax(1, width - 680 - 2 * columns->handleWidth());
+            columns->setSizes({340, centerWidth, 340});
+        }
+    }
+    if (auto *right = m_anchors.value(DockPosition::Right))
+    {
+        m_manager->setSplitterSizes(right->dockAreaWidget(), {height / 2, height / 2});
     }
     if (auto *bottom = m_anchors.value(DockPosition::Bottom))
     {
-        m_manager->setSplitterSizes(bottom->dockAreaWidget(), {height * 7 / 10, height * 3 / 10});
+        m_manager->setSplitterSizes(bottom->dockAreaWidget(), {height / 2, height / 2});
     }
 }
 
