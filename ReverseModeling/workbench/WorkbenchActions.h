@@ -16,8 +16,6 @@ namespace reverse::workbench
 enum class ActionId
 {
     Open,
-    OpenFolder,
-    ImportParameters,
     ExportStep,
     ExportAndExit,
     ExportCloud,
@@ -32,10 +30,16 @@ enum class ActionId
     Reconstruct,
     StopReconstruct,
     LocalReconstruct,
+    BuildByPoints,
+    ObstacleByPoints,
     PlateThickness,
     ExtendContour,
+    ChannelSteel,
+    AngleSteel,
     OuterPlate,
     BottomPlate,
+    CrossPlate,
+    EndCapPlate,
     MirrorComplete,
     MirrorCompleteAll,
     WeldHole,
@@ -76,8 +80,8 @@ class WorkbenchActions final : public QObject
     explicit WorkbenchActions(QObject *parent);
     QAction *get(ActionId id) const;
     static constexpr std::array modelAdjustmentIds{
-        ActionId::PlateThickness, ActionId::ExtendContour, ActionId::OuterPlate,
-        ActionId::BottomPlate, ActionId::MirrorComplete, ActionId::MirrorCompleteAll};
+        ActionId::PlateThickness, ActionId::ExtendContour, ActionId::ChannelSteel, ActionId::AngleSteel, ActionId::OuterPlate,
+        ActionId::BottomPlate, ActionId::CrossPlate, ActionId::EndCapPlate, ActionId::MirrorComplete, ActionId::MirrorCompleteAll};
 
   private:
     std::array<QAction *, static_cast<std::size_t>(ActionId::Count)> m_actions{};

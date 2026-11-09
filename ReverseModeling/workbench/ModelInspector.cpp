@@ -48,6 +48,8 @@ QString partName(QString id)
         name = QStringLiteral("T排 %1 / %2")
                    .arg(id.split(QLatin1Char('-')).value(1),
                         id.endsWith(QStringLiteral("-base")) ? QStringLiteral("底板") : QStringLiteral("立板"));
+    else if (id.startsWith(QStringLiteral("point-obstacle-"))) name = QStringLiteral("选点障碍物 %1").arg(id.mid(15));
+    else if (id.startsWith(QStringLiteral("point-model-"))) name = QStringLiteral("选点模型 %1").arg(id.mid(12));
     else if (id.startsWith(QStringLiteral("obstacle-"))) name = QStringLiteral("障碍物 %1").arg(id.mid(9));
     else if (id.startsWith(QStringLiteral("rib-")))
     {

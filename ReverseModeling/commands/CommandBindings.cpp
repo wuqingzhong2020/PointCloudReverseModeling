@@ -1,4 +1,5 @@
 ﻿#include "commands/PlateEditCommands.h"
+#include "commands/PointModelingCommands.h"
 /* 文件描述：将产品命令定义绑定到现有同步几何业务，统一返回错误码和提交状态。 */
 #include "commands/CommandBindings.h"
 #include "commands/CommandFeedback.h"
@@ -174,6 +175,9 @@ std::string successMessage(const std::string &name, const ProjectSnapshot &proje
     {
         return name == "cloud.export" ? "点云已导出。" : "模型已导出。";
     }
+    if (name == "model.build_by_points" || name == "model.obstacle_from_points")
+        return std::string(name == "model.build_by_points" ? "选点建模已应用" : "选点障碍物已生成") +
+            "；当前 " + std::to_string(project.model ? project.model->solidCount : 0) + " 个实体，可撤销。";
     if (name == "model.reconstruct_local") return "已局部重建所选部件；未选部件保持不变，可撤销。";
     if (name == "model.reconstruct" || name == "model.parametric")
     {
@@ -192,7 +196,7 @@ std::string successMessage(const std::string &name, const ProjectSnapshot &proje
     {
         return "偏差计算完成。";
     }
-    for (const auto op : {"extend","trim","merge","split","crop","repair","holes"})
+    for (const auto op : {"extend","trim","merge","split","crop","repair","holes","cross","cap"})
         if (name==plateEditCommand(op)) return plateEditTitle(op)+"处理完成。";
     return "点云已更新，当前 " + std::to_string(project.cloud ? project.cloud->points.size() : 0) + " 点。";
 }
@@ -242,11 +246,18 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
     bindBusiness(manager, operations, "model.edit_plate", [&operations](const auto &args, auto revision) {
         operations.applyPlateEdit(plateEditRequest("model.edit_plate", args), revision);
     });
-    for (const auto op : {"extend","trim","merge","split","crop","repair","holes"})
+    for (const auto op : {"extend","trim","merge","split","crop","repair","holes","cross","cap"})
     {
         const auto name=plateEditCommand(op);
         bindBusiness(manager,operations,name,[&operations,name](const auto &args,auto revision){ operations.applyPlateEdit(plateEditRequest(name,args),revision); });
     }
+    for (const auto *name : {"model.build_by_points", "model.obstacle_from_points"})
+        bindBusiness(manager, operations, name, [&operations, name](const rm::Arguments &args, auto revision) {
+            auto request = pointModelingRequest(commandJson(args.at("request")));
+            if ((request.shape == "box") != (std::string(name) == "model.obstacle_from_points"))
+                throw GeometryError("invalid_shape", "命令与模型类型不匹配。");
+            operations.applyPointModeling(request, revision);
+        });
     bindBusiness(manager, operations, "model.reconstruct_local", [&operations](const rm::Arguments &args, auto revision) {
         LocalReconstruction request;
         for (const auto &id : args.at("parts").as<rm::Array>()) request.partIds.push_back(id.as<std::string>());
@@ -283,6 +294,20 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
         request.distanceMm = args.at("distance").as<double>();
         operations.applyContourExpansion(request, revision);
     });
+    for (const auto kind : {StructuralSteelKind::Channel, StructuralSteelKind::Angle})
+    {
+        bindBusiness(manager, operations, kind == StructuralSteelKind::Channel ? "model.set_channel_steel" : "model.set_angle_steel",
+            [&operations, kind](const rm::Arguments &args, auto revision) {
+                StructuralSteel request;
+                request.kind = kind;
+                request.partId = args.at("part").as<std::string>();
+                request.faceIndex = static_cast<std::uint32_t>(args.at("face").as<std::int64_t>());
+                request.thicknessMm = args.at("thickness").as<double>();
+                request.autoHeight = args.at("auto_height").as<bool>();
+                request.heightMm = args.at("height").as<double>();
+                operations.applyStructuralSteel(request, revision);
+            });
+    }
     for (const auto kind : {PlateGenerationKind::Cover, PlateGenerationKind::Base})
     {
         bindBusiness(manager, operations, kind == PlateGenerationKind::Cover ? "model.generate_cover_plate" : "model.generate_base_plate",
@@ -403,6 +428,7 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
         o.perpendicularHypothesis = args.at("perpendicular").as<bool>();
         o.maximumSlotWidthMm = args.at("max_slot_width").as<double>();
         o.maximumBaseWidthMm = args.at("max_base_width").as<double>();
+        o.obstacleExclusionDistanceMm = args.at("obstacle_exclusion").as<double>();
         (void)operations.submitRecognizedReconstruct(o, revision);
     });
     bindBusiness(manager, operations, "model.parametric", [&operations](const rm::Arguments &args, auto revision) {

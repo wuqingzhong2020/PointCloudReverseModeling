@@ -4,6 +4,17 @@
 
 namespace reverse
 {
+struct EndCapEdge
+{
+    Vec3 position;
+    std::string wing;
+    double automaticDistance{};
+};
+struct EndCapInspection
+{
+    std::string part, web;
+    std::array<EndCapEdge, 2> edges;
+};
 struct PlateCut
 {
     std::string part;
@@ -17,7 +28,7 @@ struct PlateContact
 };
 struct PlateEdit
 {
-    std::string operation; // extend / trim / merge / split / crop / repair / holes
+    std::string operation; // extend / trim / merge / split / crop / repair / holes / cross / cap
     std::vector<std::string> parts;
     std::string target;
     std::vector<PlateContact> contacts;
@@ -26,6 +37,10 @@ struct PlateEdit
     std::optional<CloudSelectionRect> rectangle; // 仅框选解析使用；提交和录制使用 cuts。
     double tolerance{0.15}, maxDistance{50}, clearance{}, normalAngle{1}, inplaneAngle{1}, maxGap{5};
     double maxHoleArea{}, notchWidth{35}, notchDepth{20}, simplifyTolerance{0.01};
+    double heightOffset{10}; // cross：A 顶面高于 B 的距离；0 不调整高度。
+    int capEdge{1}; // cap：稳定的横向两侧，1-based；一次仅修改当前边缘。
+    bool capConvex{}, capAutomatic{true};
+    double capDistance{15}; // 从该侧翼板外表面量取；错边向内、凸边向外。
     bool boundary{};
     bool direct{}, all{}; // 菜单直接操作采用 CamAssemblyWelding 的固定规则。
     int viewportWidth{}, viewportHeight{}; // 仅框选解析使用，不进入回放。

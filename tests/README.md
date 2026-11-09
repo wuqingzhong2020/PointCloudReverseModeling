@@ -2,6 +2,8 @@
 
 C++20 / Google Test 单元测试程序，包含点云、逐板识别与镜像、几何和异步服务检查。`tests` 与 `ReverseModeling` 是由仓库根 CMake 入口加载的两个子项目；测试直接编译 `ReverseModeling` 中的服务和几何源码，与桌面程序共享同一份实现。
 
+停靠窗口专项为独立的 `WorkbenchDockTests` 目标，加载实际工作台 QSS，使用 Qt/ADS 验证右侧及底部初始布局、底部标签切换、自动隐藏/固定两种状态、统一图钉提示、点击标签固定展开、外部点击不收起、左右及底部各自只有一个可见窗口、编辑状态保留及布局恢复。还检查常驻 Qt 标签的数量、顺序、位置和高亮在展开/收起/恢复后保持一致，菜单与标签选择同步，以及同侧内容反复切换、侧边与底部同时固定时三维视图和命令面板让位、拖动尺寸与小窗口缩放、手动收起及恢复布局。构建后运行 `ctest --test-dir build/vc143-cpp20 -C Release -R ^WorkbenchDockTests$ --output-on-failure`；CTest 自动设置 offscreen 平台及 SDK 插件目录，不改动正式程序的布局配置。直接运行 EXE 时需自行设置 `QT_QPA_PLATFORM=offscreen` 和 `QT_QPA_PLATFORM_PLUGIN_PATH`。运行库沿用同目录已部署的主程序/测试依赖，或使用 SDK 的 DLL 搜索路径。
+
 ## Qt Creator
 
 1. 打开仓库根目录的 `CMakeLists.txt`。

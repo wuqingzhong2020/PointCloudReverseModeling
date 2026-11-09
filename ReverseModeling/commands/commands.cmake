@@ -1,4 +1,6 @@
-list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/CommandService.cpp")
+﻿list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/CommandService.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ApplicationLog.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ApplicationLog.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/StartupArguments.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/StartupArguments.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/CommandScript.cpp")
@@ -31,3 +33,6 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/TaskOutput.h")
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateEditCommands.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PlateEditCommands.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PointModelingCommands.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PointModelingCommands.h")

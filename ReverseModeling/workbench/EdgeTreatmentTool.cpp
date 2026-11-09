@@ -14,6 +14,7 @@
 
 #include "geometry/Geometry.h"
 #include "workbench/EdgeTreatmentTool.h"
+#include "workbench/DockWorkspace.h"
 
 namespace reverse::workbench
 {
@@ -286,7 +287,8 @@ void EdgeTreatmentTool::sync(const ProjectSnapshot &project, bool idle)
 }
 void EdgeTreatmentTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (shouldCancelDockToolOnHide(this))
+        cancel();
     QWidget::hideEvent(event);
 }
 } // namespace reverse::workbench

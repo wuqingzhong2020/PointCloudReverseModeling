@@ -63,6 +63,7 @@ struct Cell
     Point sum = Point::Zero();
     Eigen::Matrix3d scatter = Eigen::Matrix3d::Zero(); // 原始点的中心二阶矩；不以体素中心代替扫描宽度。
     std::uint64_t count{};
+    std::size_t firstPoint = std::numeric_limits<std::size_t>::max(); // 原始点链，供距离过滤逐点判定。
     void add(const Point &p)
     {
         const Point delta = count ? Point(p - sum / count) : Point::Zero();
@@ -86,7 +87,7 @@ struct Cell
 // 断开的簇还须符合板边方向的一维扫描条带，保留具有独立面/体支持的小物体。
 bool isPlateResidual(const std::vector<Cell> &cells, std::uint64_t count, Vec3 origin,
     const PlateRecognition *recognition, bool connected, double tolerance, double edgeTolerance,
-    double spreadTolerance, std::stop_token stop)
+    double spreadTolerance, double normalSpreadTolerance, std::stop_token stop)
 {
     if (!recognition) return false;
     Cell distribution;
@@ -125,17 +126,28 @@ bool isPlateResidual(const std::vector<Cell> &cells, std::uint64_t count, Vec3 o
         const Point center = distribution.sum / count + point(origin);
         const Point local = point(inverseTransformPoint(frame, {center.x(),center.y(),center.z()}));
         const Point axes[]{point(frame.xAxis),point(frame.yAxis),point(frame.zAxis)};
-        double variance[3];
-        for (int axis = 0; axis < 3; ++axis)
-            variance[axis] = std::max(0.0, axes[axis].dot(distribution.scatter * axes[axis]) / count);
+        double projectedVariance[3];
+        for (int axis=0;axis<3;++axis)
+            projectedVariance[axis]=std::max(0.0,axes[axis].dot(distribution.scatter*axes[axis])/count);
+        const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> fit(distribution.scatter / count);
+        if (fit.info() != Eigen::Success) continue;
+        const auto variance = fit.eigenvalues().cwiseMax(0.0).eval();
+        const Point direction = fit.eigenvectors().col(2);
         const double noiseVariance = spreadTolerance * spreadTolerance;
-        if (variance[plate.normalAxis] > noiseVariance) continue;
+        // 拟合实际扫描条带方向，容许斜视侧面与理想板边略有夹角。
+        // 两个较小主方差仍须符合面噪声/采样宽度，不能将小实体按线条处理。
+        if (variance[0] > normalSpreadTolerance * normalSpreadTolerance || variance[1] > noiseVariance ||
+            variance[2] < 4 * variance[1] || variance[2] < noiseVariance) continue;
         for (int edgeAxis = 0; edgeAxis < 3; ++edgeAxis)
         {
-            if (edgeAxis == plate.normalAxis || variance[edgeAxis] > noiseVariance) continue;
+            if (edgeAxis == plate.normalAxis) continue;
             const int alongEdge = 3 - edgeAxis - plate.normalAxis;
-            // 平行于已知板边，横向宽度只有扫描噪声，且中心贴近端边；不扩大到整个板面。
-            if (variance[alongEdge] >= 4 * noiseVariance &&
+            // 很短的稀疏条带主方向易受几个采样列影响，保留板件坐标下的窄条证据。
+            const bool aligned = projectedVariance[plate.normalAxis] <= normalSpreadTolerance * normalSpreadTolerance &&
+                projectedVariance[edgeAxis] <= noiseVariance && projectedVariance[alongEdge] >= noiseVariance &&
+                projectedVariance[alongEdge] >= 4 * std::max(projectedVariance[edgeAxis], projectedVariance[plate.normalAxis]);
+            // 10° 是长条残差归属的方向容差，不是猜测或修改相机安装角。
+            if ((aligned || std::abs(direction.dot(axes[alongEdge])) >= std::cos(10.0 * 3.141592653589793 / 180.0)) &&
                 std::min(std::abs(local[edgeAxis]-low[edgeAxis]),std::abs(local[edgeAxis]-high[edgeAxis])) <= edgeTolerance)
                 return true;
         }
@@ -311,20 +323,29 @@ TopoDS_Shape envelope(std::vector<Cell> cells, double &resolution, double paddin
 
 std::vector<ObstacleShape> reconstructObstacleShapes(const CloudData &cloud, const MeshData &workpiece,
     const std::vector<bool> &solidParts, double spacingMm, double noiseMm, std::stop_token stop, const ProgressCallback &progress,
-    const PlateRecognition *recognition)
+    const PlateRecognition *recognition, double exclusionDistanceMm)
 {
     check(stop);
+    if (!std::isfinite(exclusionDistanceMm) || exclusionDistanceMm < 0 || exclusionDistanceMm > 1000)
+        throw GeometryError("invalid_parameters", "钢板附近排除距离必须在 0–1000 mm 范围内。");
     const double spacing = std::clamp(spacingMm > 0 ? spacingMm : 1.0, 0.25, 20.0);
     const double resolution = std::max(1.0, 2 * spacing);
     const double tolerance = std::max({1.0, 1.5 * spacing, 4 * noiseMm});
     const double padding = std::max({0.25, 0.5 * spacing, 3 * noiseMm});
     if (progress) progress(0, "归集工件以外的障碍物点云");
     std::unordered_map<Key, Cell, KeyHash> grid;
+    std::vector<std::size_t> nextPoint(cloud.points.size(), std::numeric_limits<std::size_t>::max());
     for (std::size_t i = 0; i < cloud.points.size(); ++i)
     {
         if (i % 4096 == 0) check(stop);
         const auto p = point(cloud.points[i].position);
-        if (p.allFinite()) grid[keyOf(p, resolution)].add(p);
+        if (p.allFinite())
+        {
+            auto &cell = grid[keyOf(p, resolution)];
+            nextPoint[i] = cell.firstPoint;
+            cell.firstPoint = i;
+            cell.add(p);
+        }
     }
     WorkpieceIndex index(workpiece, cloud.originMm, solidParts);
     std::vector<Key> keys; keys.reserve(grid.size());
@@ -347,20 +368,46 @@ std::vector<ObstacleShape> reconstructObstacleShapes(const CloudData &cloud, con
         if (visited[seed]) continue;
         std::vector<std::size_t> queue{seed}; visited[seed] = true;
         std::uint64_t count = 0, workpieceCount = 0;
+        bool hasSurfaceSupport = exclusionDistanceMm <= 0;
         for (std::size_t head = 0; head < queue.size(); ++head)
         {
             if (head % 1024 == 0) check(stop);
             const auto i = queue[head]; const auto &key = keys[i]; const auto &cell = grid.at(key);
             count += cell.count;
             if (covered[i]) workpieceCount += cell.count;
+            if (!hasSurfaceSupport && covered[i])
+                hasSurfaceSupport = index.covers(cell.sum / cell.count, exclusionDistanceMm);
             for (int x = -2; x <= 2; ++x) for (int y = -2; y <= 2; ++y) for (int z = -2; z <= 2; ++z)
             {
                 const auto found = lookup.find(Key{key[0] + x, key[1] + y, key[2] + z});
                 if (found != lookup.end() && !visited[found->second]) { visited[found->second] = true; queue.push_back(found->second); }
             }
         }
-        if (workpieceCount * 2 >= count)
+        if (hasSurfaceSupport && workpieceCount * 2 >= count)
             for (const auto i : queue) workpieceGroup[i] = true;
+    }
+    // 原始连通性只用于判断板边噪声归属；距离过滤按原始点执行，不能以体素中心
+    // 代替，也不能因物体的一部分靠近钢板而删掉整个物体。过滤后再重新分组。
+    for (std::size_t i = 0; i < keys.size(); ++i)
+    {
+        if (i % 2048 == 0) check(stop);
+        auto &cell = grid.at(keys[i]);
+        if (exclusionDistanceMm <= 0)
+        {
+            if (workpieceGroup[i] && covered[i]) cell = Cell{};
+            continue;
+        }
+        Cell residual;
+        for (auto pointIndex = cell.firstPoint; pointIndex != std::numeric_limits<std::size_t>::max();
+             pointIndex = nextPoint[pointIndex])
+        {
+            if (pointIndex % 4096 == 0) check(stop);
+            const auto p = point(cloud.points[pointIndex].position);
+            // 已归属钢板的连续扫描仍使用原有面噪声容差；独立物体仅按用户距离过滤。
+            const double distance = workpieceGroup[i] ? std::max(exclusionDistanceMm, tolerance) : exclusionDistanceMm;
+            if (!index.covers(p, distance)) residual.add(p);
+        }
+        cell = std::move(residual);
     }
     std::fill(visited.begin(), visited.end(), false);
     const double attachedTolerance = std::max(3 * tolerance, 6 * spacing);
@@ -368,7 +415,7 @@ std::vector<ObstacleShape> reconstructObstacleShapes(const CloudData &cloud, con
     for (std::size_t seed = 0; seed < keys.size(); ++seed)
     {
         check(stop);
-        if (visited[seed] || (workpieceGroup[seed] && covered[seed])) continue;
+        if (visited[seed] || grid.at(keys[seed]).count == 0) continue;
         std::vector<std::size_t> queue{seed}; visited[seed] = true;
         std::vector<Cell> cells;
         std::uint64_t count = 0, coreCount = 0;
@@ -385,14 +432,14 @@ std::vector<ObstacleShape> reconstructObstacleShapes(const CloudData &cloud, con
                 const auto found = lookup.find(Key{key[0] + x, key[1] + y, key[2] + z});
                 if (found == lookup.end()) continue;
                 const auto j = found->second;
-                if (!visited[j] && !(workpieceGroup[j] && covered[j])) { visited[j] = true; queue.push_back(j); }
+                if (!visited[j] && grid.at(keys[j]).count != 0) { visited[j] = true; queue.push_back(j); }
             }
         }
-        // 独立物体保留全部扫描范围。与工件连通的地面、夹具等仍需保留，
+        // 独立物体保留距离过滤后的扫描范围。与工件连通的地面、夹具等仍需保留，
         // 但必须在更宽的扫描误差带以外有连续支持，避免生成板边噪声包络。
         if (count < 8 || cells.size() < 3 || coreCount < 8 || coreCells < 3) continue;
         if (isPlateResidual(cells, count, cloud.originMm, recognition, workpieceGroup[seed], attachedTolerance,
-            tolerance, std::max({.25,noiseMm,.5*spacing}), stop)) continue;
+            tolerance, std::max(.25, std::hypot(noiseMm, spacing)), std::max({.25, noiseMm, .5 * spacing}), stop)) continue;
         if (progress) progress(0.5 + 0.49 * seed / std::max<std::size_t>(1, keys.size()), "生成独立避障包络：" + std::to_string(result.size() + 1));
         double hullResolution = resolution;
         auto shape = envelope(std::move(cells), hullResolution, padding, cloud.originMm, stop);

@@ -16,6 +16,7 @@
 
 #include "geometry/Geometry.h"
 #include "workbench/LocalReconstructionTool.h"
+#include "workbench/DockWorkspace.h"
 
 namespace reverse::workbench
 {
@@ -93,7 +94,8 @@ LocalReconstructionTool::LocalReconstructionTool(CommandService &service, OccVie
 }
 void LocalReconstructionTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (shouldCancelDockToolOnHide(this))
+        cancel();
     QWidget::hideEvent(event);
 }
 void LocalReconstructionTool::begin()

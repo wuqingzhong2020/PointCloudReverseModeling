@@ -62,7 +62,7 @@ model.delete --parts '["imported-part-1","imported-part-3"]'
 按点云识别板厚重建
 
 ```text
-model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]
+model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5] [--obstacle-exclusion 1]
 model.reconstruct --help
 ```
 
@@ -71,6 +71,7 @@ model.reconstruct --help
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
 | type | --type | enum | ['hbeam', 'tbar', 'other'] | 默认 hbeam |  | 重建工件类型；other 为俯视底板焊件，按直线/圆弧顶边垂直投影恢复连接，保留独立障碍物 |
+| obstacle_exclusion | --obstacle-exclusion | float | [[0.0, 1000.0]] | 默认 1.0 | mm | 排除距钢板表面不超过该距离的点，超出部分仍可识别为障碍物；默认 1 mm，0 关闭该距离过滤 |
 | on_ground | --on-ground | bool |  | 默认 True |  | T 排置于地面；关闭表示台架 |
 | regular_upper_surface | --regular-upper-surface | bool |  | 默认 True |  | T 排规则顶边；异形直 T 关闭 |
 | projection_onto_border | --projection-onto-border | bool |  | 默认 False |  | T 排端边投影到底板边界 |
@@ -657,6 +658,142 @@ model.edit_plate --help
 | all | --all | bool |  | 默认 False |  | 修复全部时跳过不支持或无需修复的板件 |
 
 返回：object — 实际几何、统一撤销重做与录制回放。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
+## model.set_channel_steel
+
+将矩形实体设为槽钢
+
+```text
+model.set_channel_steel --part <ID> --face <编号> [--thickness 10] [--auto-height true] [--height 100]
+model.set_channel_steel --help
+```
+
+
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| part | --part | string |  | 必填 |  |  |
+| face | --face | int | [[1, 2147483647]] | 必填 |  | 矩形实体的竖直开口侧面编号，BRep 1-based |
+| thickness | --thickness | float | [[1, 50]] | 默认 10.0 |  |  |
+| auto_height | --auto-height | bool |  | 默认 True |  | 参考下方 50 mm 内覆盖底边的支撑面；无支撑时使用原实体高度 |
+| height | --height | float | [[1, 1000]] | 默认 100.0 |  | 关闭自动高度后生效，底部固定，沿真实底面内法线量取高度 |
+
+返回：object — 替换选中部件，保留其他部件；支持撤销和录制。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
+```
+model.set_channel_steel --part imported-part-1 --face 3 --thickness 10 --auto-height false --height 160
+```
+
+## model.optimize_cross_plate
+
+交叉板优化：保持 A 连续，打断 B 并可选调整高度差
+
+```text
+model.optimize_cross_plate --continuous <A> --broken <B> [--height-offset 10]
+model.optimize_cross_plate --help
+```
+
+
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| continuous | --continuous | string |  | 必填 |  | 连续板 A 的部件 ID |
+| broken | --broken | string |  | 必填 |  | 打断板 B 的部件 ID，必须与 A 不同 |
+| height_offset | --height-offset | float | [[0.0, 10.0]] | 默认 10.0 | mm | A 顶面高于 B 的距离；0 关闭高度修改 |
+
+返回：object — 原子提交交叉板结果；支持预览、撤销重做和录制回放。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
+## model.optimize_end_cap
+
+封板优化：独立调整边缘 1 或 2 的错边、凸边及相邻连接
+
+```text
+model.optimize_end_cap --part <ID> --edge 1 --joint misalign [--auto-distance true] [--distance 15]
+model.optimize_end_cap --help
+```
+
+
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| part | --part | string |  | 必填 |  |  |
+| edge | --edge | int | [[1, 2]] | 默认 1 |  | 当前边缘；编号由梁的固定横向排序，与相机无关 |
+| joint | --joint | enum | ['misalign', 'convex'] | 默认 misalign |  | 错边向翼板外表面内缩，凸边向外伸出 |
+| auto_distance | --auto-distance | bool |  | 默认 True |  | 仅错边生效：取当前侧翼板厚度的 75% |
+| distance | --distance | float | [[1, 200]] | 默认 15.0 | mm | 自定义距离；错边最大 100，凸边最大 200 |
+
+返回：object — 当前封板边缘、对应翼板与腹板原子提交，可撤销及录制回放。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
+## model.set_angle_steel
+
+将矩形实体设为角钢
+
+```text
+model.set_angle_steel --part <ID> --face <编号> [--thickness 10] [--auto-height true] [--height 100]
+model.set_angle_steel --help
+```
+
+
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| part | --part | string |  | 必填 |  |  |
+| face | --face | int | [[1, 2147483647]] | 必填 |  | 矩形实体的竖直开口侧面编号，BRep 1-based |
+| thickness | --thickness | float | [[1, 50]] | 默认 10.0 |  |  |
+| auto_height | --auto-height | bool |  | 默认 True |  | 参考下方 50 mm 内覆盖底边的支撑面；无支撑时使用原实体高度 |
+| height | --height | float | [[1, 1000]] | 默认 100.0 |  | 关闭自动高度后生效，底部固定，沿真实底面内法线量取高度 |
+
+返回：object — 替换选中部件，保留其他部件；支持撤销和录制。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
+```
+model.set_angle_steel --part imported-part-1 --face 3 --thickness 10 --auto-height false --height 160
+```
+
+## model.build_by_points
+
+选点轮廓拉伸建模
+
+```text
+model.build_by_points --request <object>
+model.build_by_points --help
+```
+
+
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| request | --request | object |  {'shape': {'type': 'enum', 'values': ['rectangle', 'circle', 'polygon', 'polyline', 'box']}, 'method': {'type': 'enum', 'values': ['axis', 'diagonal', 'corner', 'three', 'center']}, 'points': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'max_size': 10000}, 'origin': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'normal': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'axis': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'width': {'type': 'float'}, 'length': {'type': 'float'}, 'diameter': {'type': 'float'}, 'height': {'type': 'float'}, 'offset': {'type': 'float'}, 'to_plane': {'type': 'bool'}, 'cut': {'type': 'bool'}, 'section': {'type': 'bool'}, 'reversed': {'type': 'bool'}, 'scope': {'type': 'enum', 'values': ['all', 'no_base', 'manual']}, 'targets': {'type': 'array', 'items': {'type': 'string'}}, 'indices': {'type': 'array', 'items': {'type': 'int', 'ranges': [[0, 9223372036854775807]]}}} | 必填 |  | 有序工程坐标点和拉伸方向；障碍物记录完整点云索引和参考面剖视设置。 |
+
+返回：object — 原子提交后的模型，可撤销及录制回放。
+
+失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
+
+## model.obstacle_from_points
+
+框选点云生成参考面障碍物
+
+```text
+model.obstacle_from_points --request <object>
+model.obstacle_from_points --help
+```
+
+
+
+| 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| request | --request | object |  {'shape': {'type': 'enum', 'values': ['rectangle', 'circle', 'polygon', 'polyline', 'box']}, 'method': {'type': 'enum', 'values': ['axis', 'diagonal', 'corner', 'three', 'center']}, 'points': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'max_size': 10000}, 'origin': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'normal': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'axis': {'type': 'array', 'items': {'type': 'float'}, 'min_size': 3, 'max_size': 3}, 'width': {'type': 'float'}, 'length': {'type': 'float'}, 'diameter': {'type': 'float'}, 'height': {'type': 'float'}, 'offset': {'type': 'float'}, 'to_plane': {'type': 'bool'}, 'cut': {'type': 'bool'}, 'section': {'type': 'bool'}, 'reversed': {'type': 'bool'}, 'scope': {'type': 'enum', 'values': ['all', 'no_base', 'manual']}, 'targets': {'type': 'array', 'items': {'type': 'string'}}, 'indices': {'type': 'array', 'items': {'type': 'int', 'ranges': [[0, 9223372036854775807]]}}} | 必填 |  | 有序工程坐标点和拉伸方向；障碍物记录完整点云索引和参考面剖视设置。 |
+
+返回：object — 原子提交后的模型，可撤销及录制回放。
 
 失败时返回错误码、参数路径、期望值及实际输入，不执行业务。业务前提由处理函数检查；失败不代表前序命令回滚。
 

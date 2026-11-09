@@ -15,6 +15,7 @@
 
 #include "geometry/Geometry.h"
 #include "workbench/PlateAdjustmentTool.h"
+#include "workbench/DockWorkspace.h"
 
 namespace reverse::workbench
 {
@@ -27,6 +28,8 @@ PlateAdjustmentTool::PlateAdjustmentTool(CommandService &service, OccViewport &v
     m_selection->setWordWrap(true);
     layout->addWidget(m_selection);
     auto *form = new QFormLayout;
+    // 先绑定父窗口；setRowVisible 会显示 addRow 自动创建的标签。
+    layout->addLayout(form);
     m_current = new QLabel(QStringLiteral("尚未选择板件"), this);
     m_current->setWordWrap(true);
     form->addRow(QStringLiteral("当前板厚"), m_current);
@@ -52,7 +55,6 @@ PlateAdjustmentTool::PlateAdjustmentTool(CommandService &service, OccViewport &v
         invalidate();
         m_request.planePartId = m_plane->currentData().toString().toStdString();
     });
-    layout->addLayout(form);
     auto *explanation =
         new QLabel((kind == PlateAdjustmentKind::Mirror
                         ? QStringLiteral("以指定底板（腹板）的中面补齐另一侧。保留原有几何；相接部分合并，"
@@ -461,7 +463,8 @@ void PlateAdjustmentTool::sync(const ProjectSnapshot &project, bool idle)
 }
 void PlateAdjustmentTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (shouldCancelDockToolOnHide(this))
+        cancel();
     QWidget::hideEvent(event);
 }
 } // namespace reverse::workbench

@@ -59,7 +59,7 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     auto *category = ribbon->addCategoryPage(QStringLiteral("建模"));
     auto *file = category->addPanel(QStringLiteral("文件"));
     auto *openMenu =
-        menu(ribbon, QStringLiteral("打开"), actions, {Open, OpenFolder, ImportParameters}, QStringLiteral("folder"));
+        menu(ribbon, QStringLiteral("打开"), actions, {Open}, QStringLiteral("folder"));
     openMenu->addSeparator();
     openMenu->addMenu(recentFiles);
     file->addLargeAction(actions.get(Open), QToolButton::MenuButtonPopup);
@@ -86,17 +86,18 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
         reconstruct->addLargeAction(actions.get(id));
     }
     auto *model = category->addPanel(QStringLiteral("模型修改"));
+    model->addLargeMenu(menu(ribbon, QStringLiteral("选点建模"), actions, {BuildByPoints, ObstacleByPoints}, QStringLiteral("cube")));
     auto *adjust = menu(ribbon, QStringLiteral("模型调整"), actions, {}, QStringLiteral("cube"));
-    setActionHelp(adjust->menuAction(), QStringLiteral("修改板厚、外扩轮廓、生成贴板/底板或镜像补全。"),
+    setActionHelp(adjust->menuAction(), QStringLiteral("修改板厚、外扩轮廓、设为槽钢/角钢、生成贴板/底板或镜像补全。"),
                   QStringLiteral("点击展开菜单并选择工具；“全部镜像补全”先选工件任意部件，再自动处理相连整组，其他工具按面板提示操作。"),
                   QStringLiteral("需要已有可见模型。钢结构是分组标题，不能点击。"));
     for (const auto id : WorkbenchActions::modelAdjustmentIds)
     {
-        if (id == OuterPlate)
+        if (id == OuterPlate || id == ChannelSteel)
         {
             adjust->addSeparator();
         }
-        else if (id == MirrorComplete)
+        else if (id == CrossPlate)
         {
             // 使用禁用文字项，避免当前菜单样式把带标题的 section 画成普通分隔线。
             adjust->addSeparator();

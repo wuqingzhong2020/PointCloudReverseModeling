@@ -1,4 +1,4 @@
-list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PointCloud.cpp")
+﻿list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PointCloud.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/BeamModel.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateOutlineTreatment.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PlateOutlineTreatment.h")
@@ -43,6 +43,7 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/LocalReconstruction.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateCutting.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateRepair.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PlateRelation.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/CrossPlate.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PlateEditing.h" "${CMAKE_CURRENT_LIST_DIR}/../core/PlateEditing.h")
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ModelExchange.cpp")
@@ -58,3 +59,11 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/OtherModelRecognition.h")
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ObstacleReconstruction.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ObstacleReconstruction.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/StructuralSteel.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/StructuralSteel.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/EndCapPlate.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/PointModeling.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/PointModeling.h")

@@ -133,12 +133,20 @@ void initializeActionHelp(WorkbenchActions &actions)
          "需要可见模型中的等厚平面板件；不会自动移动相邻板件。"},
         {ExtendContour, "在板面内向外扩展外轮廓，保持板厚和封闭内孔。",
          "选择板件，输入外扩距离，预览后点击“应用”。", "需要可见模型中的等厚平面板件。"},
+        {ChannelSteel, "将矩形实体替换为等壁厚槽钢。", "选一个竖直开口侧面，设置壁厚及自动/自定义高度，预览后应用。", "水平放置的矩形实体；H > 2D，截面宽度 > D。"},
+        {AngleSteel, "将矩形实体替换为带上翼板的角钢。", "选一个竖直开口侧面，设置壁厚及自动/自定义高度，预览后应用。", "水平放置的矩形实体；H > D，截面宽度 > D。"},
         {OuterPlate, "在所选板面外侧生成一块贴板，保留源板。",
          "选择板件的平面，填写外扩 D 和板厚 T；可勾选反向，预览后应用。",
          "需要可用的等厚平面板件及板面；新增板不继承源板封闭内孔。"},
         {BottomPlate, "在选定板件下方生成一块水平底板，沿世界坐标 Z 较低的一侧加厚。",
          "选择“水平板”或“两个竖直板”方式，选齐板件，填写外扩 D、板厚 T，预览后应用。",
          "按世界 Z 方向判定水平/竖直，允许 ±5° 偏差；需满足对应方式的板件数量和几何条件。"},
+        {CrossPlate, "保持连续板 A，按其板厚打断交叉板 B，可选修改高度差。",
+         "依次选择 A、B，设置高度差，预览后应用；支持一次撤销。",
+         "需要两块不同的交叉实体板；关闭高度差时保留原有高度。"},
+        {EndCapPlate, "独立调整封板两侧边缘的错边或凸边。",
+         "选择封板、边缘和距离，预览后应用当前边缘。",
+         "选择梁端肋板，自动识别相连腹板与两侧翼板，无需放平工件；自动错边距离为当前翼板厚度的 75%。"},
         {MirrorComplete, "以底板/腹板中面为镜像面，补全所选板件另一侧，保留原板。",
          "选择要补全的板件，检查镜像面，预览后点击“应用”。",
          "需要可见模型和可识别的底板/腹板镜像面；不改变原始点云。"},
@@ -194,6 +202,10 @@ void initializeActionHelp(WorkbenchActions &actions)
          "点击切换为高度渐变；需要显示点云。", "只改变显示，不影响重建和导出。"},
         {CloudSolid, "以统一颜色显示点云。",
          "点击切换为纯色；需要显示点云。", "只改变显示，不影响重建和导出。"},
+        {BuildByPoints, "选择点云点或模型特征点构造轮廓并拉伸。",
+         "选择添加/切除、参考方向和形状，依次选点；下一步调整尺寸，预览后应用。", "需要点云或模型；切除需已有实体。"},
+        {ObstacleByPoints, "框选点云生成参考面上的盒状障碍物。",
+         "先点击模型平面，再点击第 3 步进入点云框选；按住左键拖框，检查预览后应用。参考面决定剖视方向和障碍物贴合面。", "需要点云和模型平面；曲面不能作为参考面，支持加选/减选。"},
         {ShowModel, "显示或隐藏模型，保留实际几何。",
          "点击图标/文字切换显隐，右侧箭头打开显示方式菜单。", "需已有模型；部分编辑期间锁定显示。"},
         {ShowThickness, "显示可见侧板件厚度标签，单位 mm，保留一位小数。",
@@ -221,12 +233,6 @@ void initializeActionHelp(WorkbenchActions &actions)
     {
         setActionHelp(actions.get(spec.id), QString::fromUtf8(spec.purpose), QString::fromUtf8(spec.operation),
                       QString::fromUtf8(spec.requirement));
-    }
-    for (const auto id : {OpenFolder, ImportParameters})
-    {
-        setActionHelp(actions.get(id), actions.get(id)->text() + QStringLiteral("的预留入口。"),
-                      QStringLiteral("当前版本暂不能执行，不会修改点云或模型。"),
-                      QStringLiteral("功能尚未接入。"));
     }
 }
 } // namespace reverse::workbench

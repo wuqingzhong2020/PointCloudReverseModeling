@@ -1,5 +1,6 @@
 ﻿list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/service_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/project_history_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/application_log_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/commandManager/command_manager_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/commandManager/command_service_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/model_display_tests.cpp")
@@ -56,6 +57,8 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/T
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ThicknessLabel.cpp")
 
 list(APPEND RM_SOURCES ${CMAKE_CURRENT_LIST_DIR}/plate_generation_tests.cpp)
+list(APPEND RM_SOURCES ${CMAKE_CURRENT_LIST_DIR}/structural_steel_tests.cpp)
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/cross_plate_tests.cpp")
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/mirror_completion_tests.cpp")
 
@@ -67,3 +70,20 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/tbar_recognition_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/other_model_recognition_tests.cpp")
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/obstacle_reconstruction_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/end_cap_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/point_modeling_tests.cpp")
+
+# 障碍物向导使用实际 Qt 控件与服务验证选面、框选、预览及错误状态。
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/point_modeling_ui_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointModelingTool.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccViewport.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccModelPresentation.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccReferencePlanePresentation.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccMeasurementPresentation.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/OccTransformPreview.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/DockWorkspace.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/WorkbenchTheme.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/WorkbenchActions.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/WorkbenchActionHelp.cpp")

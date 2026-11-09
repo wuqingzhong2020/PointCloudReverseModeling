@@ -26,6 +26,12 @@
 #include "model/ExportCwrmCommand.h"
 #include "model/ExportPcdCommand.h"
 #include "model/EditPlateCommand.h"
+#include "model/SetChannelSteelCommand.h"
+#include "model/OptimizeCrossPlateCommand.h"
+#include "model/OptimizeEndCapCommand.h"
+#include "model/SetAngleSteelCommand.h"
+#include "model/BuildByPointsCommand.h"
+#include "model/ObstacleFromPointsCommand.h"
 namespace rmcmd::model
 {
 void registerModelModule(rm::CommandManager &manager)
@@ -56,5 +62,11 @@ void registerModelModule(rm::CommandManager &manager)
     ExportCwrmCommand::registerDefinition(manager);
     ExportPcdCommand::registerDefinition(manager);
     EditPlateCommand::registerDefinition(manager);
+    SetChannelSteelCommand::registerDefinition(manager);
+    OptimizeCrossPlateCommand::registerDefinition(manager);
+    OptimizeEndCapCommand::registerDefinition(manager);
+    SetAngleSteelCommand::registerDefinition(manager);
+    BuildByPointsCommand::registerDefinition(manager);
+    ObstacleFromPointsCommand::registerDefinition(manager);
 }
 }

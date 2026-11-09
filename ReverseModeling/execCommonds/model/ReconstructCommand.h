@@ -10,6 +10,7 @@ public:
     struct Args
     {
         TypeValue type{};
+        double obstacle_exclusion{};
         bool on_ground{};
         bool regular_upper_surface{};
         bool projection_onto_border{};

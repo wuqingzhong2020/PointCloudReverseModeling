@@ -550,7 +550,7 @@
         {
           "name": "reconstruct",
           "summary": "按点云识别板厚重建",
-          "usage": "model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]",
+          "usage": "model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5] [--obstacle-exclusion 1]",
           "params": [
             {
               "name": "type",
@@ -564,6 +564,21 @@
               ],
               "default": "hbeam",
               "description": "重建工件类型；other 为俯视底板焊件，按直线/圆弧顶边垂直投影恢复连接，保留独立障碍物"
+            },
+            {
+              "name": "obstacle_exclusion",
+              "binding": "option",
+              "option": "--obstacle-exclusion",
+              "type": "float",
+              "default": 1.0,
+              "ranges": [
+                [
+                  0.0,
+                  1000.0
+                ]
+              ],
+              "unit": "mm",
+              "description": "排除距钢板表面不超过该距离的点，超出部分仍可识别为障碍物；默认 1 mm，0 关闭该距离过滤"
             },
             {
               "name": "on_ground",
@@ -2194,6 +2209,530 @@
           "returns": {
             "type": "object",
             "description": "实际几何、统一撤销重做与录制回放"
+          },
+          "description": "",
+          "examples": []
+        },
+        {
+          "name": "set_channel_steel",
+          "summary": "将矩形实体设为槽钢",
+          "usage": "model.set_channel_steel --part <ID> --face <编号> [--thickness 10] [--auto-height true] [--height 100]",
+          "params": [
+            {
+              "name": "part",
+              "binding": "option",
+              "option": "--part",
+              "type": "string",
+              "min_size": 1,
+              "required": true
+            },
+            {
+              "name": "face",
+              "binding": "option",
+              "option": "--face",
+              "type": "int",
+              "ranges": [
+                [
+                  1,
+                  2147483647
+                ]
+              ],
+              "required": true,
+              "description": "矩形实体的竖直开口侧面编号，BRep 1-based"
+            },
+            {
+              "name": "thickness",
+              "binding": "option",
+              "option": "--thickness",
+              "type": "float",
+              "ranges": [
+                [
+                  1,
+                  50
+                ]
+              ],
+              "default": 10.0
+            },
+            {
+              "name": "auto_height",
+              "binding": "option",
+              "option": "--auto-height",
+              "type": "bool",
+              "default": true,
+              "description": "参考下方 50 mm 内覆盖底边的支撑面；无支撑时使用原实体高度"
+            },
+            {
+              "name": "height",
+              "binding": "option",
+              "option": "--height",
+              "type": "float",
+              "ranges": [
+                [
+                  1,
+                  1000
+                ]
+              ],
+              "default": 100.0,
+              "description": "关闭自动高度后生效，底部固定，沿真实底面内法线量取高度"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "替换选中部件，保留其他部件；支持撤销和录制"
+          },
+          "examples": [
+            "model.set_channel_steel --part imported-part-1 --face 3 --thickness 10 --auto-height false --height 160"
+          ],
+          "description": ""
+        },
+        {
+          "name": "optimize_cross_plate",
+          "summary": "交叉板优化：保持 A 连续，打断 B 并可选调整高度差",
+          "usage": "model.optimize_cross_plate --continuous <A> --broken <B> [--height-offset 10]",
+          "params": [
+            {
+              "name": "continuous",
+              "binding": "option",
+              "option": "--continuous",
+              "type": "string",
+              "min_size": 1,
+              "required": true,
+              "description": "连续板 A 的部件 ID"
+            },
+            {
+              "name": "broken",
+              "binding": "option",
+              "option": "--broken",
+              "type": "string",
+              "min_size": 1,
+              "required": true,
+              "description": "打断板 B 的部件 ID，必须与 A 不同"
+            },
+            {
+              "name": "height_offset",
+              "binding": "option",
+              "option": "--height-offset",
+              "type": "float",
+              "default": 10.0,
+              "ranges": [
+                [
+                  0.0,
+                  10.0
+                ]
+              ],
+              "unit": "mm",
+              "description": "A 顶面高于 B 的距离；0 关闭高度修改"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "原子提交交叉板结果；支持预览、撤销重做和录制回放"
+          },
+          "description": "",
+          "examples": []
+        },
+        {
+          "name": "optimize_end_cap",
+          "summary": "封板优化：独立调整边缘 1 或 2 的错边、凸边及相邻连接",
+          "usage": "model.optimize_end_cap --part <ID> --edge 1 --joint misalign [--auto-distance true] [--distance 15]",
+          "params": [
+            {
+              "name": "part",
+              "binding": "option",
+              "option": "--part",
+              "type": "string",
+              "min_size": 1,
+              "required": true
+            },
+            {
+              "name": "edge",
+              "binding": "option",
+              "option": "--edge",
+              "type": "int",
+              "ranges": [
+                [
+                  1,
+                  2
+                ]
+              ],
+              "default": 1,
+              "description": "当前边缘；编号由梁的固定横向排序，与相机无关"
+            },
+            {
+              "name": "joint",
+              "binding": "option",
+              "option": "--joint",
+              "type": "enum",
+              "values": [
+                "misalign",
+                "convex"
+              ],
+              "default": "misalign",
+              "description": "错边向翼板外表面内缩，凸边向外伸出"
+            },
+            {
+              "name": "auto_distance",
+              "binding": "option",
+              "option": "--auto-distance",
+              "type": "bool",
+              "default": true,
+              "description": "仅错边生效：取当前侧翼板厚度的 75%"
+            },
+            {
+              "name": "distance",
+              "binding": "option",
+              "option": "--distance",
+              "type": "float",
+              "ranges": [
+                [
+                  1,
+                  200
+                ]
+              ],
+              "default": 15.0,
+              "unit": "mm",
+              "description": "自定义距离；错边最大 100，凸边最大 200"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "当前封板边缘、对应翼板与腹板原子提交，可撤销及录制回放"
+          },
+          "description": "",
+          "examples": []
+        },
+        {
+          "name": "set_angle_steel",
+          "summary": "将矩形实体设为角钢",
+          "usage": "model.set_angle_steel --part <ID> --face <编号> [--thickness 10] [--auto-height true] [--height 100]",
+          "params": [
+            {
+              "name": "part",
+              "binding": "option",
+              "option": "--part",
+              "type": "string",
+              "min_size": 1,
+              "required": true
+            },
+            {
+              "name": "face",
+              "binding": "option",
+              "option": "--face",
+              "type": "int",
+              "ranges": [
+                [
+                  1,
+                  2147483647
+                ]
+              ],
+              "required": true,
+              "description": "矩形实体的竖直开口侧面编号，BRep 1-based"
+            },
+            {
+              "name": "thickness",
+              "binding": "option",
+              "option": "--thickness",
+              "type": "float",
+              "ranges": [
+                [
+                  1,
+                  50
+                ]
+              ],
+              "default": 10.0
+            },
+            {
+              "name": "auto_height",
+              "binding": "option",
+              "option": "--auto-height",
+              "type": "bool",
+              "default": true,
+              "description": "参考下方 50 mm 内覆盖底边的支撑面；无支撑时使用原实体高度"
+            },
+            {
+              "name": "height",
+              "binding": "option",
+              "option": "--height",
+              "type": "float",
+              "ranges": [
+                [
+                  1,
+                  1000
+                ]
+              ],
+              "default": 100.0,
+              "description": "关闭自动高度后生效，底部固定，沿真实底面内法线量取高度"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "替换选中部件，保留其他部件；支持撤销和录制"
+          },
+          "examples": [
+            "model.set_angle_steel --part imported-part-1 --face 3 --thickness 10 --auto-height false --height 160"
+          ],
+          "description": ""
+        },
+        {
+          "name": "build_by_points",
+          "summary": "选点轮廓拉伸建模",
+          "usage": "model.build_by_points --request <object>",
+          "params": [
+            {
+              "name": "request",
+              "binding": "option",
+              "option": "--request",
+              "type": "object",
+              "required": true,
+              "properties": {
+                "shape": {
+                  "type": "enum",
+                  "values": [
+                    "rectangle",
+                    "circle",
+                    "polygon",
+                    "polyline",
+                    "box"
+                  ]
+                },
+                "method": {
+                  "type": "enum",
+                  "values": [
+                    "axis",
+                    "diagonal",
+                    "corner",
+                    "three",
+                    "center"
+                  ]
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "float"
+                    },
+                    "min_size": 3,
+                    "max_size": 3
+                  },
+                  "max_size": 10000
+                },
+                "origin": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "normal": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "axis": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "width": {
+                  "type": "float"
+                },
+                "length": {
+                  "type": "float"
+                },
+                "diameter": {
+                  "type": "float"
+                },
+                "height": {
+                  "type": "float"
+                },
+                "offset": {
+                  "type": "float"
+                },
+                "to_plane": {
+                  "type": "bool"
+                },
+                "cut": {
+                  "type": "bool"
+                },
+                "section": {
+                  "type": "bool"
+                },
+                "reversed": {
+                  "type": "bool"
+                },
+                "scope": {
+                  "type": "enum",
+                  "values": [
+                    "all",
+                    "no_base",
+                    "manual"
+                  ]
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "indices": {
+                  "type": "array",
+                  "items": {
+                    "type": "int",
+                    "ranges": [
+                      [
+                        0,
+                        9223372036854775807
+                      ]
+                    ]
+                  }
+                }
+              },
+              "description": "有序工程坐标点和拉伸方向；障碍物记录完整点云索引和参考面剖视设置。"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "原子提交后的模型，可撤销及录制回放"
+          },
+          "description": "",
+          "examples": []
+        },
+        {
+          "name": "obstacle_from_points",
+          "summary": "框选点云生成参考面障碍物",
+          "usage": "model.obstacle_from_points --request <object>",
+          "params": [
+            {
+              "name": "request",
+              "binding": "option",
+              "option": "--request",
+              "type": "object",
+              "required": true,
+              "properties": {
+                "shape": {
+                  "type": "enum",
+                  "values": [
+                    "rectangle",
+                    "circle",
+                    "polygon",
+                    "polyline",
+                    "box"
+                  ]
+                },
+                "method": {
+                  "type": "enum",
+                  "values": [
+                    "axis",
+                    "diagonal",
+                    "corner",
+                    "three",
+                    "center"
+                  ]
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "float"
+                    },
+                    "min_size": 3,
+                    "max_size": 3
+                  },
+                  "max_size": 10000
+                },
+                "origin": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "normal": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "axis": {
+                  "type": "array",
+                  "items": {
+                    "type": "float"
+                  },
+                  "min_size": 3,
+                  "max_size": 3
+                },
+                "width": {
+                  "type": "float"
+                },
+                "length": {
+                  "type": "float"
+                },
+                "diameter": {
+                  "type": "float"
+                },
+                "height": {
+                  "type": "float"
+                },
+                "offset": {
+                  "type": "float"
+                },
+                "to_plane": {
+                  "type": "bool"
+                },
+                "cut": {
+                  "type": "bool"
+                },
+                "section": {
+                  "type": "bool"
+                },
+                "reversed": {
+                  "type": "bool"
+                },
+                "scope": {
+                  "type": "enum",
+                  "values": [
+                    "all",
+                    "no_base",
+                    "manual"
+                  ]
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "indices": {
+                  "type": "array",
+                  "items": {
+                    "type": "int",
+                    "ranges": [
+                      [
+                        0,
+                        9223372036854775807
+                      ]
+                    ]
+                  }
+                }
+              },
+              "description": "有序工程坐标点和拉伸方向；障碍物记录完整点云索引和参考面剖视设置。"
+            }
+          ],
+          "returns": {
+            "type": "object",
+            "description": "原子提交后的模型，可撤销及录制回放"
           },
           "description": "",
           "examples": []

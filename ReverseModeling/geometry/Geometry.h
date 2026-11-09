@@ -28,8 +28,10 @@ private:
     std::string code_;
 };
 
+struct PointModeling;
 struct PlateEdit;
 struct PlateEditResult;
+struct EndCapInspection;
 class Model {
 public:
     struct Impl;
@@ -38,7 +40,9 @@ public:
     [[nodiscard]] const MeshData& mesh() const noexcept;
 private:
     std::shared_ptr<const Impl> implementation_;
+    friend std::shared_ptr<const Model> buildModelByPoints(const Model*, const PointModeling&, std::stop_token, const ProgressCallback&);
     friend PlateEditResult editModelPlates(const Model&, PlateEdit, std::stop_token, const ProgressCallback&);
+    friend EndCapInspection inspectModelEndCap(const Model&, const std::string&, std::stop_token);
     friend PlateEdit prepareDirectPlateEdit(const Model&, PlateEdit, bool, std::stop_token, const std::function<void(std::string_view)>&);
     friend std::shared_ptr<const Model> reconstructModelObstacles(const Model&, const CloudData&, const PlateRecognition&, std::stop_token, const ProgressCallback&);
     friend std::shared_ptr<const Model> associateModelCloud(const Model&, const CloudData&, std::stop_token);
@@ -54,6 +58,8 @@ private:
     friend std::vector<std::string> connectedModelParts(const Model&, const std::string&, std::stop_token, const ProgressCallback&);
     friend std::shared_ptr<const Model> completeModelMirror(
         const Model&, const MirrorCompletion&, std::stop_token, const ProgressCallback&);
+    friend std::shared_ptr<const Model> setModelStructuralSteel(
+        const Model&, const StructuralSteel&, std::stop_token, const ProgressCallback&);
     friend std::shared_ptr<const Model> generateModelPlate(
         const Model&, const PlateGeneration&, std::stop_token, const ProgressCallback&);
     friend std::shared_ptr<const Model> expandModelContours(
@@ -123,6 +129,9 @@ private:
     std::stop_token stop = {}, const ProgressCallback &progress = {});
 [[nodiscard]] std::shared_ptr<const Model> completeModelMirror(
     const Model &model, const MirrorCompletion &request,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
+[[nodiscard]] std::shared_ptr<const Model> setModelStructuralSteel(
+    const Model &model, const StructuralSteel &request,
     std::stop_token stop = {}, const ProgressCallback &progress = {});
 [[nodiscard]] std::shared_ptr<const Model> generateModelPlate(
     const Model &model, const PlateGeneration &request,

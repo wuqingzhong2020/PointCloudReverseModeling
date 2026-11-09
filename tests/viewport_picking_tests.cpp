@@ -2,6 +2,8 @@
  * 文件描述：用真实 OCCT owner 覆盖未命中、无对象和方向立方体命中，防止框选/双击空白崩溃。
  * 不创建 Qt 窗口、OpenGL 上下文或模拟界面操作。
  */
+#include <array>
+
 #include <AIS_PointCloud.hxx>
 #include <AIS_ViewCube.hxx>
 #include <Aspect_DisplayConnection.hxx>
@@ -19,12 +21,44 @@
 #include <gtest/gtest.h>
 
 #include "workbench/OccPicking.h"
+#include "workbench/OccSelectionBand.h"
 #include "workbench/OccPartMesh.h"
 #include "workbench/OccMeasurementPicking.h"
 
 namespace
 {
 using reverse::workbench::isDetectedInteractive;
+
+TEST(ViewportPicking, SelectionBandMatchesMousePixelsInWideTallAndHighDpiViewports)
+{
+    for (const QSize viewport : {QSize(1323, 300), QSize(300, 1323), QSize(2646, 600), QSize(800, 800)})
+    {
+        const Handle(Graphic3d_Camera) camera = new Graphic3d_Camera();
+        camera->SetAspect(double(viewport.width()) / viewport.height());
+        camera->SetDirection(gp_Dir(0.2, 0.4, -1));
+        const QRectF rectangle(viewport.width() * 0.18, viewport.height() * 0.62,
+                               viewport.width() * 0.06, viewport.height() * 0.15);
+        AIS_RubberBand band;
+        reverse::workbench::setSelectionBandRectangle(band, rectangle, viewport);
+        auto worldView = camera->OrientationMatrix();
+        const auto projection = camera->ProjectionMatrix();
+        band.TransformPersistence()->Apply(camera, projection, worldView, viewport.width(), viewport.height());
+        const auto matrix = projection * worldView;
+        const std::array expected{rectangle.bottomLeft(), rectangle.topLeft(),
+                                  rectangle.topRight(), rectangle.bottomRight()};
+        int i = 0;
+        for (const auto &point : band.Points())
+        {
+            const auto clip = matrix * NCollection_Vec4<double>(point.x(), point.y(), 0, 1);
+            const double x = (clip.x() / clip.w() + 1) * viewport.width() / 2;
+            const double y = (1 - clip.y() / clip.w()) * viewport.height() / 2;
+            EXPECT_NEAR(x, expected.at(i).x(), 0.51) << viewport.width() << " x " << viewport.height();
+            EXPECT_NEAR(y, expected.at(i).y(), 0.51) << viewport.width() << " x " << viewport.height();
+            ++i;
+        }
+        EXPECT_EQ(i, 4);
+    }
+}
 
 TEST(ViewportPicking, EmptyHitIsNotTheNavigationCube)
 {

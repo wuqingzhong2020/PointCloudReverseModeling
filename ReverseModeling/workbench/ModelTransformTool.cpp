@@ -14,6 +14,7 @@
 #include <QVBoxLayout>
 
 #include "workbench/ModelTransformTool.h"
+#include "workbench/DockWorkspace.h"
 
 namespace reverse::workbench
 {
@@ -215,7 +216,8 @@ void ModelTransformTool::sync(const ProjectSnapshot &project, bool idle, bool vi
 }
 void ModelTransformTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (shouldCancelDockToolOnHide(this))
+        cancel();
     QWidget::hideEvent(event);
 }
 } // namespace reverse::workbench

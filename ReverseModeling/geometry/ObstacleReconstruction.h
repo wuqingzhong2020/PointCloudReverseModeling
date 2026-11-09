@@ -13,5 +13,6 @@ struct ObstacleShape
 };
 std::vector<ObstacleShape> reconstructObstacleShapes(const CloudData &cloud, const MeshData &workpiece,
     const std::vector<bool> &solidParts, double spacingMm, double noiseMm,
-    std::stop_token stop, const ProgressCallback &progress, const PlateRecognition *recognition = nullptr);
+    std::stop_token stop, const ProgressCallback &progress, const PlateRecognition *recognition = nullptr,
+    double exclusionDistanceMm = 1.0);
 }

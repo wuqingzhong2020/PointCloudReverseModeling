@@ -164,6 +164,7 @@ struct PlateBuildOptions {
     bool perpendicularHypothesis{true};
     double maximumSlotWidthMm{50.0};
     double maximumBaseWidthMm{250.0};
+    double obstacleExclusionDistanceMm{1.0}; // 钢板附近的障碍物排除距离，单位 mm。
     bool operator==(const PlateBuildOptions &) const = default;
 };
 
@@ -251,6 +252,16 @@ struct MirrorCompletion
 };
 
 enum class PlateGenerationKind { Cover, Base };
+enum class StructuralSteelKind { Channel, Angle };
+struct StructuralSteel
+{
+    StructuralSteelKind kind{StructuralSteelKind::Channel};
+    std::string partId;
+    std::uint32_t faceIndex{}; // 开口侧面，BRep 1-based。
+    double thicknessMm{10};
+    bool autoHeight{true};
+    double heightMm{100};
+};
 enum class BasePlateMode { Horizontal, VerticalPair };
 struct PlateGeneration
 {

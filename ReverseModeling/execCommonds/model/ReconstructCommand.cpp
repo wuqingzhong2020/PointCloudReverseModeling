@@ -8,7 +8,7 @@ rm::CommandDefinition ReconstructCommand::definition()
     d.name = name();
     d.module = "model";
     d.summary = "按点云识别板厚重建";
-    d.usage = "model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]";
+    d.usage = "model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5] [--obstacle-exclusion 1]";
     d.description = "";
     d.returns = "object: 结果摘要；执行失败返回错误码";
     {
@@ -22,6 +22,19 @@ rm::CommandDefinition ReconstructCommand::definition()
         p.defaultValue = rm::Value{"hbeam"};
         p.description = "重建工件类型；other 为俯视底板焊件，按直线/圆弧顶边垂直投影恢复连接，保留独立障碍物";
         p.unit = "";
+        d.parameters.push_back(std::move(p));
+    }
+    {
+        rm::Parameter p;
+        p.name = "obstacle_exclusion";
+        p.binding = rm::Binding::Option;
+        p.option = "--obstacle-exclusion";
+        p.position = 0;
+        p.rule = [] { rm::Rule r; r.type = rm::ValueType::Number; r.ranges = {{rm::Value{double{0.0}}, rm::Value{double{1000.0}}}}; return r; }();
+        p.required = false;
+        p.defaultValue = rm::Value{double{1.0}};
+        p.description = "排除距钢板表面不超过该距离的点，超出部分仍可识别为障碍物；默认 1 mm，0 关闭该距离过滤";
+        p.unit = "mm";
         d.parameters.push_back(std::move(p));
     }
     {
@@ -169,6 +182,11 @@ ReconstructCommand::Args ReconstructCommand::arguments(const rm::Arguments &valu
         else { throw std::invalid_argument("Unvalidated enum value"); }
     }
     else { throw std::invalid_argument("Missing normalized argument: type"); }
+    if (const auto it = values.find("obstacle_exclusion"); it != values.end())
+    {
+        args.obstacle_exclusion = it->second.as<double>();
+    }
+    else { throw std::invalid_argument("Missing normalized argument: obstacle_exclusion"); }
     if (const auto it = values.find("on_ground"); it != values.end())
     {
         args.on_ground = it->second.as<bool>();

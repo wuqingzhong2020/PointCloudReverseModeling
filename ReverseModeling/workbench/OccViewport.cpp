@@ -74,7 +74,9 @@
 #include "workbench/OccMeasurementPicking.h"
 #include "workbench/MeasurementSnap.h"
 #include "workbench/OccPicking.h"
+#include "workbench/OccSelectionBand.h"
 #include "workbench/ThicknessLabelEditor.h"
+#include <QPushButton>
 #include "workbench/OccPartMesh.h"
 #include "workbench/OccViewport.h"
 #include "workbench/OccReferencePlanePresentation.h"
@@ -115,6 +117,8 @@ public:
 }
 
 struct OccViewport::State {
+    std::vector<Vec3> capAnchors;
+    std::array<QPushButton *, 2> capButtons{};
     Handle(Aspect_DisplayConnection) display;
     Handle(OpenGl_GraphicDriver) driver;
     Handle(V3d_Viewer) viewer;
@@ -145,6 +149,7 @@ struct OccViewport::State {
     Handle(ModelSelectionFilter) pickFilter = new ModelSelectionFilter();
     ReferencePlanePickMode referencePickMode{ReferencePlanePickMode::None};
     std::vector<Vec3> referencePoints;
+    bool pointModelingPicking{};
     std::optional<ReferencePlane> referencePlane;
     std::optional<ReferencePlane> sectionPlane;
     bool sectionPreviewVisible{};
@@ -428,7 +433,7 @@ void OccViewport::updateMeasurementPicking()
     {
         return;
     }
-    const bool pointPick = state_->measurementEnabled || state_->referencePickMode == ReferencePlanePickMode::ThreePoints;
+    const bool pointPick = state_->measurementEnabled || (state_->referencePickMode == ReferencePlanePickMode::ThreePoints || state_->referencePickMode == ReferencePlanePickMode::OrderedPoints);
     const bool referencePick = state_->referencePickMode != ReferencePlanePickMode::None;
     const auto mode = pointPick ? ModelPickMode::Body
         : referencePick ? ModelPickMode::Face : state_->pickMode;
@@ -706,7 +711,7 @@ void OccViewport::redraw()
 {
     // 工具在主窗口构造/销毁阶段也会清理预览，此时 OpenGL 视图可能尚未创建。
     if (state_->view.IsNull()) return;
-    if ((state_->measurementEnabled || state_->referencePickMode == ReferencePlanePickMode::ThreePoints) &&
+    if ((state_->measurementEnabled || (state_->referencePickMode == ReferencePlanePickMode::ThreePoints || state_->referencePickMode == ReferencePlanePickMode::OrderedPoints)) &&
         state_->measurementPresentation)
     {
         const double ratio = devicePixelRatioF();
@@ -719,12 +724,68 @@ void OccViewport::redraw()
         state_->model->updateLabels(qRound(width() * ratio), qRound(height() * ratio), ratio);
     }
     updateFocusLocator();
+    updateEndCapEdges();
     state_->view->Redraw();
+}
+
+void OccViewport::setEndCapEdges(const std::vector<Vec3> &points, int activeEdge, bool enabled)
+{
+    state_->capAnchors = points;
+    for (int i = 0; i < 2; ++i)
+    {
+        auto *&button = state_->capButtons[i];
+        if (!button && !points.empty())
+        {
+            button = new QPushButton(QStringLiteral("◉ 边缘 %1").arg(i + 1), this);
+            button->setObjectName(QStringLiteral("endCap.sceneEdge%1").arg(i + 1));
+            button->setCheckable(true);
+            button->setFixedSize(84, 28);
+            button->setStyleSheet(QStringLiteral(
+                "QPushButton { background:#f1f5f8; color:#475c69; border:1px solid #89a5b8; border-radius:4px; } "
+                "QPushButton:checked { background:#164963; color:#ffffff; border:2px solid #00aeef; }"));
+            connect(button, &QPushButton::clicked, this,
+                    [this, i]
+                    {
+                        if (onEndCapEdgeSelected)
+                            onEndCapEdgeSelected(i + 1);
+                    });
+        }
+        if (button)
+        {
+            button->setChecked(activeEdge == i + 1);
+            button->setEnabled(enabled);
+            button->setVisible(points.size() == 2 && state_->modelVisible);
+            button->raise();
+        }
+    }
+    updateEndCapEdges();
+}
+void OccViewport::updateEndCapEdges()
+{
+    if (state_->view.IsNull() || state_->capAnchors.size() != 2)
+        return;
+    QRect previous;
+    for (int i = 0; i < 2; ++i)
+    {
+        auto *button = state_->capButtons[i];
+        const auto &p = state_->capAnchors[i];
+        int x, y;
+        state_->view->Convert(p.x, p.y, p.z, x, y);
+        x = qRound(x / devicePixelRatioF());
+        y = qRound(y / devicePixelRatioF());
+        button->setVisible(state_->modelVisible && rect().adjusted(-20, -20, 20, 20).contains(x, y));
+        QRect label(QPoint(std::clamp(x - 42, 0, width() - 84), std::clamp(y - 32, 0, height() - 28)), QSize(84, 28));
+        if (i && label.intersects(previous))
+            label.moveTop(std::clamp(previous.bottom() + 4, 0, height() - 28));
+        button->setGeometry(label);
+        previous = label;
+    }
 }
 
 void OccViewport::updateFocusLocator()
 {
-    if (state_->context.IsNull()) return;
+    if (state_->context.IsNull())
+        return;
     if (!state_->focusMarker.IsNull()) state_->context->Erase(state_->focusMarker,false);
     if (!state_->focusLabel.IsNull()) state_->context->Erase(state_->focusLabel,false);
     if (state_->focusPartId.empty() || !state_->modelVisible || state_->transform || state_->measurementEnabled ||
@@ -1057,8 +1118,19 @@ void OccViewport::setReferencePlanePicking(ReferencePlanePickMode mode)
     update();
 }
 
+void OccViewport::setPointModelingPicking(bool enabled, bool face)
+{
+    if (state_->pointModelingPicking == enabled && (!enabled || state_->referencePickMode ==
+        (face ? ReferencePlanePickMode::Face : ReferencePlanePickMode::OrderedPoints))) return;
+    state_->pointModelingPicking = enabled;
+    if (enabled && face) setModelPickMode(ModelPickMode::Face);
+    setReferencePlanePicking(enabled ? (face ? ReferencePlanePickMode::Face : ReferencePlanePickMode::OrderedPoints)
+        : ReferencePlanePickMode::None);
+}
 void OccViewport::setReferencePreview(std::vector<Vec3> points)
 {
+    if (points.size()==state_->referencePoints.size() && std::equal(points.begin(),points.end(),state_->referencePoints.begin(),
+        [](const Vec3 &a,const Vec3 &b) { return a.x==b.x && a.y==b.y && a.z==b.z; })) return;
     state_->referencePoints = std::move(points);
     updateReferencePresentation();
     update();
@@ -1068,10 +1140,12 @@ void OccViewport::updateReferencePresentation()
 {
     if (!state_->referencePresentation) return;
     const bool picking = state_->referencePickMode != ReferencePlanePickMode::None;
+    // 选点建模的指定面直接高亮模型面，不显示用于“三点建基准面”的编号和辅助大平面。
+    const bool modelingFace = state_->pointModelingPicking && state_->referencePickMode == ReferencePlanePickMode::Face;
     auto plane = picking ? std::optional<ReferencePlane>{} : state_->referencePlane;
     if (!picking && state_->section.enabled)
         plane = state_->sectionPreviewVisible ? state_->sectionPlane : std::nullopt;
-    if (picking && state_->referencePoints.size() == 3)
+    if (picking && !modelingFace && state_->referencePickMode != ReferencePlanePickMode::OrderedPoints && state_->referencePoints.size() == 3)
         plane = makeReferencePlane({state_->referencePoints[0], state_->referencePoints[1], state_->referencePoints[2]});
     Vec3 low{}, high{};
     bool first = true;
@@ -1086,7 +1160,7 @@ void OccViewport::updateReferencePresentation()
     for (const auto &p : state_->points) include(p.position);
     for (const auto &part : state_->parts) for (const auto &p : part.vertices) include(p);
     for (const auto &p : state_->referencePoints) include(p);
-    state_->referencePresentation->update(picking ? state_->referencePoints : std::vector<Vec3>{}, plane,
+    state_->referencePresentation->update(picking && !modelingFace ? state_->referencePoints : std::vector<Vec3>{}, plane,
         low, high, !picking && state_->section.enabled ? state_->section.offsetMm : 0, devicePixelRatioF());
 }
 
@@ -1095,17 +1169,17 @@ void OccViewport::pickReference(const QPoint &pixel)
     QString message;
     try
     {
-        if (state_->referencePickMode == ReferencePlanePickMode::ThreePoints)
+        if ((state_->referencePickMode == ReferencePlanePickMode::ThreePoints || state_->referencePickMode == ReferencePlanePickMode::OrderedPoints))
         {
             const auto picked = measurementPoint(pixel);
             if (!picked) return;
             auto points = state_->referencePoints;
-            if (points.size() == 3) points.clear();
+            if (points.size() == 3 && state_->referencePickMode != ReferencePlanePickMode::OrderedPoints) points.clear();
             if (std::any_of(points.begin(), points.end(), [&](const Vec3 &p) {
                 return std::hypot(p.x - picked->position.x, p.y - picked->position.y, p.z - picked->position.z) < 1e-6;
             })) throw std::invalid_argument("该点已选择，请选择其他位置。");
             points.push_back(picked->position);
-            if (points.size() == 3) (void)makeReferencePlane({points[0], points[1], points[2]});
+            if (points.size() == 3 && state_->referencePickMode != ReferencePlanePickMode::OrderedPoints) (void)makeReferencePlane({points[0], points[1], points[2]});
             setReferencePreview(std::move(points));
         }
         else if (state_->model)
@@ -1113,12 +1187,13 @@ void OccViewport::pickReference(const QPoint &pixel)
             detectObject(pixel);
             const auto owner = state_->context->DetectedOwner();
             const auto selected = state_->model->detectedSelection(owner);
-            if (selected.partId.empty() || selected.kind != ModelPickMode::Face) return;
+            if (selected.partId.empty() || selected.kind != ModelPickMode::Face)
+                throw std::invalid_argument("未选中模型平面。请左键点击灰色模型的平面区域；点云点或空白处不能作为参考面。");
             const auto part = std::find_if(state_->parts.begin(), state_->parts.end(),
                 [&](const auto &p) { return p.id == selected.partId; });
             if (part == state_->parts.end()) return;
             const auto plane = referencePlaneFromFace(*part, selected.index);
-            state_->model->selectOwner(owner);
+            setSelectedObjects({selected});
             setReferencePreview(std::vector<Vec3>(plane.pointsMm.begin(), plane.pointsMm.end()));
         }
     }
@@ -1131,7 +1206,8 @@ void OccViewport::pickReference(const QPoint &pixel)
         }
         message = QString::fromUtf8(error.what());
     }
-    if (onReferencePicked) onReferencePicked(state_->referencePoints, message);
+    if (state_->pointModelingPicking && onModelingPicked) onModelingPicked(state_->referencePoints, message);
+    else if (onReferencePicked) onReferencePicked(state_->referencePoints, message);
     redraw();
 }
 
@@ -1413,10 +1489,8 @@ void OccViewport::drawSelectionRectangle()
                                                    2.0 * devicePixelRatioF());
         state_->selectionBand->SetInfiniteState(true);
     }
-    const int h = qRound(height() * devicePixelRatioF());
-    const auto &rectangle = state_->rectangle.rect();
-    state_->selectionBand->SetRectangle(qRound(rectangle.left()), h - qRound(rectangle.bottom()),
-                                        qRound(rectangle.right()), h - qRound(rectangle.top()));
+    setSelectionBandRectangle(*state_->selectionBand, state_->rectangle.rect(),
+        {qRound(width() * devicePixelRatioF()), qRound(height() * devicePixelRatioF())});
     state_->context->Display(state_->selectionBand, 0, -1, false);
     state_->context->Redisplay(state_->selectionBand, false);
     state_->view->Redraw();
@@ -1586,7 +1660,7 @@ void OccViewport::mouseMoveEvent(QMouseEvent *event)
         }
         else if (event->buttons() == Qt::NoButton)
         {
-            if (state_->measurementEnabled || state_->referencePickMode == ReferencePlanePickMode::ThreePoints)
+            if (state_->measurementEnabled || (state_->referencePickMode == ReferencePlanePickMode::ThreePoints || state_->referencePickMode == ReferencePlanePickMode::OrderedPoints))
             {
                 state_->measurementHover = measurementPoint(current);
                 redraw();

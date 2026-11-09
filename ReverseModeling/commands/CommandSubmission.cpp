@@ -1,4 +1,5 @@
 ﻿#include "commands/PlateEditCommands.h"
+#include "commands/PointModelingCommands.h"
 /* 文件描述：现有 GUI 有类型入口转换为统一命令请求，不重复业务校验或另起线程。 */
 #include "commands/CommandBindings.h"
 #include "commands/CommandService.h"
@@ -29,6 +30,11 @@ std::string selectionModeText(CloudSelectionMode mode)
                                                 : "replace";
 }
 } // namespace
+std::string CommandService::submitPointModeling(const PointModeling &request, std::uint64_t revision)
+{
+    return submitUiCommand(request.shape == "box" ? "model.obstacle_from_points" : "model.build_by_points", {},
+        {{"request",commandValue(pointModelingJson(request))}},revision);
+}
 std::string CommandService::submitLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision)
 {
     rm::Array parts;
@@ -141,7 +147,8 @@ std::string CommandService::submitRecognizedReconstruct(const PlateBuildOptions 
                             {"projection_onto_border", o.projectionOntoBorder},
                             {"perpendicular", o.perpendicularHypothesis},
                             {"max_slot_width", o.maximumSlotWidthMm},
-                            {"max_base_width", o.maximumBaseWidthMm}},
+                            {"max_base_width", o.maximumBaseWidthMm},
+                            {"obstacle_exclusion", o.obstacleExclusionDistanceMm}},
                            revision);
 }
 std::string CommandService::submitExport(const std::filesystem::path &path, std::uint64_t revision)
@@ -192,6 +199,13 @@ std::string CommandService::submitMirrorCompletion(const MirrorCompletion &reque
     for (const auto &id : request.partIds) parts.emplace_back(id);
     return submitUiCommand("model.mirror_complete", {},
         {{"parts", std::move(parts)}, {"plane_part", request.planePartId}}, revision);
+}
+
+std::string CommandService::submitStructuralSteel(const StructuralSteel &r, std::uint64_t revision)
+{
+    return submitUiCommand(r.kind == StructuralSteelKind::Channel ? "model.set_channel_steel" : "model.set_angle_steel", {},
+        {{"part", r.partId}, {"face", static_cast<std::int64_t>(r.faceIndex)}, {"thickness", r.thicknessMm},
+         {"auto_height", r.autoHeight}, {"height", r.heightMm}}, revision);
 }
 
 std::string CommandService::submitPlateGeneration(const PlateGeneration &r, std::uint64_t revision)

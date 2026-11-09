@@ -261,6 +261,10 @@ void prepareDirectPlateEdit(const std::map<std::string, TopoDS_Shape> &shapes, P
 
 PlateShapeEdit editPlateShapes(const std::map<std::string, TopoDS_Shape> &shapes, PlateEdit &r, std::stop_token stop)
 {
+    if (r.operation == "cross")
+        return optimizeCrossPlateShapes(shapes, r, stop);
+    if (r.operation == "cap")
+        return optimizeEndCapShapes(shapes, r, stop);
     if (r.direct)
         return editAssemblyPlateShapes(shapes, r, stop);
     if (r.parts.empty())

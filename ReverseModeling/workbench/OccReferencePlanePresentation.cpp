@@ -6,6 +6,9 @@
 
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_Line.hxx>
+#include <AIS_Shape.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <TopoDS_Edge.hxx>
 #include <AIS_Point.hxx>
 #include <AIS_TextLabel.hxx>
 #include <AIS_Triangulation.hxx>
@@ -105,6 +108,16 @@ void OccReferencePlanePresentation::update(const std::vector<Vec3> &points,
     for (std::size_t i = 0; i < points.size(); ++i)
     {
         const auto &p = points[i];
+        if (i)
+        {
+            const auto &a=points[i-1];
+            const gp_Pnt start(a.x,a.y,a.z), end(p.x,p.y,p.z);
+            if (start.Distance(end)>1e-7)
+            {
+                Handle(AIS_Shape) edge = new AIS_Shape(BRepBuilderAPI_MakeEdge(start,end).Edge());
+                edge->SetColor(Quantity_NOC_ORANGE); edge->SetWidth(2*ratio); m_state->add(edge);
+            }
+        }
         Handle(AIS_Point) marker = new AIS_Point(new Geom_CartesianPoint(p.x, p.y, p.z));
         marker->Attributes()->SetPointAspect(new Prs3d_PointAspect(Aspect_TOM_O_POINT, Quantity_NOC_ORANGE, 5 * ratio));
         m_state->add(marker);

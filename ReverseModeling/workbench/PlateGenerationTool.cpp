@@ -20,6 +20,7 @@
 
 #include "geometry/Geometry.h"
 #include "workbench/PlateGenerationTool.h"
+#include "workbench/DockWorkspace.h"
 #include "workbench/PlateGenerationDiagram.h"
 
 namespace reverse::workbench
@@ -418,7 +419,8 @@ void PlateGenerationTool::sync(const ProjectSnapshot &project, bool idle)
 }
 void PlateGenerationTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (shouldCancelDockToolOnHide(this))
+        cancel();
     QWidget::hideEvent(event);
 }
 } // namespace reverse::workbench

@@ -190,7 +190,8 @@ json toJson(const ProjectSnapshot& project) {
                 {"projectionOntoBorder", m.recognitionOptions.projectionOntoBorder},
                 {"perpendicularHypothesis", m.recognitionOptions.perpendicularHypothesis},
                 {"maximumSlotWidthMm", m.recognitionOptions.maximumSlotWidthMm},
-                {"maximumBaseWidthMm", m.recognitionOptions.maximumBaseWidthMm}};
+                {"maximumBaseWidthMm", m.recognitionOptions.maximumBaseWidthMm},
+                {"obstacleExclusionDistanceMm", m.recognitionOptions.obstacleExclusionDistanceMm}};
             for (const auto &[id, frame] : m.recognizedPartFrames)
                 result["model"]["recognizedPartFrames"][id] = frameJson(frame);
             result["model"]["warnings"] = m.warnings;

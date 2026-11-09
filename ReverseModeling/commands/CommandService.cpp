@@ -18,6 +18,9 @@
 #include "commands/CommandBindings.h"
 #include "commands/CommandFeedback.h"
 #include "commands/CommandService.h"
+#include "commands/ApplicationLog.h"
+#include <QDateTime>
+#include <QThread>
 #include "commands/MacroRecorder.h"
 #include "commands/ReplayJournal.h"
 #include "commands/ProjectOperations.h"
@@ -184,6 +187,7 @@ struct CommandService::Impl
     }
     void log(std::string_view text)
     {
+        logging::write(QtInfoMsg, "commands", QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
         std::lock_guard lock(logMutex);
         if (environment.logDirectory.empty())
         {
@@ -196,7 +200,8 @@ struct CommandService::Impl
             return;
         }
         std::ofstream file(environment.logDirectory / "commands.log", std::ios::app | std::ios::binary);
-        file << text << '\n';
+        const auto prefix = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz")).toStdString();
+        file << prefix << " [tid=" << QThread::currentThreadId() << "] " << text << '\n';
     }
     void reportFailure(std::string_view operation, std::string_view reason, const std::string &taskId = {})
     {
@@ -341,6 +346,8 @@ struct CommandService::Impl
     void run(Job &job, PythonRuntime &python)
     {
         const auto start = std::chrono::steady_clock::now();
+        log("task.begin id=" + job.id + " revision=" + (job.revision ? std::to_string(*job.revision) : "any") +
+            " operation=" + (job.uiCommand ? job.uiCommand->native : job.failureContext));
         committed = false;
         if (!job.failureContext.empty())
         {
@@ -409,6 +416,10 @@ struct CommandService::Impl
             reportFailure(job.failureContext, result.message, job.id);
         }
         result.committed = result.committed || committed;
+        log("task.end id=" + job.id + " code=" + result.code + " ok=" + std::to_string(result.ok()) +
+            " committed=" + std::to_string(result.committed) + " elapsedMs=" +
+            std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()) +
+            " message=" + result.message);
         if (!result.ok())
         {
             log(job.id + " [" + result.code + "] " + result.message + "\n" + rm::formatValue(result.value));
@@ -675,10 +686,23 @@ std::string CommandService::submitDirectPlateEdit(const PlateEdit &request, std:
     });
 }
 
+std::string CommandService::submitEndCapInspection(const std::string &part, std::uint64_t revision)
+{
+    auto *s = impl_.get();
+    return s->submit("EndCapInspection", revision, [s, part, revision](const auto &context, auto &) {
+        s->log("cap.inspect part=" + part + " revision=" + std::to_string(revision));
+        s->operations.setContext(context);
+        auto result = s->operations.inspectEndCap(part, revision);
+        std::lock_guard lock(s->mutex);
+        s->tasks.at(s->active).endCap = std::move(result);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "已识别边缘 1 和边缘 2，请选择边缘并预览。", {}, false};
+    }, {}, false, "封板边缘识别");
+}
 std::string CommandService::submitPlateEditPreview(const PlateEdit &request,std::uint64_t revision)
 {
     auto *s=impl_.get();
     return s->submit("PlateEditPreview",revision,[s,request,revision](const auto &context,auto &){
+        s->log("plate.preview revision=" + std::to_string(revision) + " args=" + rm::formatValue(rm::Value(plateEditArguments(request))));
         s->operations.setContext(context);
         auto result=s->operations.previewPlateEdit(request,revision);
         for (const auto &line:result.reports) if (context.output) context.output(line+"\n");
@@ -717,6 +741,17 @@ std::string CommandService::submitPlateReview(const std::vector<std::string> &pa
         return rm::CommandResult{rm::ResultKind::Success,{},"检查完成，请核对并勾选处理项。",commandValue(rows),false};
     },{},false,"板件检查");
 }
+std::string CommandService::submitPointModelingPreview(const PointModeling &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("PointModelingPreview", revision, [state, request, revision](const auto &context, auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewPointModeling(request, revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "选点建模预览完成，应用后才修改模型。", {}, false};
+    }, {}, false, "选点建模预览");
+}
 std::string CommandService::submitLocalReconstructionPreview(const LocalReconstruction &request, std::uint64_t revision)
 {
     auto *state = impl_.get();
@@ -727,6 +762,18 @@ std::string CommandService::submitLocalReconstructionPreview(const LocalReconstr
         state->tasks.at(state->active).edgePreview = std::move(model);
         return rm::CommandResult{rm::ResultKind::Success, {}, "局部重建预览完成；未选部件保持不变，点击应用才提交。", {}, false};
     }, {}, false, "局部重建预览");
+}
+
+std::string CommandService::submitStructuralSteelPreview(const StructuralSteel &request, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("StructuralSteelPreview", revision, [state, request, revision](const auto &context, auto &) {
+        state->operations.setContext(context);
+        auto model = state->operations.previewStructuralSteel(request, revision);
+        std::lock_guard lock(state->mutex);
+        state->tasks.at(state->active).edgePreview = std::move(model);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；绿色为调整后型钢，应用后替换原部件。", {}, false};
+    }, {}, false, "型钢调整预览");
 }
 
 std::string CommandService::submitPlateGenerationPreview(const PlateGeneration &request, std::uint64_t revision)

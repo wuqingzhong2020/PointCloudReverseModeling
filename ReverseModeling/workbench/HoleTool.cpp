@@ -1,5 +1,6 @@
 ﻿/* 文件描述：按明确底边和参考点开孔；Enter 预览、应用才提交命令及历史。 */
 #include "workbench/HoleTool.h"
+#include "workbench/DockWorkspace.h"
 #include "geometry/Geometry.h"
 #include <QCheckBox>
 #include <QComboBox>
@@ -520,7 +521,8 @@ void HoleTool::sync(const ProjectSnapshot &project, bool idle)
 }
 void HoleTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (shouldCancelDockToolOnHide(this))
+        cancel();
     QWidget::hideEvent(event);
 }
 } // namespace reverse::workbench

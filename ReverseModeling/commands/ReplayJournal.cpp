@@ -17,8 +17,9 @@ ReplayPolicy replayPolicy(const std::string &name)
     if (name == "cloud.import") return ReplayPolicy::Import;
     if (name == "project.set_output_dir") return ReplayPolicy::OutputDirectory;
     for (const auto candidate : {"cloud.select", "cloud.select_indices", "cloud.crop", "cloud.delete",
-             "model.edit_plate", "model.reconstruct_local", "model.extend_to_plate", "model.trim_to_plate", "model.merge_to_plate", "model.split_to_plate", "model.crop_parts", "model.repair_holes", "model.add_holes",
+             "model.edit_plate", "model.reconstruct_local", "model.extend_to_plate", "model.trim_to_plate", "model.merge_to_plate", "model.split_to_plate", "model.crop_parts", "model.repair_holes", "model.add_holes", "model.optimize_cross_plate", "model.optimize_end_cap",
              "model.reconstruct", "model.parametric", "model.delete", "model.fillet", "model.chamfer", "model.add_hole", "model.set_thickness", "model.expand_contour", "model.generate_cover_plate", "model.generate_base_plate", "model.mirror_complete", "model.move", "model.rotate", "model.deviation",
+             "model.set_channel_steel", "model.set_angle_steel", "model.build_by_points", "model.obstacle_from_points",
              "project.set_reference_plane", "project.clear_reference_plane", "project.section",
              "project.undo", "project.redo", "project.reset"})
         if (name == candidate) return ReplayPolicy::Include;

@@ -43,6 +43,7 @@ class ReconstructionPanel final : public QWidget
     QCheckBox *m_webHoles;
     QDoubleSpinBox *m_minimumHoleRadius;
     QDoubleSpinBox *m_endOverhangTolerance;
+    QDoubleSpinBox *m_obstacleExclusionDistance;
     QPushButton *m_restore;
     bool m_hasEdits{};
     bool m_settingValues{};

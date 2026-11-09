@@ -9,7 +9,9 @@ const std::map<std::string, std::pair<std::string, std::string>> names{
     {"extend", {"model.extend_to_plate", "延长到板"}}, {"trim", {"model.trim_to_plate", "截取到板"}},
     {"merge", {"model.merge_to_plate", "合并到板"}},   {"split", {"model.split_to_plate", "分割到板"}},
     {"crop", {"model.crop_parts", "框选切割板件"}},    {"repair", {"model.repair_holes", "修复板件孔洞"}},
-    {"holes", {"model.add_holes", "批量过焊孔"}}};
+    {"holes", {"model.add_holes", "批量过焊孔"}},
+    {"cross", {"model.optimize_cross_plate", "交叉板优化"}},
+    {"cap", {"model.optimize_end_cap", "封板优化"}}};
 nlohmann::json vector(const Vec3 &v)
 {
     return {v.x, v.y, v.z};
@@ -42,6 +44,23 @@ PlateEdit plateEditRequest(const std::string &command, const rm::Arguments &args
         r.all = j.value("all", false);
     }
     r.target = j.value("target", std::string{});
+    if (r.operation == "cap")
+    {
+        r.parts = {j.at("part").get<std::string>()};
+        r.capEdge = j.value("edge", 1);
+        const auto joint = j.value("joint", std::string("misalign"));
+        if (joint != "misalign" && joint != "convex")
+            throw GeometryError("cap_invalid_joint", "封板模式必须为 misalign（错边）或 convex（凸边）。");
+        r.capConvex = joint == "convex";
+        r.capAutomatic = j.value("auto_distance", true);
+        r.capDistance = j.value("distance", 15.0);
+    }
+    if (r.operation == "cross")
+    {
+        r.target = j.at("continuous").get<std::string>();
+        r.parts = {j.at("broken").get<std::string>()};
+        r.heightOffset = j.value("height_offset", 10.0);
+    }
     r.tolerance = j.value("tolerance", r.tolerance);
     r.maxDistance = j.value("max_distance", r.maxDistance);
     r.clearance = j.value("clearance", r.clearance);
@@ -78,6 +97,21 @@ PlateEdit plateEditRequest(const std::string &command, const rm::Arguments &args
 rm::Arguments plateEditArguments(const PlateEdit &r)
 {
     nlohmann::json j = nlohmann::json::object();
+    if (r.operation == "cap")
+    {
+        if (r.parts.size() != 1)
+            throw GeometryError("cap_invalid_selection", "请选择一块封板。");
+        j = {{"part", r.parts.front()}, {"edge", r.capEdge}, {"joint", r.capConvex ? "convex" : "misalign"},
+             {"auto_distance", r.capAutomatic}, {"distance", r.capDistance}};
+        return commandValue(j).as<rm::Arguments>();
+    }
+    if (r.operation == "cross")
+    {
+        if (r.parts.size() != 1)
+            throw GeometryError("invalid_cross_selection", "请选择一个连续板 A 和一个打断板 B。");
+        j = {{"continuous", r.target}, {"broken", r.parts.front()}, {"height_offset", r.heightOffset}};
+        return commandValue(j).as<rm::Arguments>();
+    }
     if (r.direct)
     {
         j = {{"operation", r.operation}, {"parts", r.parts}, {"target", r.target}, {"all", r.all},

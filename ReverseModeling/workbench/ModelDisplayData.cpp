@@ -175,7 +175,9 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
         parts[index].id = mesh.partIds[index];
         parts[index].colorSrgb = ModelColors::surface;
         parts[index].thicknessMm = model.importedFormat.empty() ? partThickness(parts[index].id, model.parameters) : std::nullopt;
-        if (model.fromPointCloud && !model.obstacleParts.contains(parts[index].id) && !model.generatedPlates.contains(parts[index].id) && !model.mirroredParts.contains(parts[index].id))
+        // 封板/交叉板优化会失效原识别记录；编辑后的实体板厚才是当前显示依据。
+        if (model.fromPointCloud && !model.thicknessOverrides.contains(parts[index].id) &&
+            !model.obstacleParts.contains(parts[index].id) && !model.generatedPlates.contains(parts[index].id) && !model.mirroredParts.contains(parts[index].id))
         {
             const auto observed = std::find_if(model.plates.begin(), model.plates.end(),
                 [&](const auto &plate) { return plate.id == parts[index].id; });

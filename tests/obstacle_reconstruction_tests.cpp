@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <thread>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -101,6 +102,50 @@ TEST(ObstacleReconstruction, ResidualClustersEncloseAllObservedPointsAndIgnoreNo
     EXPECT_TRUE(detail::reconstructObstacleShapes(cloud, source->mesh(), {true}, 1, .05, {}, {}).empty());
     std::stop_source stop; stop.request_stop();
     EXPECT_THROW((void)detail::reconstructObstacleShapes(cloud, source->mesh(), {true}, 1, .05, stop.get_token(), {}), GeometryError);
+}
+
+TEST(ObstacleReconstruction, DistanceFilterUsesEachPointAndKeepsTheRestOfTheSameObject)
+{
+    const auto source = detail::modelFromShape(BRepPrimAPI_MakeBox(120,20,60).Shape(),"step",{},{});
+    CloudData cloud;
+    // 0.5 / 1 / 1.25 mm 三层在同一体素中，必须逐点过滤，不能删除整格或整个簇。
+    for (double x : {.5,1.,1.25,3.5,5.5,7.5,9.5,11.5})
+        for (double y : {5.,9.,13.}) for (double z : {10.,14.,18.})
+            add(cloud,{120+x,y,z});
+    EXPECT_DOUBLE_EQ(PlateBuildOptions{}.obstacleExclusionDistanceMm,1);
+    const auto unfiltered = detail::reconstructObstacleShapes(cloud,source->mesh(),{true},1,.05,{},{},nullptr,0);
+    ASSERT_EQ(unfiltered.size(),1);
+    EXPECT_EQ(unfiltered[0].info.supportPoints,72);
+    const auto filtered = detail::reconstructObstacleShapes(cloud,source->mesh(),{true},1,.05,{},{});
+    ASSERT_EQ(filtered.size(),1);
+    EXPECT_EQ(filtered[0].info.supportPoints,54); // 边界 1 mm 包含在排除带内，1.25 mm 保留。
+    const auto wider = detail::reconstructObstacleShapes(cloud,source->mesh(),{true},1,.05,{},{},nullptr,2);
+    ASSERT_EQ(wider.size(),1);
+    EXPECT_EQ(wider[0].info.supportPoints,45);
+    EXPECT_TRUE(detail::reconstructObstacleShapes(cloud,source->mesh(),{true},1,.05,{},{},nullptr,20).empty());
+    EXPECT_EQ(cloud.points.size(),72); // 原始点云不改变。
+    CloudData thinObject;
+    for (double y : {5.,9.,13.}) for (double z : {10.,14.,18.}) add(thinObject,{121.25,y,z});
+    const auto thin=detail::reconstructObstacleShapes(thinObject,source->mesh(),{true},1,.05,{},{});
+    ASSERT_EQ(thin.size(),1); // 独立的 1.25 mm 外小平面不能被旧的自动表面容差吞掉。
+    EXPECT_EQ(thin[0].info.supportPoints,9);
+    EXPECT_TRUE(detail::reconstructObstacleShapes(thinObject,source->mesh(),{true},1,.05,{},{},nullptr,2).empty());
+    const double s=std::sqrt(.5);
+    const BeamFrame frame{{1e6,-2e6,3e6},{s,s,0},{0,0,1},{s,-s,0}};
+    auto rotatedMesh=source->mesh();
+    auto rotated=cloud;
+    rotated.originMm=frame.originMm;
+    for (auto &v : rotatedMesh.vertices) v=transformPoint(frame,v);
+    for (auto &p : rotated.points)
+    {
+        const auto v=transformPoint(frame,p.position);
+        p.position={v.x-frame.originMm.x,v.y-frame.originMm.y,v.z-frame.originMm.z};
+    }
+    const auto moved=detail::reconstructObstacleShapes(rotated,rotatedMesh,{true},1,.05,{},{},nullptr,2);
+    ASSERT_EQ(moved.size(),1);
+    EXPECT_EQ(moved[0].info.supportPoints,45);
+    for (double d : {-1.,1001.,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()})
+        EXPECT_THROW((void)detail::reconstructObstacleShapes(cloud,source->mesh(),{true},1,.05,{},{},nullptr,d),GeometryError);
 }
 
 TEST(ObstacleReconstruction, MetadataDisplayDeletionAndExchangeKeepObstacleSeparateFromWorkpiece)
@@ -232,6 +277,43 @@ TEST(ObstacleReconstruction, DisconnectedScanStripsAtPlateEndAreNotIndependentOb
     }
 }
 
+TEST(ObstacleReconstruction, SparseEndStripAccountsForScanPitchWithoutDiscardingNearbyObjects)
+{
+    const auto source=detail::modelFromShape(BRepPrimAPI_MakeBox(200,80,10).Shape(),"step",{},{});
+    CloudData cloud;
+    // 条带跨越几个采样列，点间距和面噪声共同决定其横向误差。
+    for (const auto p : std::vector<Vec3>{{202.62,20,20},{202.65,29.06,20.04},{202.60,19.01,20.11},
+              {198.34,20.01,20.08},{200.13,29.06,20.09},{202.66,25.08,20.46},
+              {200.14,19.01,20.15},{197.09,19.02,20.21}}) add(cloud,p);
+    PlateRecognition recognition;
+    RecognizedPlate plate; plate.id="plate"; plate.normalAxis=2;
+    plate.minimumMm={0,0,0};plate.maximumMm={200,80,10};plate.thicknessMm=10;
+    recognition.plates.push_back(plate);
+    ASSERT_EQ(detail::reconstructObstacleShapes(cloud,source->mesh(),{true},2.05,1.61,{},{}).size(),1);
+    EXPECT_TRUE(detail::reconstructObstacleShapes(cloud,source->mesh(),{true},2.05,1.61,{},{},&recognition).empty());
+    boxScan(cloud,{180,50,20},{190,64,30},1);
+    const auto kept=detail::reconstructObstacleShapes(cloud,source->mesh(),{true},2.05,1.61,{},{},&recognition);
+    ASSERT_EQ(kept.size(),1);
+    EXPECT_GT(kept[0].info.supportPoints,8);
+}
+
+TEST(ObstacleReconstruction, ObliqueVisibleSideStripUsesMeasuredDirection)
+{
+    const auto source=detail::modelFromShape(BRepPrimAPI_MakeBox(200,80,10).Shape(),"step",{},{});
+    CloudData cloud;
+    for (int i=0;i<=60;++i)
+        add(cloud,{200+.4*std::sin(i),10.0+i,20+std::tan(7.0*3.141592653589793/180.0)*(i-30)+.25*std::cos(i)});
+    PlateRecognition recognition;
+    RecognizedPlate plate;plate.id="plate";plate.normalAxis=2;
+    plate.minimumMm={0,0,0};plate.maximumMm={200,80,10};plate.thicknessMm=10;
+    recognition.plates.push_back(plate);
+    ASSERT_EQ(detail::reconstructObstacleShapes(cloud,source->mesh(),{true},2.05,1.61,{},{}).size(),1);
+    EXPECT_TRUE(detail::reconstructObstacleShapes(cloud,source->mesh(),{true},2.05,1.61,{},{},&recognition).empty());
+    // 明显斜穿板边的线状物体不属于小角度斜视残差。
+    for (auto &p : cloud.points) p.position.z=35+std::tan(.5)*(p.position.y-40);
+    EXPECT_FALSE(detail::reconstructObstacleShapes(cloud,source->mesh(),{true},2.05,1.61,{},{},&recognition).empty());
+}
+
 TEST(ObstacleReconstruction, DetachedPlateEdgeFilterPreservesSmallFacesVolumesAndSeparateLines)
 {
     CloudData cloud;
@@ -281,7 +363,9 @@ TEST(ObstacleReconstruction, HBeamCommandRetainsExternalObjectWithHistoryAndReco
     CommandService service;
     ASSERT_EQ(finish(service, service.submitImport(input)).state, TaskState::Succeeded);
     ASSERT_EQ(finish(service, service.submitStartRecording(script)).state, TaskState::Succeeded);
-    const auto task = finish(service, service.submitRecognizedReconstruct(false, service.project().revision));
+    PlateBuildOptions options;
+    options.obstacleExclusionDistanceMm=3.25;
+    const auto task = finish(service, service.submitRecognizedReconstruct(options, service.project().revision));
     ASSERT_EQ(task.state, TaskState::Succeeded) << task.message;
     const auto completed = service.project();
     ASSERT_TRUE(completed.model);
@@ -289,15 +373,18 @@ TEST(ObstacleReconstruction, HBeamCommandRetainsExternalObjectWithHistoryAndReco
     EXPECT_EQ(completed.model->plates.size(), 3);
     EXPECT_EQ(completed.model->solidCount, 4);
     EXPECT_EQ(toJson(completed)["model"]["obstacles"].size(), 1);
+    EXPECT_EQ(toJson(completed)["model"]["recognitionOptions"]["obstacleExclusionDistanceMm"],3.25);
     EXPECT_EQ(workbench::makeModelDisplayParts(*completed.mesh, *completed.model, {}).size(), 4);
     ASSERT_EQ(finish(service, service.submitStopRecording()).state, TaskState::Succeeded);
     ASSERT_EQ(finish(service, service.submitLine("project.undo")).state, TaskState::Succeeded);
     EXPECT_FALSE(service.project().model);
     ASSERT_EQ(finish(service, service.submitLine("project.redo")).state, TaskState::Succeeded);
     EXPECT_EQ(service.project().model, completed.model);
+    EXPECT_DOUBLE_EQ(service.project().committedRecognitionOptions->obstacleExclusionDistanceMm,3.25);
     CommandService replay;
     ASSERT_EQ(finish(replay, replay.submitScriptFile(script)).state, TaskState::Succeeded);
     EXPECT_EQ(toJson(replay.project())["model"]["obstacles"], toJson(completed)["model"]["obstacles"]);
+    EXPECT_DOUBLE_EQ(replay.project().model->recognitionOptions.obstacleExclusionDistanceMm,3.25);
     EXPECT_NEAR(replay.project().model->volumeMm3, completed.model->volumeMm3, 1e-5);
 }
 
@@ -440,7 +527,14 @@ TEST(ObstacleReconstruction, OptionalLocalScanRetainsObstacleGeometry)
     ASSERT_EQ(task.state, TaskState::Succeeded) << task.message;
     auto snapshot = service.project();
     ASSERT_TRUE(snapshot.model);
-    EXPECT_FALSE(snapshot.model->obstacleParts.empty());
+    const auto filename=std::filesystem::path(input).filename();
+    if (filename=="reverse_modeling_result-20260922-08-17-37.pcd")
+    {
+        EXPECT_TRUE(snapshot.model->obstacleParts.empty());
+        EXPECT_EQ(snapshot.model->solidCount,7);
+        EXPECT_DOUBLE_EQ(snapshot.model->recognitionOptions.obstacleExclusionDistanceMm,1);
+    }
+    else EXPECT_FALSE(snapshot.model->obstacleParts.empty());
     // 用户验收样例：两端的四个扫描残差均不应成为障碍物，只保留梁外的两个物体。
     if (std::filesystem::path(input).filename() == "reverse_modeling_result-20260922-08-17-37-1.pcd")
     {

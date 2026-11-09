@@ -22,6 +22,7 @@
 #endif
 
 #include "commands/StartupArguments.h"
+#include "commands/ApplicationLog.h"
 #include "workbench/MainWindow.h"
 #include "workbench/WorkbenchTheme.h"
 
@@ -176,6 +177,12 @@ void initializeRuntimeResources()
 } // namespace
 
 int main(int argc, char* argv[]) {
+    reverse::logging::start();
+    struct LogLifetime
+    {
+        ~LogLifetime() { reverse::logging::stop(); }
+    } logLifetime;
+    qInfo("Application starting; version=%s; build=%s %s", RM_APP_VERSION, __DATE__, __TIME__);
     const auto startup = startupRequest(argc, argv);
     if (startup.mode == reverse::StartupMode::Help || startup.mode == reverse::StartupMode::Error)
     {
@@ -193,6 +200,8 @@ int main(int argc, char* argv[]) {
     int qtArgc = 1;
     char *qtArgv[] = {argv[0], nullptr};
     QApplication application(qtArgc, qtArgv);
+    qInfo().noquote() << "Executable:" << QCoreApplication::applicationFilePath()
+                     << "Log:" << reverse::logging::filePath();
     initializeRuntimeResources();
     QApplication::setApplicationName(QStringLiteral("ReverseModeler"));
     QApplication::setApplicationVersion(QStringLiteral(RM_APP_VERSION));
@@ -205,5 +214,7 @@ int main(int argc, char* argv[]) {
     const TaskbarIdentity taskbarIdentity(window);
 #endif
     window.show();
-    return application.exec();
+    const int result = application.exec();
+    qInfo("Event loop finished; exitCode=%d", result);
+    return result;
 }

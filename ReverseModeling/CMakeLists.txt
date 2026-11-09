@@ -18,6 +18,12 @@ if(WIN32)
 endif()
 add_executable(ReverseModeler WIN32 ${RM_SOURCES} ${RM_HEARDERS})
 target_compile_definitions(ReverseModeler PRIVATE RM_APP_VERSION="${CMAKE_PROJECT_VERSION}")
+target_compile_definitions(ReverseModeler PRIVATE QT_MESSAGELOGCONTEXT)
+if(MSVC)
+    # Release 也保留可匹配崩溃转储的符号，仍使用优化代码。
+    target_compile_options(ReverseModeler PRIVATE /Zi /FS)
+    target_link_options(ReverseModeler PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+endif()
 target_include_directories(ReverseModeler PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
 target_link_libraries(ReverseModeler PRIVATE ${RM_COMMON_LIBRARIES})
 

@@ -16,6 +16,28 @@
 #include "workbench/ModelLabelVisibility.h"
 #include "workbench/PointCloudDisplayData.h"
 
+TEST(ModelDisplay, EditedScanUsesCurrentThicknessWithoutStaleRecognitionRecords)
+{
+    const auto model = reverse::buildBeam({}, {1000, 200, 300, 20, 18, 13, {6.5, 993.5}, false, true});
+    auto summary = model->summary();
+    summary.fromPointCloud = true;
+    summary.plates.clear(); // 与封板/交叉板优化失效支持点后的快照一致。
+    summary.thicknessOverrides = reverse::inspectModelThickness(*model, summary.partIds);
+    const auto display = reverse::workbench::makeModelDisplayParts(model->mesh(), summary, {});
+    ASSERT_EQ(display.size(), summary.partIds.size());
+    for (const auto &part : display)
+    {
+        EXPECT_EQ(part.thicknessMm, summary.thicknessOverrides.at(part.id).thicknessMm);
+        EXPECT_FALSE(part.thicknessUnresolved);
+    }
+    auto invalid = summary;
+    invalid.thicknessOverrides.erase(summary.partIds.front());
+    EXPECT_THROW((void)reverse::workbench::makeModelDisplayParts(model->mesh(), invalid, {}), std::invalid_argument);
+    invalid = summary;
+    invalid.thicknessOverrides.begin()->second.thicknessMm = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_THROW((void)reverse::workbench::makeModelDisplayParts(model->mesh(), invalid, {}), std::invalid_argument);
+}
+
 namespace
 {
 using namespace reverse;

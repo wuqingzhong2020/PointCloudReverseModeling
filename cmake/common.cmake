@@ -41,7 +41,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${RM_OUTPUT_DIRECTORY}")
 # 两个程序使用同一组编译设置。
 add_compile_definitions(EIGEN_MPL2_ONLY)
 if(MSVC)
-    add_compile_options(/utf-8 /Zc:__cplusplus /bigobj /W4)
+    # 通过编译器服务串行写入 PDB，避免并行编译时出现 C1041。
+    add_compile_options(/utf-8 /Zc:__cplusplus /bigobj /W4 /FS)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)

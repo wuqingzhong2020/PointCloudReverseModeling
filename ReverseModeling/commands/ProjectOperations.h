@@ -1,5 +1,6 @@
 ﻿/* 文件描述：同步产品业务，与命令描述和参数生成解耦。 */
 #pragma once
+#include "geometry/PointModeling.h"
 #include "geometry/PlateEditing.h"
 #include "commandManager/CommandManager.h"
 #include "commands/CommandService.h"
@@ -15,6 +16,7 @@ class ProjectOperations
     ProjectOperations &operator=(const ProjectOperations &) = delete;
 
     [[nodiscard]] PlateEditResult previewPlateEdit(const PlateEdit &request, std::uint64_t revision);
+    [[nodiscard]] EndCapInspection inspectEndCap(const std::string &part, std::uint64_t revision);
     [[nodiscard]] PlateEdit prepareDirectPlateEdit(const PlateEdit &request, bool all, std::uint64_t revision);
     void applyPlateEdit(const PlateEdit &request, std::uint64_t revision);
     [[nodiscard]] std::string submitImport(const std::filesystem::path &path);
@@ -29,6 +31,8 @@ class ProjectOperations
     [[nodiscard]] std::string submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
                                                           double endOverhangToleranceMm = 30.0,
                                                          bool recognizeWebHoles = true, double minimumHoleRadiusMm = 5.0);
+    [[nodiscard]] std::shared_ptr<const Model> previewPointModeling(PointModeling request, std::uint64_t revision);
+    void applyPointModeling(const PointModeling &request, std::uint64_t revision);
     [[nodiscard]] std::shared_ptr<const Model> previewLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision);
     void applyLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision);
     [[nodiscard]] std::string submitExport(const std::filesystem::path &path, std::uint64_t expectedRevision);
@@ -45,6 +49,8 @@ class ProjectOperations
     [[nodiscard]] std::vector<std::string> inspectConnectedParts(const std::string &seedPartId, std::uint64_t revision);
     [[nodiscard]] std::shared_ptr<const Model> previewMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision);
     void applyMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision);
+    [[nodiscard]] std::shared_ptr<const Model> previewStructuralSteel(const StructuralSteel &request, std::uint64_t revision);
+    void applyStructuralSteel(const StructuralSteel &request, std::uint64_t revision);
     [[nodiscard]] std::shared_ptr<const Model> previewPlateGeneration(const PlateGeneration &request, std::uint64_t revision);
     void applyPlateGeneration(const PlateGeneration &request, std::uint64_t revision);
     [[nodiscard]] std::shared_ptr<const Model> previewContourExpansion(const PlateContourExpansion &request, std::uint64_t revision);

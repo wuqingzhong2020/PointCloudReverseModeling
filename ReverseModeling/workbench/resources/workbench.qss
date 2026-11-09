@@ -54,17 +54,43 @@ QProgressBar::chunk { background: #139dce; border-radius: 2px; }
 QLabel[muted="true"] { color: #91a8b7; }
 QLabel[panelTitle="true"] { font-size: 16px; font-weight: 600; padding: 4px 0; }
 QWidget[panelFooter="true"] { background: #08151f; border-top: 1px solid #17546a; }
+QWidget[objectName="workspace.frame"] { background: #081521; }
+QTabBar[workspaceTabs="true"] { background: #081521; }
+QTabBar[workspaceTabs="true"]::tab { background: #081521; color: #a8bbc6; font-size: 12px; border: 1px solid transparent; padding: 4px 8px; }
+QTabBar[workspaceTabs="true"]::tab:hover { background: #123a4b; color: #ffffff; }
+QTabBar[workspaceTabs="true"][expanded="true"]::tab:selected { background: #154158; color: #ffffff; border-color: #1ea7d8; }
+/* VS 工具窗口形式：窄标题栏、底部标签、右上角统一按钮，沿用工作台深蓝配色。 */
 ads--CDockManager, ads--CDockContainerWidget { background: #081521; border: none; }
-ads--CDockAreaWidget { background: #081521; border: 1px solid #17546a; }
+ads--CDockAreaWidget { background: #081521; border: 1px solid #154158; }
 ads--CDockWidget { background: #081521; }
-ads--CDockAreaTitleBar { background: #0d2735; border-bottom: 1px solid #17546a; padding: 3px; }
-ads--CDockWidgetTab { background: #0d2735; border: none; padding: 5px 8px; }
-ads--CDockWidgetTab[activeTab="true"] { background: #154158; border-bottom: 2px solid #1ea7d8; }
-ads--CDockWidgetTab QLabel { color: #9db5c3; }
-ads--CDockWidgetTab[activeTab="true"] QLabel { color: #e2f2fa; }
-ads--CDockAreaTitleBar QToolButton { padding: 2px; border: none; background: transparent; }
+ads--CDockAreaTitleBar { background: #081521; border: none; padding: 0; min-height: 22px; max-height: 22px; }
+ads--CDockAreaTitleBar QLabel { color: #f1f1f1; font-size: 12px; padding-left: 4px; background: transparent; }
+ads--CDockAreaTabBar { background: #081521; border: none; }
+ads--CDockWidgetTab { background: #081521; border: 1px solid transparent; padding: 2px 7px; }
+ads--CDockWidgetTab[activeTab="true"] { background: #154158; border: 1px solid #235b71; }
+ads--CDockWidgetTab QLabel { color: #a8bbc6; font-size: 12px; background: transparent; }
+ads--CDockWidgetTab[activeTab="true"] QLabel { color: #ffffff; }
+ads--CDockAreaTitleBar QToolButton { padding: 0; border: none; border-radius: 0; background: transparent; min-width: 18px; max-width: 18px; }
 ads--CDockAreaTitleBar QToolButton:hover { background: #1b4a61; }
-ads--CDockSplitter::handle { background: #123244; }
+ads--CDockAreaTitleBar QToolButton:checked { background: transparent; }
+ads--CAutoHideSideBar { background: #081521; border: none; }
+ads--CAutoHideTab { background: #081521; color: #a8bbc6; font-size: 12px; border: 1px solid transparent; border-radius: 0; padding: 3px 5px; }
+ads--CAutoHideTab:hover, ads--CAutoHideTab[activeTab="true"] { background: #154158; color: #ffffff; border-color: #1ea7d8; }
+ads--CAutoHideDockContainer { background: #081521; border: 1px solid #23566c; }
+ads--CDockSplitter::handle { background: #081521; }
+ads--CDockWidget[toolWindow="true"] { background: #081521; }
+ads--CDockWidget[toolWindow="true"] QWidget { font-size: 12px; color: #dce4ea; }
+ads--CDockWidget[toolWindow="true"] QTreeWidget, ads--CDockWidget[toolWindow="true"] QTableWidget,
+ads--CDockWidget[toolWindow="true"] QPlainTextEdit { background: #07131e; alternate-background-color: #081521; selection-background-color: #154158; }
+ads--CDockWidget[toolWindow="true"] QHeaderView::section { background: #081521; color: #dce4ea; padding: 4px; border-bottom: 1px solid #154158; }
+ads--CDockWidget[toolWindow="true"] QLineEdit, ads--CDockWidget[toolWindow="true"] QDoubleSpinBox,
+ads--CDockWidget[toolWindow="true"] QSpinBox, ads--CDockWidget[toolWindow="true"] QComboBox { background: #0b202a; border: 1px solid #235b71; border-radius: 0; padding: 4px; }
+ads--CDockWidget[toolWindow="true"] QPushButton, ads--CDockWidget[toolWindow="true"] QToolButton { background: #0b202a; border: 1px solid #235b71; border-radius: 0; padding: 4px 8px; }
+ads--CDockWidget[toolWindow="true"] QPushButton:hover, ads--CDockWidget[toolWindow="true"] QToolButton:hover { background: #16475b; border-color: #1ea7d8; }
+ads--CDockWidget[toolWindow="true"] QPushButton:disabled, ads--CDockWidget[toolWindow="true"] QToolButton:disabled { color: #617582; border-color: #154158; }
+ads--CDockWidget[toolWindow="true"] QGroupBox { background: #081521; border: 1px solid #235b71; border-radius: 0; }
+ads--CDockWidget[toolWindow="true"] QWidget[panelFooter="true"] { background: #081521; border-color: #154158; }
+ads--CDockWidget[toolWindow="true"] QSplitter::handle { background: #154158; }
 SARibbonToolButton { background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px; }
 SARibbonToolButton:hover, SARibbonToolButton:pressed { background: #153d53; border: 1px solid #1b6886; }
 SARibbonToolButton:disabled { color: #617582; background: transparent; border-color: transparent; }

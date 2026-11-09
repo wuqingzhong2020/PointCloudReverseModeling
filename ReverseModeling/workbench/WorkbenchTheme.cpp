@@ -56,12 +56,41 @@ QIcon WorkbenchTheme::icon(const QString &name)
             painter.setRenderHint(QPainter::Antialiasing);
             painter.scale(size / 32.0, size / 32.0);
             QColor color(mode == QIcon::Disabled ? "#405563" : "#27b9ed");
+            if (name == "pin" || name == "pin-auto" || name.startsWith("dock-") || name == "minimize")
+                color = QColor(mode == QIcon::Disabled ? "#686868" : "#d4d4d4");
             painter.setPen(QPen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             const auto line = [&painter](int x1, int y1, int x2, int y2)
             {
                 painter.drawLine(QPoint(x1, y1), QPoint(x2, y2));
             };
-            if (name == "folder")
+            if (name == "pin" || name == "pin-auto")
+            {
+                if (name == "pin-auto")
+                {
+                    painter.translate(16, 16);
+                    painter.rotate(90);
+                    painter.translate(-16, -16);
+                }
+                painter.drawPolyline(QPolygon{{10, 5}, {22, 5}, {20, 8}, {20, 16}, {24, 20},
+                                             {8, 20}, {12, 16}, {12, 8}, {10, 5}});
+                line(16, 20, 16, 28);
+            }
+            else if (name == "minimize")
+            {
+                line(8, 23, 24, 23);
+            }
+            else if (name == "dock-close")
+            {
+                line(8, 8, 24, 24);
+                line(8, 24, 24, 8);
+            }
+            else if (name == "dock-menu")
+            {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(color);
+                painter.drawPolygon(QPolygon{{9, 12}, {23, 12}, {16, 20}});
+            }
+            else if (name == "folder")
             {
                 painter.drawPolyline(QPolygon{{3, 25}, {3, 7}, {12, 7}, {15, 11}, {28, 11}});
                 painter.drawPolygon(QPolygon{{3, 25}, {7, 14}, {30, 14}, {25, 25}});

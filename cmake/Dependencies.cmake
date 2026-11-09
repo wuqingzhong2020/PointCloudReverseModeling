@@ -40,3 +40,6 @@ set(RM_COMMON_LIBRARIES
     TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKMesh TKFillet TKOffset TKBO TKBool
     TKDESTEP TKXCAF TKLCAF TKCAF TKXSBase
     RmCommandDefinitions CPython::Python pybind11::headers)
+if(WIN32)
+    list(APPEND RM_COMMON_LIBRARIES dbghelp)
+endif()

@@ -1,5 +1,6 @@
 ﻿/* 文件描述：管理单板直接拾取/框选与批量过焊孔面板，计算完成后通过统一命令提交。 */
 #include "workbench/PlateEditTool.h"
+#include "workbench/DockWorkspace.h"
 #include "commands/PlateEditCommands.h"
 #include <QCheckBox>
 #include <QComboBox>
@@ -150,7 +151,7 @@ PlateEditTool::PlateEditTool(CommandService &s, OccViewport &v, QWidget *parent)
 }
 void PlateEditTool::hideEvent(QHideEvent *event)
 {
-    if (!direct())
+    if (!direct() && shouldCancelDockToolOnHide(this))
         cancel();
     QWidget::hideEvent(event);
 }

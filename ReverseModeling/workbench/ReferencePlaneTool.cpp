@@ -13,6 +13,7 @@
 #include "geometry/ReferencePlane.h"
 #include "commands/SectionPlane.h"
 #include "workbench/ReferencePlaneTool.h"
+#include "workbench/DockWorkspace.h"
 #include "workbench/WorkbenchTheme.h"
 
 namespace reverse::workbench
@@ -113,7 +114,8 @@ void ReferencePlaneTool::cancel()
 }
 void ReferencePlaneTool::hideEvent(QHideEvent *event)
 {
-    cancel();
+    if (shouldCancelDockToolOnHide(this))
+        cancel();
     QWidget::hideEvent(event);
 }
 void ReferencePlaneTool::picked(const std::vector<Vec3> &points, const QString &error)

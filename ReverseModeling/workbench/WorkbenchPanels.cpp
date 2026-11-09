@@ -189,6 +189,21 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     });
     groups->addWidget(m_tbarOptions);
     m_tbarOptions->hide();
+    auto *obstacleRow = new QWidget(content);
+    auto *obstacleForm = new QFormLayout(obstacleRow);
+    m_obstacleExclusionDistance = new QDoubleSpinBox(obstacleRow);
+    m_obstacleExclusionDistance->setObjectName(QStringLiteral("parameters.obstacleExclusionDistanceMm"));
+    m_obstacleExclusionDistance->setRange(0, 1000);
+    m_obstacleExclusionDistance->setDecimals(2);
+    m_obstacleExclusionDistance->setSuffix(QStringLiteral(" mm"));
+    m_obstacleExclusionDistance->setValue(PlateBuildOptions{}.obstacleExclusionDistanceMm);
+    m_obstacleExclusionDistance->setKeyboardTracking(false);
+    m_obstacleExclusionDistance->setToolTip(QStringLiteral(
+        "排除距钢板表面不超过此距离的扫描点，超出部分继续参与障碍物识别；默认 1 mm。\n"
+        "0 关闭此距离过滤；原始点云保持不变，修改后需重新重建。"));
+    obstacleForm->addRow(QStringLiteral("钢板附近排除距离"), m_obstacleExclusionDistance);
+    groups->addWidget(obstacleRow);
+    connect(m_obstacleExclusionDistance, &QDoubleSpinBox::valueChanged, this, &ReconstructionPanel::markEdited);
     groups->addStretch();
     scroll->setWidget(content);
     layout->addWidget(scroll, 1);
@@ -196,7 +211,7 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     footer->setProperty("panelFooter", true);
     auto *buttons = new QHBoxLayout(footer);
     m_restore = new QPushButton(QStringLiteral("恢复默认参数"), footer);
-    auto *close = new QPushButton(QStringLiteral("关闭"), footer);
+    auto *close = new QPushButton(QStringLiteral("收起"), footer);
     buttons->addWidget(m_restore);
     buttons->addStretch();
     buttons->addWidget(close);
@@ -223,6 +238,7 @@ PlateBuildOptions ReconstructionPanel::options() const
     o.perpendicularHypothesis = m_perpendicular->isChecked();
     o.maximumSlotWidthMm = m_slotWidth->value();
     o.maximumBaseWidthMm = m_baseWidth->value();
+    o.obstacleExclusionDistanceMm = m_obstacleExclusionDistance->value();
     return o;
 }
 
@@ -239,6 +255,7 @@ void ReconstructionPanel::setOptions(const PlateBuildOptions &options)
     m_endOverhangTolerance->setValue(options.endOverhangToleranceMm);
     m_webHoles->setChecked(options.recognizeWebHoles);
     m_minimumHoleRadius->setValue(options.minimumHoleRadiusMm);
+    m_obstacleExclusionDistance->setValue(options.obstacleExclusionDistanceMm);
     m_settingValues = false;
     m_hasEdits = false;
     updateTBarPreset();
@@ -272,6 +289,7 @@ void ReconstructionPanel::setEditable(bool editable)
     m_restore->setEnabled(editable);
     m_webHoles->setEnabled(editable);
     m_minimumHoleRadius->setEnabled(editable && m_webHoles->isChecked());
+    m_obstacleExclusionDistance->setEnabled(editable);
 }
 
 OperationPanel::OperationPanel(WorkbenchActions &actions, QWidget *parent)
@@ -291,7 +309,7 @@ OperationPanel::OperationPanel(WorkbenchActions &actions, QWidget *parent)
     m_adjustment->setToolTip(QStringLiteral("切换模型调整操作；未应用的预览会取消，已应用的模型保持不变。"));
     for (const auto id : WorkbenchActions::modelAdjustmentIds)
     {
-        if (id == ActionId::MirrorComplete)
+        if (id == ActionId::CrossPlate)
         {
             m_adjustment->addItem(QStringLiteral("钢结构"));
             auto *model = qobject_cast<QStandardItemModel *>(m_adjustment->model());

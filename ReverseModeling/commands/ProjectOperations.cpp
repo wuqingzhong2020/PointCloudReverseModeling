@@ -513,6 +513,19 @@ PlateEditResult ProjectOperations::previewPlateEdit(const PlateEdit &request, st
     if (!source) throw GeometryError("no_model","当前没有模型。");
     return editModelPlates(*source,request,impl_->context.stop,impl_->context.progress);
 }
+EndCapInspection ProjectOperations::inspectEndCap(const std::string &part, std::uint64_t revision)
+{
+    std::shared_ptr<const Model> source;
+    {
+        std::lock_guard lock(impl_->stateMutex);
+        if (impl_->project.revision != revision)
+            throw GeometryError("stale_revision", "工程已变化，请重新选择封板。");
+        source = impl_->model;
+    }
+    if (!source)
+        throw GeometryError("no_model", "当前没有模型。");
+    return inspectModelEndCap(*source, part, impl_->context.stop);
+}
 void ProjectOperations::applyPlateEdit(const PlateEdit &request,std::uint64_t revision)
 {
     auto result=previewPlateEdit(request,revision);
@@ -528,6 +541,42 @@ void ProjectOperations::applyPlateEdit(const PlateEdit &request,std::uint64_t re
     impl_->commitEdit(std::move(next),std::move(result.model),plateEditTitle(request.operation));
 }
 
+std::shared_ptr<const Model> ProjectOperations::previewPointModeling(PointModeling request, std::uint64_t revision)
+{
+    std::shared_ptr<const Model> source;
+    std::shared_ptr<const CloudData> cloud;
+    {
+        std::lock_guard lock(impl_->stateMutex);
+        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
+        source = impl_->model; cloud = impl_->project.cloud;
+    }
+    if (request.shape == "box")
+    {
+        if (!cloud) throw GeometryError("no_cloud", "请先导入点云。");
+        if (request.cut) throw GeometryError("invalid_obstacle", "选点生成障碍物只支持添加。");
+        request.points.clear();
+        for (const auto index : request.indices)
+        {
+            checkCancelled(impl_->context.stop);
+            if (index >= cloud->points.size()) throw GeometryError("invalid_selection", "点云索引已失效，请重新框选。");
+            const auto p = cloud->points[index].position, o = cloud->originMm;
+            request.points.push_back({p.x+o.x,p.y+o.y,p.z+o.z});
+        }
+    }
+    return buildModelByPoints(source.get(), request, impl_->context.stop, impl_->context.progress);
+}
+void ProjectOperations::applyPointModeling(const PointModeling &request, std::uint64_t revision)
+{
+    auto model = previewPointModeling(request, revision);
+    checkCancelled(impl_->context.stop);
+    std::lock_guard lock(impl_->stateMutex);
+    if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，选点建模未提交。");
+    auto next = impl_->project; ++next.revision;
+    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
+    next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
+    next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
+    impl_->commitEdit(std::move(next), std::move(model), request.shape == "box" ? "选点生成障碍物" : "选点建模");
+}
 std::shared_ptr<const Model> ProjectOperations::previewLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision)
 {
     std::shared_ptr<const Model> source;
@@ -683,6 +732,31 @@ void ProjectOperations::applyMirrorCompletion(const MirrorCompletion &request, s
     next.model = std::shared_ptr<const ModelSummary>(model,&model->summary());
     next.mesh = std::shared_ptr<const MeshData>(model,&model->mesh());
     impl_->commitEdit(std::move(next),std::move(model), "镜像补全");
+}
+
+std::shared_ptr<const Model> ProjectOperations::previewStructuralSteel(const StructuralSteel &request, std::uint64_t revision)
+{
+    std::shared_ptr<const Model> source;
+    {
+        std::lock_guard lock(impl_->stateMutex);
+        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
+        source = impl_->model;
+    }
+    if (!source) throw GeometryError("no_model", "当前没有模型。");
+    return setModelStructuralSteel(*source, request, impl_->context.stop, impl_->context.progress);
+}
+void ProjectOperations::applyStructuralSteel(const StructuralSteel &request, std::uint64_t revision)
+{
+    auto model = previewStructuralSteel(request, revision);
+    checkCancelled(impl_->context.stop);
+    std::lock_guard lock(impl_->stateMutex);
+    auto next = impl_->project;
+    ++next.revision;
+    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
+    next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
+    next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
+    impl_->commitEdit(std::move(next), std::move(model),
+        request.kind == StructuralSteelKind::Channel ? "设为槽钢" : "设为角钢");
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewPlateGeneration(const PlateGeneration &request, std::uint64_t revision)

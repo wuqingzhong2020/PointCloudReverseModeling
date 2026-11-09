@@ -19,7 +19,7 @@
 
 namespace reverse::workbench {
 
-enum class ReferencePlanePickMode { None, ThreePoints, Face };
+enum class ReferencePlanePickMode { None, ThreePoints, Face, OrderedPoints };
 
 class OccViewport final : public QWidget {
 public:
@@ -48,6 +48,8 @@ public:
     std::function<void(const std::string &, double)> onThicknessLabelSubmitted;
     void setMeasurementEnabled(bool enabled);
     void setHoleGuide(const std::vector<Vec3> &points); // 视图局部坐标中的底边端点 1、中点、端点 2。
+    void setEndCapEdges(const std::vector<Vec3> &points, int activeEdge, bool enabled = true);
+    std::function<void(int)> onEndCapEdgeSelected;
     void setHolePreview(const PlateHoleBase &base, const PlateHole &request, const Vec3 &origin);
     void clearHolePreview();
     void setBatchHolePreview(const std::vector<std::pair<PlateHoleBase,PlateHole>> &items,const Vec3 &origin);
@@ -60,6 +62,8 @@ public:
                            std::optional<ReferencePlane> sectionPlane);
     void setSectionPreviewVisible(bool visible);
     void setReferencePlanePicking(ReferencePlanePickMode mode);
+    void setPointModelingPicking(bool enabled, bool face = false);
+    std::function<void(const std::vector<Vec3> &, const QString &)> onModelingPicked;
     void setReferencePreview(std::vector<Vec3> points);
     std::function<void(const std::vector<Vec3> &, const QString &)> onReferencePicked;
     std::function<void()> onReferenceCancelled;
@@ -103,6 +107,7 @@ public:
     void rebuildMesh();
     void redraw();
     void updateFocusLocator();
+    void updateEndCapEdges();
     void createViewCube();
     void updateViewCubeScale();
     void advanceNavigationAnimation();

@@ -3,6 +3,7 @@
  * 为桌面工作台提供异步命令、任务状态和不可变工程快照接口。
  */
 #pragma once
+#include "geometry/PointModeling.h"
 #include "geometry/PlateEditing.h"
 
 #include "core/Types.h"
@@ -36,6 +37,7 @@ struct TaskSnapshot {
     std::uint64_t inputRequest{};
     rm::CommandResult result;
     std::map<std::string, PlateThicknessInfo> plateThicknesses;
+    std::optional<EndCapInspection> endCap;
     std::map<std::string,std::vector<PlateHoleBase>> batchHoleBases;
     std::vector<PlateHoleBase> holeBases; // 工作线程底边识别结果。
     std::shared_ptr<const Model> edgePreview; // 内部预览任务的临时结果，消费后释放。
@@ -121,6 +123,7 @@ public:
     [[nodiscard]] std::string submitPlateEdit(const PlateEdit &request, std::uint64_t revision);
     [[nodiscard]] std::string submitDirectPlateEdit(const PlateEdit &request, std::uint64_t revision, bool all = false);
     [[nodiscard]] std::string submitPlateEditPreview(const PlateEdit &request, std::uint64_t revision);
+    [[nodiscard]] std::string submitEndCapInspection(const std::string &part, std::uint64_t revision);
     [[nodiscard]] std::string submitPlateReview(const std::vector<std::string> &parts, const PlateEdit &request, std::uint64_t revision);
     [[nodiscard]] std::string submitImport(const std::filesystem::path& path);
     [[nodiscard]] std::string submitCloudSelection(const CloudSelectionRect &rectangle, CloudSelectionMode mode,
@@ -134,6 +137,8 @@ public:
     [[nodiscard]] std::string submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
                                                          double endOverhangToleranceMm = 30.0,
                                                          bool recognizeWebHoles = true, double minimumHoleRadiusMm = 5.0);
+    [[nodiscard]] std::string submitPointModeling(const PointModeling &, std::uint64_t revision);
+    [[nodiscard]] std::string submitPointModelingPreview(const PointModeling &, std::uint64_t revision);
     [[nodiscard]] std::string submitLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision);
     [[nodiscard]] std::string submitLocalReconstructionPreview(const LocalReconstruction &request, std::uint64_t revision);
     [[nodiscard]] std::string submitExport(const std::filesystem::path& path, std::uint64_t expectedRevision);
@@ -144,6 +149,8 @@ public:
     [[nodiscard]] std::string submitConnectedPartsInspection(const std::string &seedPartId, std::uint64_t revision);
     [[nodiscard]] std::string submitMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision);
     [[nodiscard]] std::string submitMirrorCompletionPreview(const MirrorCompletion &request, std::uint64_t revision);
+    [[nodiscard]] std::string submitStructuralSteel(const StructuralSteel &request, std::uint64_t revision);
+    [[nodiscard]] std::string submitStructuralSteelPreview(const StructuralSteel &request, std::uint64_t revision);
     [[nodiscard]] std::string submitPlateGeneration(const PlateGeneration &request, std::uint64_t revision);
     [[nodiscard]] std::string submitPlateGenerationPreview(const PlateGeneration &request, std::uint64_t revision);
     [[nodiscard]] std::string submitContourExpansion(const PlateContourExpansion &request, std::uint64_t revision);

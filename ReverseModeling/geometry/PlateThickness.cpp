@@ -30,6 +30,7 @@
 #include "geometry/Geometry.h"
 #include "geometry/PlateOutlineTreatment.h"
 #include "geometry/PlateThickness.h"
+#include "geometry/StructuralSteel.h"
 
 namespace reverse::detail
 {
@@ -151,6 +152,7 @@ PlateThicknessInfo inspectPlateThickness(const TopoDS_Shape &shape)
     {
         throw GeometryError("not_solid", "修改板厚需要等厚实体板件，不能修改观测面或开放曲面。");
     }
+    if (const auto steel = inspectSteelSection(shape)) return steelThickness(*steel);
     const auto detected = thicknessProfile(shape);
     const auto &profile = detected.plate;
     const gp_Vec direction = detected.direction;
@@ -167,6 +169,11 @@ TopoDS_Shape resizePlateThickness(const TopoDS_Shape &source, double thicknessMm
     if (!std::isfinite(thicknessMm) || thicknessMm < 0.001 || thicknessMm > 1e6)
     {
         throw GeometryError("invalid_thickness", "参数 --thickness 必须为 0.001 到 1000000 之间的有限毫米值。");
+    }
+    if (auto steel = inspectSteelSection(source))
+    {
+        steel->thickness = thicknessMm;
+        return buildSteelSection(*steel);
     }
     (void)inspectPlateThickness(source);
     const TopoDS_Shape copy = BRepBuilderAPI_Copy(source, true, false).Shape();
