@@ -105,7 +105,7 @@ std::optional<double> partThickness(std::string_view id, const BeamParameters &p
 }
 
 std::array<ModelLabelAnchor, 2> labelFaces(
-    const ModelDisplayPart &part, const BeamFrame &frame, const Vec3 &displayOrigin)
+    const ModelDisplayPart &part, const BeamFrame &frame, const Vec3 &displayOrigin, int plateNormalAxis)
 {
     const Vec3 origin{frame.originMm.x - displayOrigin.x, frame.originMm.y - displayOrigin.y,
                       frame.originMm.z - displayOrigin.z};
@@ -130,7 +130,7 @@ std::array<ModelLabelAnchor, 2> labelFaces(
         position[axis] = (minimum[axis] + maximum[axis]) / 2.0;
     }
     // 长板错开纵向位置；标注锚点落在对应板件表面，避免全部叠在梁中心。
-    std::size_t normalAxis = 0;
+    std::size_t normalAxis = static_cast<std::size_t>(plateNormalAxis);
     if (part.id.starts_with("flange-"))
     {
         position[0] = minimum[0] + (maximum[0] - minimum[0]) * (part.id == "flange-bottom" ? 0.43 : 0.59);
@@ -175,7 +175,7 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
         parts[index].id = mesh.partIds[index];
         parts[index].colorSrgb = ModelColors::surface;
         parts[index].thicknessMm = model.importedFormat.empty() ? partThickness(parts[index].id, model.parameters) : std::nullopt;
-        if (model.fromPointCloud && !model.generatedPlates.contains(parts[index].id) && !model.mirroredParts.contains(parts[index].id))
+        if (model.fromPointCloud && !model.obstacleParts.contains(parts[index].id) && !model.generatedPlates.contains(parts[index].id) && !model.mirroredParts.contains(parts[index].id))
         {
             const auto observed = std::find_if(model.plates.begin(), model.plates.end(),
                 [&](const auto &plate) { return plate.id == parts[index].id; });
@@ -187,9 +187,17 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
             parts[index].thicknessUnresolved = !observed->thicknessMm.has_value();
             parts[index].thicknessEstimated = observed->method == "inferred_side_plate_max";
         }
+        if (const auto info = model.importedThicknesses.find(parts[index].id); info != model.importedThicknesses.end())
+            parts[index].thicknessMm = info->second.thicknessMm;
         if (const auto info = model.thicknessOverrides.find(parts[index].id); info != model.thicknessOverrides.end())
         {
             parts[index].thicknessMm = info->second.thicknessMm;
+            parts[index].thicknessUnresolved = false;
+            parts[index].thicknessEstimated = false;
+        }
+        if (model.obstacleParts.contains(parts[index].id))
+        {
+            parts[index].thicknessMm.reset();
             parts[index].thicknessUnresolved = false;
             parts[index].thicknessEstimated = false;
         }
@@ -286,10 +294,19 @@ std::vector<ModelDisplayPart> makeModelDisplayParts(
         {
             throw std::invalid_argument("模型部件缺少显示网格。");
         }
-        part.labelFaces = labelFaces(part, modelPartFrame(model, part.id), displayOrigin);
+        const auto observed = std::find_if(model.plates.begin(), model.plates.end(),
+            [&](const auto &plate) { return plate.id == part.id; });
+        const int normalAxis = observed != model.plates.end() && observed->uprightFootprint.empty()
+            ? observed->normalAxis : 0;
+        part.labelFaces = labelFaces(part, modelPartFrame(model, part.id), displayOrigin, normalAxis);
+        const PlateThicknessInfo *anchor = nullptr;
         if (const auto info = model.thicknessOverrides.find(part.id); info != model.thicknessOverrides.end())
+            anchor = &info->second;
+        if (const auto info = model.importedThicknesses.find(part.id); info != model.importedThicknesses.end())
+            anchor = &info->second;
+        if (anchor)
         {
-            const auto &value = info->second;
+            const auto &value = *anchor;
             for (std::size_t side = 0; side < 2; ++side)
             {
                 const double sign = side == 0 ? -1 : 1;

@@ -40,6 +40,7 @@ private:
     std::shared_ptr<const Impl> implementation_;
     friend PlateEditResult editModelPlates(const Model&, PlateEdit, std::stop_token, const ProgressCallback&);
     friend PlateEdit prepareDirectPlateEdit(const Model&, PlateEdit, bool, std::stop_token, const std::function<void(std::string_view)>&);
+    friend std::shared_ptr<const Model> reconstructModelObstacles(const Model&, const CloudData&, const PlateRecognition&, std::stop_token, const ProgressCallback&);
     friend std::shared_ptr<const Model> associateModelCloud(const Model&, const CloudData&, std::stop_token);
     friend std::shared_ptr<const Model> reconstructLocalParts(const Model&, const CloudData&,
         const LocalReconstruction&, std::stop_token, const ProgressCallback&);
@@ -50,6 +51,7 @@ private:
                                              std::stop_token, const ProgressCallback&);
     friend std::map<std::string, PlateThicknessInfo> inspectModelThickness(
         const Model&, const std::vector<std::string>&, std::stop_token);
+    friend std::vector<std::string> connectedModelParts(const Model&, const std::string&, std::stop_token, const ProgressCallback&);
     friend std::shared_ptr<const Model> completeModelMirror(
         const Model&, const MirrorCompletion&, std::stop_token, const ProgressCallback&);
     friend std::shared_ptr<const Model> generateModelPlate(
@@ -115,6 +117,10 @@ private:
 
 [[nodiscard]] std::map<std::string, PlateThicknessInfo> inspectModelThickness(
     const Model &model, const std::vector<std::string> &partIds, std::stop_token stop = {});
+// 从一个部件查找真实接触/相交的连通组，含种子；接触容差 0.15 mm，返回稳定部件顺序。
+[[nodiscard]] std::vector<std::string> connectedModelParts(
+    const Model &model, const std::string &seedPartId,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
 [[nodiscard]] std::shared_ptr<const Model> completeModelMirror(
     const Model &model, const MirrorCompletion &request,
     std::stop_token stop = {}, const ProgressCallback &progress = {});
@@ -128,6 +134,10 @@ private:
     const Model &model, const PlateThicknessChange &request,
     std::stop_token stop = {}, const ProgressCallback &progress = {});
 
+// 将工件以外的有效扫描簇附加为独立避障实体，不生成工件板件或板厚。
+[[nodiscard]] std::shared_ptr<const Model> reconstructModelObstacles(
+    const Model &model, const CloudData &cloud, const PlateRecognition &recognition,
+    std::stop_token stop = {}, const ProgressCallback &progress = {});
 [[nodiscard]] std::shared_ptr<const Model> associateModelCloud(const Model &model, const CloudData &cloud,
     std::stop_token stop = {});
 [[nodiscard]] std::shared_ptr<const Model> reconstructLocalParts(const Model &model, const CloudData &cloud,

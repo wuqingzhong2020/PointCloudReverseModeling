@@ -25,6 +25,7 @@ class ProjectOperations
     [[nodiscard]] std::string submitCloudHistory(CloudHistoryAction action, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitReconstruct(const BeamParameters &parameters, std::uint64_t expectedRevision,
                                                 std::optional<BeamFrame> frameOverride = {});
+    [[nodiscard]] std::string submitRecognizedReconstruct(const PlateBuildOptions &options, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
                                                           double endOverhangToleranceMm = 30.0,
                                                          bool recognizeWebHoles = true, double minimumHoleRadiusMm = 5.0);
@@ -41,6 +42,7 @@ class ProjectOperations
         const std::vector<std::string> &parts, std::uint64_t revision);
     [[nodiscard]] std::shared_ptr<const Model> previewThickness(const PlateThicknessChange &request, std::uint64_t revision);
     void applyThickness(const PlateThicknessChange &request, std::uint64_t revision);
+    [[nodiscard]] std::vector<std::string> inspectConnectedParts(const std::string &seedPartId, std::uint64_t revision);
     [[nodiscard]] std::shared_ptr<const Model> previewMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision);
     void applyMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision);
     [[nodiscard]] std::shared_ptr<const Model> previewPlateGeneration(const PlateGeneration &request, std::uint64_t revision);

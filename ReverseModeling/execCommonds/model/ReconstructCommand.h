@@ -6,8 +6,16 @@ namespace rmcmd::model
 class ReconstructCommand
 {
 public:
+    enum class TypeValue { Value0, Value1, Value2 };
     struct Args
     {
+        TypeValue type{};
+        bool on_ground{};
+        bool regular_upper_surface{};
+        bool projection_onto_border{};
+        bool perpendicular{};
+        double max_slot_width{};
+        double max_base_width{};
         bool mirror{};
         double end_tolerance{};
         bool web_holes{};

@@ -417,10 +417,7 @@ void OccModelPresentation::updateLabels(int pixelWidth, int pixelHeight, double 
             m_state->show(part.leader, false);
             continue;
         }
-        if (part.thicknessMm)
-        {
-            m_state->labelTargets.push_back({part.id, *part.thicknessMm, box});
-        }
+        m_state->labelTargets.push_back({part.id, part.thicknessMm.value_or(1.0), box, !part.thicknessMm});
         occupied += box.adjusted(-margin / 2, -margin / 2, margin / 2, margin / 2);
         const gp_Pnt position = displacedAnchor(m_state->view, part.anchor, anchorPixel, box.center());
         const double fontHeight = 14 * pixelRatio;

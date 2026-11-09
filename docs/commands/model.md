@@ -7,10 +7,10 @@
 
 ## model.reconstruct_local
 
-按编辑后的点云局部重建指定部件，保留未选部件
+局部重建所选部件或生成占用空间包围盒，保留未选部件
 
 ```text
-model.reconstruct_local --parts <["部件ID",...]> [--type plate|horizontal|box] [--contour rectangle|circle|chamfer_rectangle|convex|polygon|smooth] [--up <[X,Y,Z]>] [--tolerance 2] [--corner 5]
+model.reconstruct_local --parts <["部件ID",...]> [--type plate|horizontal|box] [--contour rectangle|circle|chamfer_rectangle|quarter_hole_rectangle|rounded_rectangle|convex|polygon|smooth] [--up <[X,Y,Z]>] [--tolerance 2] [--corner 5] [--mirror-bottom true]
 model.reconstruct_local --help
 ```
 
@@ -18,12 +18,13 @@ model.reconstruct_local --help
 
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
-| parts | --parts | array |  {'type': 'string', 'min_size': 1} | 必填 |  | 与点云关联的原重建部件 ID；整批成功才替换，未选部件保持不变。选中部件已有开孔等修改由新识别结果替代。 |
-| type | --type | enum | ['plate', 'horizontal', 'box'] | 默认 plate |  | plate 保持原板面方向及板厚；horizontal 采用指定水平法向；box 按原板件方向拟合点云包围盒。 |
-| contour | --contour | enum | ['rectangle', 'circle', 'chamfer_rectangle', 'convex', 'polygon', 'smooth'] | 默认 rectangle |  | 矩形、包络圆、倒角矩形、凸包、凹多边形、连续曲线；包围盒忽略轮廓。仅拟合外轮廓，不重新识别内孔。 |
+| parts | --parts | array |  {'type': 'string', 'min_size': 1} | 必填 |  | 所选模型部件 ID；平板规则要求原始点云关联，包围盒不要求。整批成功才替换，未选部件保持不变；选中部件的手工修改会被替代。 |
+| type | --type | enum | ['plate', 'horizontal', 'box'] | 默认 plate |  | plate 保持原板面方向及板厚；horizontal 采用指定水平法向；box 按当前模型占用范围生成盒状障碍物，沿当前部件坐标系，不要求点云关联；轮廓参数不生效。 |
+| contour | --contour | enum | ['rectangle', 'circle', 'chamfer_rectangle', 'quarter_hole_rectangle', 'rounded_rectangle', 'convex', 'polygon', 'smooth'] | 默认 rectangle |  | 矩形、包络圆、倒角矩形、1/4孔角矩形、圆角矩形、凸包、凹多边形、连续曲线；包围盒忽略轮廓。仅拟合外轮廓，不重新识别内孔。 |
 | up | --up | array |  {'type': 'float'} | 默认 [0.0, 0.0, 1.0] |  | 水平板法向，GUI 有基准面时明确记录其法向；其他类型忽略。 |
 | tolerance | --tolerance | float | [[0.1, 1000.0]] | 默认 2.0 | mm | 任意多边形和连续曲线的轮廓采样/简化容差，过稀或分离的点云明确报错。 |
-| corner | --corner | float | [[0.001, 100000.0]] | 默认 5.0 | mm | 倒角矩形各角退距，必须小于较短边的一半。 |
+| corner | --corner | float | [[0.001, 100000.0]] | 默认 5.0 | mm | 倒角矩形的角部退距，或 1/4孔角矩形/圆角矩形的半径；必须小于较短边的一半。 |
+| mirror_bottom | --mirror-bottom | bool |  | 默认 True |  | 仅对原板面方向的竖直板及三种角部矩形生效：按原板底边补齐下部并镜像上角。关闭时按可见点范围重建，仅处理上角；水平板及其他轮廓忽略。 |
 
 返回：object — 局部重建后的工程摘要，支持撤销、重做和脚本录制。
 
@@ -61,7 +62,7 @@ model.delete --parts '["imported-part-1","imported-part-3"]'
 按点云识别板厚重建
 
 ```text
-model.reconstruct [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]
+model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]
 model.reconstruct --help
 ```
 
@@ -69,6 +70,13 @@ model.reconstruct --help
 
 | 参数 | 绑定 | 类型 | 约束 | 必填 / 默认 | 单位 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- |
+| type | --type | enum | ['hbeam', 'tbar', 'other'] | 默认 hbeam |  | 重建工件类型；other 为俯视底板焊件，按直线/圆弧顶边垂直投影恢复连接，保留独立障碍物 |
+| on_ground | --on-ground | bool |  | 默认 True |  | T 排置于地面；关闭表示台架 |
+| regular_upper_surface | --regular-upper-surface | bool |  | 默认 True |  | T 排规则顶边；异形直 T 关闭 |
+| projection_onto_border | --projection-onto-border | bool |  | 默认 False |  | T 排端边投影到底板边界 |
+| perpendicular | --perpendicular | bool |  | 默认 True |  | T 排立板与底板垂直约束；斜 T 关闭 |
+| max_slot_width | --max-slot-width | float | [[0, 1000]] | 默认 50.0 | mm | T 排顶边无支持断带的最大连接宽度 |
+| max_base_width | --max-base-width | float | [[20, 1000]] | 默认 250.0 | mm | T 排底板识别宽度上限 |
 | mirror | --mirror | bool |  | 默认 False |  | 是否补建镜像侧 |
 | end_tolerance | --end-tolerance | float | [[0, 100000]] | 默认 30.0 | mm | 端部突出容差 |
 | web_holes | --web-holes | bool |  | 默认 True |  | 保留俯视可见的腹板圆孔和长圆孔；关闭时生成无内孔腹板，不影响筋板可见顶边缺口。 |

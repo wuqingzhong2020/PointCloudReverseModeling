@@ -7,8 +7,8 @@ rm::CommandDefinition ReconstructLocalCommand::definition()
     rm::CommandDefinition d;
     d.name = name();
     d.module = "model";
-    d.summary = "按编辑后的点云局部重建指定部件，保留未选部件";
-    d.usage = "model.reconstruct_local --parts <[\"部件ID\",...]> [--type plate|horizontal|box] [--contour rectangle|circle|chamfer_rectangle|convex|polygon|smooth] [--up <[X,Y,Z]>] [--tolerance 2] [--corner 5]";
+    d.summary = "局部重建所选部件或生成占用空间包围盒，保留未选部件";
+    d.usage = "model.reconstruct_local --parts <[\"部件ID\",...]> [--type plate|horizontal|box] [--contour rectangle|circle|chamfer_rectangle|quarter_hole_rectangle|rounded_rectangle|convex|polygon|smooth] [--up <[X,Y,Z]>] [--tolerance 2] [--corner 5] [--mirror-bottom true]";
     d.description = "";
     d.returns = "object: 局部重建后的工程摘要，支持撤销、重做和脚本录制";
     {
@@ -19,7 +19,7 @@ rm::CommandDefinition ReconstructLocalCommand::definition()
         p.position = 0;
         p.rule = [] { rm::Rule r; r.type = rm::ValueType::Array; r.items = std::make_shared<rm::Rule>([] { rm::Rule r; r.type = rm::ValueType::String; r.minSize = 1; return r; }()); r.minSize = 1; return r; }();
         p.required = true;
-        p.description = "与点云关联的原重建部件 ID；整批成功才替换，未选部件保持不变。选中部件已有开孔等修改由新识别结果替代。";
+        p.description = "所选模型部件 ID；平板规则要求原始点云关联，包围盒不要求。整批成功才替换，未选部件保持不变；选中部件的手工修改会被替代。";
         p.unit = "";
         d.parameters.push_back(std::move(p));
     }
@@ -32,7 +32,7 @@ rm::CommandDefinition ReconstructLocalCommand::definition()
         p.rule = [] { rm::Rule r; r.type = rm::ValueType::Enum; r.choices = {"plate", "horizontal", "box"}; return r; }();
         p.required = false;
         p.defaultValue = rm::Value{"plate"};
-        p.description = "plate 保持原板面方向及板厚；horizontal 采用指定水平法向；box 按原板件方向拟合点云包围盒。";
+        p.description = "plate 保持原板面方向及板厚；horizontal 采用指定水平法向；box 按当前模型占用范围生成盒状障碍物，沿当前部件坐标系，不要求点云关联；轮廓参数不生效。";
         p.unit = "";
         d.parameters.push_back(std::move(p));
     }
@@ -42,10 +42,10 @@ rm::CommandDefinition ReconstructLocalCommand::definition()
         p.binding = rm::Binding::Option;
         p.option = "--contour";
         p.position = 0;
-        p.rule = [] { rm::Rule r; r.type = rm::ValueType::Enum; r.choices = {"rectangle", "circle", "chamfer_rectangle", "convex", "polygon", "smooth"}; return r; }();
+        p.rule = [] { rm::Rule r; r.type = rm::ValueType::Enum; r.choices = {"rectangle", "circle", "chamfer_rectangle", "quarter_hole_rectangle", "rounded_rectangle", "convex", "polygon", "smooth"}; return r; }();
         p.required = false;
         p.defaultValue = rm::Value{"rectangle"};
-        p.description = "矩形、包络圆、倒角矩形、凸包、凹多边形、连续曲线；包围盒忽略轮廓。仅拟合外轮廓，不重新识别内孔。";
+        p.description = "矩形、包络圆、倒角矩形、1/4孔角矩形、圆角矩形、凸包、凹多边形、连续曲线；包围盒忽略轮廓。仅拟合外轮廓，不重新识别内孔。";
         p.unit = "";
         d.parameters.push_back(std::move(p));
     }
@@ -84,8 +84,21 @@ rm::CommandDefinition ReconstructLocalCommand::definition()
         p.rule = [] { rm::Rule r; r.type = rm::ValueType::Number; r.ranges = {{rm::Value{double{0.001}}, rm::Value{double{100000.0}}}}; return r; }();
         p.required = false;
         p.defaultValue = rm::Value{double{5.0}};
-        p.description = "倒角矩形各角退距，必须小于较短边的一半。";
+        p.description = "倒角矩形的角部退距，或 1/4孔角矩形/圆角矩形的半径；必须小于较短边的一半。";
         p.unit = "mm";
+        d.parameters.push_back(std::move(p));
+    }
+    {
+        rm::Parameter p;
+        p.name = "mirror_bottom";
+        p.binding = rm::Binding::Option;
+        p.option = "--mirror-bottom";
+        p.position = 0;
+        p.rule = [] { rm::Rule r; r.type = rm::ValueType::Boolean; return r; }();
+        p.required = false;
+        p.defaultValue = rm::Value{true};
+        p.description = "仅对原板面方向的竖直板及三种角部矩形生效：按原板底边补齐下部并镜像上角。关闭时按可见点范围重建，仅处理上角；水平板及其他轮廓忽略。";
+        p.unit = "";
         d.parameters.push_back(std::move(p));
     }
     d.examples = { "model.reconstruct_local --parts '[\"web\"]' --type plate --contour rectangle" };
@@ -113,9 +126,11 @@ ReconstructLocalCommand::Args ReconstructLocalCommand::arguments(const rm::Argum
         if (it->second.as<std::string>() == "rectangle") { args.contour = ContourValue::Value0; }
         else if (it->second.as<std::string>() == "circle") { args.contour = ContourValue::Value1; }
         else if (it->second.as<std::string>() == "chamfer_rectangle") { args.contour = ContourValue::Value2; }
-        else if (it->second.as<std::string>() == "convex") { args.contour = ContourValue::Value3; }
-        else if (it->second.as<std::string>() == "polygon") { args.contour = ContourValue::Value4; }
-        else if (it->second.as<std::string>() == "smooth") { args.contour = ContourValue::Value5; }
+        else if (it->second.as<std::string>() == "quarter_hole_rectangle") { args.contour = ContourValue::Value3; }
+        else if (it->second.as<std::string>() == "rounded_rectangle") { args.contour = ContourValue::Value4; }
+        else if (it->second.as<std::string>() == "convex") { args.contour = ContourValue::Value5; }
+        else if (it->second.as<std::string>() == "polygon") { args.contour = ContourValue::Value6; }
+        else if (it->second.as<std::string>() == "smooth") { args.contour = ContourValue::Value7; }
         else { throw std::invalid_argument("Unvalidated enum value"); }
     }
     else { throw std::invalid_argument("Missing normalized argument: contour"); }
@@ -134,6 +149,11 @@ ReconstructLocalCommand::Args ReconstructLocalCommand::arguments(const rm::Argum
         args.corner = it->second.as<double>();
     }
     else { throw std::invalid_argument("Missing normalized argument: corner"); }
+    if (const auto it = values.find("mirror_bottom"); it != values.end())
+    {
+        args.mirror_bottom = it->second.as<bool>();
+    }
+    else { throw std::invalid_argument("Missing normalized argument: mirror_bottom"); }
     return args;
 }
 }

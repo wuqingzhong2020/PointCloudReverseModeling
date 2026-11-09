@@ -14,7 +14,7 @@ class ThicknessLabelEditor final : public QDoubleSpinBox
 {
 public:
     explicit ThicknessLabelEditor(QWidget *parent);
-    void open(const std::string &partId, double thicknessMm, const QPoint &globalCenter);
+    void open(const std::string &partId, double thicknessMm, const QPoint &globalCenter, bool unresolved = false);
     std::function<void(const std::string &, double)> onSubmitted;
 
 protected:
@@ -25,5 +25,6 @@ private:
     void submit();
     std::string m_partId;
     double m_initialValue{};
+    bool m_initialUnresolved{};
 };
 }

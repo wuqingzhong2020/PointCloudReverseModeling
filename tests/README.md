@@ -28,3 +28,20 @@ ctest --preset windows-release
 全部第三方依赖（包括 Google Test）统一由仓库根的 `cmake/Dependencies.cmake` 查找。若找不到 `GTestConfig.cmake`，检查 `CMAKE_PREFIX_PATH` 是否包含 Google Test 的安装前缀，或将 `GTest_DIR` 设置为实际包含该文件的目录。
 
 测试专用文件在 `tests.cmake` 中维护，通过 `RM_SOURCES` 和 `RM_HEARDERS` 追加；公共服务文件由 `../ReverseModeling/ReverseModeling.cmake` 汇总。测试程序的 `CMakeLists.txt` 分别包含这两份清单，并设置自己的头文件搜索目录、公共链接库和专用的 `GTest::gtest_main`。
+
+
+T 排专项测试：`ReverseServiceTests.exe --gtest_filter=TBarRecognition.*`。用尺寸已知的合成点云验证直/斜板、异形槽口、地面/台架过滤、多工件、未定厚观测面、参数和取消、撤销重做、命令重放与 STEP 回读。用户样例生成器与尺寸说明见[主业务指南](../ReverseModeling/README.md#t-排点云重建)。
+
+STEP/CWRM 板厚测试：`ReverseServiceTests.exe --gtest_filter=PlateThickness*:FileExchange.*:MirrorCompletion.*`，覆盖导入板厚、数字标签锚点、带孔与样条斜接板的厚度修改、单位换算、旋转、镜像、撤销/重做和双格式导出回读。设置 `RM_PLATE_SAMPLE_DIRECTORY=D:/projectWQZ/other-resource/cloud` 后，额外逐件验证 `test1.step`、`test2.cwrm`、`test3.cwrm`、`孔.step`。
+
+全部镜像补全的工件选择测试：`ReverseServiceTests.exe --gtest_filter=MirrorCompletion.*`。覆盖传递连接、接触误差、孔内障碍物、独立工件、旋转平移、取消及版本过期；验证连通检查不写入历史，最终命令只录制所选工件，支持整体撤销/重做和脚本回放。
+
+障碍物专项：`ReverseServiceTests.exe --gtest_filter=ObstacleReconstruction.*`，覆盖残余簇、平面/体扫描、大坐标、封闭包络包含性、孤立噪点与实体内点排除、镜像排除、双格式导出、撤销及录制。可设置 `RM_OBSTACLE_SAMPLE_FILE` 验证本地点云，设置 `RM_OBSTACLE_ACCEPTANCE_DIR` 输出摘要和含障碍物的 STEP/CWRM。
+
+板边误判回归包含端部收齐前后的范围、断开的板边扫描条带、独立小面/实体和非板边线状物体、相接夹具、旋转板件与大坐标原点；T 排测试继续验证相接地面。真实样例 `reverse_modeling_result-20260922-08-17-37-1.pcd` 验证保留 7 块板及 2 个外部物体，排除两端共 4 个残差簇。模型树取景专项：`ReverseServiceTests.exe --gtest_filter=ModelFocus.*`，覆盖选择小目标时的整体取景、遮挡方向、侧立薄板、横竖视口均包含全部部件、显示原点及无效目标。
+
+局部包围盒专项：`ReverseServiceTests.exe --gtest_filter=ObstacleReconstruction.LocalBox*:LocalReconstruction.*`，验证无板面点云关联的障碍物、移动/旋转后的占用范围、六面实体盒、其他对象不变、预览隔离、撤销重做、录制回放与双格式导出。真实样例验收设置 `RM_OBSTACLE_SAMPLE_FILE` 为点云路径，并设置 `RM_OBSTACLE_BOX_PART=obstacle-1`，运行 `ObstacleReconstruction.OptionalLocalScanRetainsObstacleGeometry`。
+
+其他模型专项：`ReverseServiceTests.exe --gtest_filter=OtherModelRecognition.*`。仅用俯视可见点验证底板＋筋板、圆角围板＋外部筋板、可见长圆孔、不同高度、断带不跨接、围板内外障碍物、旋转/倾斜与大坐标、命令撤销重做、底板视图及 STEP 回读；不将合成验证当作实物验收。
+
+板厚交互回归：`ReverseServiceTests.exe --gtest_filter=ThicknessLabel*:OtherModelRecognition.*`，包含圆角围板约 12 mm 测厚、保持中间轮廓和高度的改厚、底板默认 1 mm、未知观测面赋厚和保持焊接接触面。`ThicknessLabelEditor.*` 使用实际 Qt 输入事件验证回车提交、未知值默认 1 mm 确认、外部点击/失焦/Esc 取消；无桌面运行可设置 `QT_QPA_PLATFORM=offscreen`，并将 `QT_QPA_PLATFORM_PLUGIN_PATH` 指向 SDK 的 `Qt6/plugins/platforms`。

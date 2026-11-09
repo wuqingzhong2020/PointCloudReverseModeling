@@ -34,6 +34,7 @@ public:
     void selectObject(const ModelSelection &selection);
     void selectObjects(const std::vector<ModelSelection> &selections);
     std::function<void(const std::vector<std::string> &)> onPartsSelected;
+    std::function<void(const std::string &)> onPartClicked;
     std::function<void(const QPoint &)> onContextMenu;
 protected:
     bool eventFilter(QObject *,QEvent *) override;

@@ -2,12 +2,20 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <thread>
 
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <NCollection_Array1.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
@@ -18,6 +26,7 @@
 
 #include "commands/CommandService.h"
 #include "geometry/Geometry.h"
+#include "geometry/ModelExchange.h"
 #include "geometry/ModelImport.h"
 #include "workbench/ModelDisplayData.h"
 
@@ -32,11 +41,11 @@ auto display(const Model &model)
 {
     return workbench::makeModelDisplayParts(model.mesh(), model.summary(), {});
 }
-void near(Vec3 a, Vec3 b)
+void near(Vec3 a, Vec3 b, double tolerance = 1e-6)
 {
-    EXPECT_NEAR(a.x, b.x, 1e-6);
-    EXPECT_NEAR(a.y, b.y, 1e-6);
-    EXPECT_NEAR(a.z, b.z, 1e-6);
+    EXPECT_NEAR(a.x, b.x, tolerance);
+    EXPECT_NEAR(a.y, b.y, tolerance);
+    EXPECT_NEAR(a.z, b.z, tolerance);
 }
 struct Files
 {
@@ -171,9 +180,166 @@ TEST(PlateThickness, RejectsUnsupportedBatchBadArgumentsAndCancellationWithoutCh
     std::stop_source stop;
     stop.request_stop();
     EXPECT_THROW((void)changeModelThickness(*flat, {flat->summary().partIds, 20}, stop.get_token()), GeometryError);
+    ASSERT_EQ(source->summary().importedThicknesses.size(), 1);
+    const auto importedParts = display(*source);
+    ASSERT_TRUE(importedParts[0].thicknessMm);
+    EXPECT_NEAR(*importedParts[0].thicknessMm, 12, 1e-6);
+    EXPECT_FALSE(importedParts[1].thicknessMm); // 球体不能用包围盒最短边当作板厚。
+    const auto withoutPlate = deleteModelParts(*source, {"imported-part-1"});
+    EXPECT_TRUE(withoutPlate->summary().importedThicknesses.empty());
     EXPECT_EQ(source->mesh().triangles, triangles);
     EXPECT_DOUBLE_EQ(source->summary().volumeMm3, volume);
     EXPECT_TRUE(source->summary().thicknessOverrides.empty());
+}
+
+TEST(PlateThickness, SplineOutlineAndObliqueSidesKeepContoursAfterThicknessEditAndExchange)
+{
+    NCollection_Array1<gp_Pnt> poles(1, 4);
+    poles(1) = gp_Pnt(0, 0, 100);
+    poles(2) = gp_Pnt(70, 0, 112);
+    poles(3) = gp_Pnt(130, 0, 87);
+    poles(4) = gp_Pnt(200, 0, 100);
+    BRepBuilderAPI_MakeWire wire;
+    wire.Add(BRepBuilderAPI_MakeEdge(new Geom_BezierCurve(poles)).Edge());
+    wire.Add(BRepBuilderAPI_MakeEdge(poles(4), gp_Pnt(200, 0, 0)).Edge());
+    wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(200, 0, 0), gp_Pnt(0, 0, 0)).Edge());
+    wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(0, 0, 0), poles(1)).Edge());
+    const auto prism = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire.Wire()).Face(), gp_Vec(0.12, 12, 0.07)).Shape();
+    const auto hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(100, -1, 50), gp_Dir(0, 1, 0)), 7, 14).Shape();
+    const auto source = detail::modelFromShape(BRepAlgoAPI_Cut(prism, hole).Shape(), "cwrm", {}, {});
+    const auto id = source->summary().partIds.front();
+    ASSERT_EQ(source->summary().importedThicknesses.size(), 1);
+    const auto original = source->summary().importedThicknesses.at(id);
+    EXPECT_NEAR(original.thicknessMm, 12, 1e-6);
+    const auto edited = changeModelThickness(*source, {{id}, 19});
+    ASSERT_EQ(edited->summary().importedThicknesses.size(), 1);
+    const auto &info = edited->summary().importedThicknesses.at(id);
+    EXPECT_NEAR(info.thicknessMm, 19, 1e-6);
+    near(info.centerMm, original.centerMm, 1e-5);
+    EXPECT_NEAR(edited->summary().volumeMm3, source->summary().volumeMm3 * 19 / 12, 1e-3);
+    // 对每个原拓扑顶点检查法向缩放的位置：轮廓与孔均不随厚度在板面内漂移。
+    ASSERT_EQ(source->mesh().keyPoints.size(), edited->mesh().keyPoints.size());
+    for (const auto &point : source->mesh().keyPoints)
+    {
+        const Vec3 expected{point.positionMm.x, 6 + (point.positionMm.y - 6) * 19 / 12, point.positionMm.z};
+        EXPECT_TRUE(std::any_of(edited->mesh().keyPoints.begin(), edited->mesh().keyPoints.end(), [&](const auto &candidate) {
+            return std::hypot(candidate.positionMm.x - expected.x, candidate.positionMm.y - expected.y,
+                              candidate.positionMm.z - expected.z) < 1e-5;
+        }));
+    }
+    const auto restored = changeModelThickness(*edited, {{id}, 12});
+    EXPECT_NEAR(restored->summary().volumeMm3, source->summary().volumeMm3, 1e-3);
+    Files files;
+    (void)exportStep(*edited, files.dir / "spline.step");
+    (void)exportCwrm(*edited, files.dir / "spline.cwrm");
+    for (const auto &name : {"spline.step", "spline.cwrm"})
+    {
+        SCOPED_TRACE(name);
+        const auto imported = loadCadModel(files.dir / name);
+        ASSERT_EQ(imported->summary().importedThicknesses.size(), 1);
+        EXPECT_NEAR(imported->summary().importedThicknesses.begin()->second.thicknessMm, 19, 1e-5);
+        const auto again = changeModelThickness(*imported, {imported->summary().partIds, 15});
+        EXPECT_NEAR(again->summary().volumeMm3, source->summary().volumeMm3 * 15 / 12, 1e-2);
+    }
+}
+
+TEST(PlateThickness, SlopingMainFaceDoesNotBecomeAnEndToEndThickness)
+{
+    BRepBuilderAPI_MakePolygon section;
+    section.Add(gp_Pnt(0, 0, 0));
+    section.Add(gp_Pnt(200, 0, 0));
+    section.Add(gp_Pnt(200, 20, 0));
+    section.Add(gp_Pnt(0, 12, 0));
+    section.Close();
+    const auto solid = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(section.Wire()).Face(), gp_Vec(0, 0, 100)).Shape();
+    const auto model = detail::modelFromShape(solid, "step", {}, {});
+    EXPECT_TRUE(model->summary().importedThicknesses.empty());
+    EXPECT_THROW((void)changeModelThickness(*model, {model->summary().partIds, 25}), GeometryError);
+}
+
+TEST(PlateThickness, OptionalLocalPlateSamplesSupportEveryPart)
+{
+    const auto sampleDirectory = std::getenv("RM_PLATE_SAMPLE_DIRECTORY");
+    if (!sampleDirectory) GTEST_SKIP() << "Set RM_PLATE_SAMPLE_DIRECTORY to validate the local plate samples.";
+    for (const auto &name : {u8"test1.step", u8"test2.cwrm", u8"test3.cwrm", u8"孔.step"})
+    {
+        const auto path = std::filesystem::path(sampleDirectory) / std::filesystem::path(name);
+        SCOPED_TRACE(path.string());
+        const auto model = loadCadModel(path);
+        ASSERT_EQ(model->summary().importedThicknesses.size(), model->summary().solidCount);
+        for (const auto &[id, info] : model->summary().importedThicknesses)
+        {
+            SCOPED_TRACE(id);
+            const auto edited = changeModelThickness(*model, {{id}, info.thicknessMm + 1});
+            ASSERT_EQ(edited->summary().importedThicknesses.size(), model->summary().solidCount);
+            EXPECT_NEAR(edited->summary().importedThicknesses.at(id).thicknessMm, info.thicknessMm + 1, 1e-4);
+            const auto restored = changeModelThickness(*edited, {{id}, info.thicknessMm});
+            EXPECT_NEAR(restored->summary().volumeMm3, model->summary().volumeMm3, 1e-2);
+        }
+    }
+}
+
+TEST(PlateThicknessCommands, ImportedStepAndCwrmLabelsSupportEditUndoRedoAndRoundtrip)
+{
+    Files files;
+    const auto cutter = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(100, -1, 50), gp_Dir(0, 1, 0)), 10, 14).Shape();
+    auto source = detail::modelFromShape(BRepAlgoAPI_Cut(BRepPrimAPI_MakeBox(200, 12, 100).Shape(), cutter).Shape(), "step", {}, {});
+    ModelTransform rotation;
+    rotation.kind = ModelTransformKind::Rotate;
+    rotation.axis = RotationAxis::Z;
+    rotation.angleDegrees = 31;
+    source = transformModelParts(*source, source->summary().partIds, rotation);
+    ModelTransform move;
+    move.offsetMm = {5000, -700, 300};
+    source = transformModelParts(*source, source->summary().partIds, move);
+    const auto expected = inspectModelThickness(*source, source->summary().partIds).begin()->second;
+    for (const auto &extension : {".step", ".cwrm"})
+    {
+        SCOPED_TRACE(extension);
+        const auto input = files.dir / (std::string("input") + extension);
+        if (std::string_view(extension) == ".step") (void)exportStep(*source, input);
+        else (void)exportCwrm(*source, input);
+        CommandService service;
+        ASSERT_EQ(wait(service, service.submitImport(input)).state, TaskState::Succeeded);
+        const auto before = service.project();
+        const auto id = before.model->partIds.front();
+        ASSERT_EQ(before.model->importedThicknesses.size(), 1);
+        EXPECT_TRUE(before.model->thicknessOverrides.empty());
+        const auto &detected = before.model->importedThicknesses.at(id);
+        EXPECT_NEAR(detected.thicknessMm, 12, 1e-6);
+        near(detected.centerMm, expected.centerMm);
+        const Vec3 origin{4900, -600, 200};
+        auto parts = workbench::makeModelDisplayParts(*before.mesh, *before.model, origin);
+        ASSERT_TRUE(parts[0].thicknessMm);
+        EXPECT_NEAR(*parts[0].thicknessMm, 12, 1e-6);
+        for (const auto &face : parts[0].labelFaces)
+        {
+            const Vec3 offset{face.position.x + origin.x - detected.centerMm.x,
+                              face.position.y + origin.y - detected.centerMm.y,
+                              face.position.z + origin.z - detected.centerMm.z};
+            EXPECT_NEAR(std::hypot(offset.x, offset.y, offset.z), 6, 1e-6);
+            EXPECT_NEAR(offset.x * face.normal.x + offset.y * face.normal.y + offset.z * face.normal.z, 6, 1e-6);
+        }
+        ASSERT_EQ(wait(service, service.submitThickness({{id}, 18.5}, before.revision)).state, TaskState::Succeeded);
+        auto edited = service.project();
+        EXPECT_NEAR(edited.model->volumeMm3, before.model->volumeMm3 * 18.5 / 12, 1e-4);
+        EXPECT_NEAR(edited.model->importedThicknesses.at(id).thicknessMm, 18.5, 1e-6);
+        parts = workbench::makeModelDisplayParts(*edited.mesh, *edited.model, {});
+        EXPECT_NEAR(parts[0].thicknessMm.value_or(0), 18.5, 1e-6);
+        ASSERT_EQ(wait(service, service.submitLine("project.undo")).state, TaskState::Succeeded);
+        EXPECT_NEAR(service.project().model->importedThicknesses.at(id).thicknessMm, 12, 1e-6);
+        EXPECT_TRUE(service.project().model->thicknessOverrides.empty());
+        ASSERT_EQ(wait(service, service.submitLine("project.redo")).state, TaskState::Succeeded);
+        EXPECT_NEAR(service.project().model->importedThicknesses.at(id).thicknessMm, 18.5, 1e-6);
+        const auto output = files.dir / (std::string("edited") + extension);
+        const auto task = std::string_view(extension) == ".step" ? service.submitExport(output, service.project().revision)
+                                                               : service.submitExportCwrm(output, service.project().revision);
+        ASSERT_EQ(wait(service, task).state, TaskState::Succeeded);
+        const auto reread = loadCadModel(output);
+        EXPECT_NEAR(reread->summary().importedThicknesses.begin()->second.thicknessMm, 18.5, 1e-6);
+        EXPECT_NEAR(reread->summary().volumeMm3, edited.model->volumeMm3, 1e-3);
+        EXPECT_TRUE(reread->summary().thicknessOverrides.empty());
+    }
 }
 
 TEST(PlateThicknessCommands, PreviewApplyHistoryRecordingAndReplay)

@@ -35,7 +35,7 @@ std::string CommandService::submitLocalReconstruction(const LocalReconstruction 
     for (const auto &id : request.partIds) parts.emplace_back(id);
     return submitUiCommand("model.reconstruct_local", {}, {{"parts", parts}, {"type", request.type},
         {"contour", request.contour}, {"up", commandValue(vector(request.up))},
-        {"tolerance", request.toleranceMm}, {"corner", request.cornerMm}}, revision);
+        {"tolerance", request.toleranceMm}, {"corner", request.cornerMm}, {"mirror_bottom", request.mirrorBottom}}, revision);
 }
 
 std::string CommandService::submitImport(const std::filesystem::path &path)
@@ -126,8 +126,23 @@ std::string CommandService::submitReconstruct(const BeamParameters &p, std::uint
 std::string CommandService::submitRecognizedReconstruct(bool mirror, std::uint64_t revision, double tolerance,
                                                        bool webHoles, double minimumHoleRadius)
 {
-    return submitUiCommand("model.reconstruct", {}, {{"mirror", mirror}, {"end_tolerance", tolerance},
-        {"web_holes", webHoles}, {"min_hole_radius", minimumHoleRadius}}, revision);
+    return submitRecognizedReconstruct(PlateBuildOptions{mirror, tolerance, webHoles, minimumHoleRadius}, revision);
+}
+std::string CommandService::submitRecognizedReconstruct(const PlateBuildOptions &o, std::uint64_t revision)
+{
+    return submitUiCommand("model.reconstruct", {},
+                           {{"mirror", o.mirrorSymmetry},
+                            {"end_tolerance", o.endOverhangToleranceMm},
+                            {"web_holes", o.recognizeWebHoles},
+                            {"min_hole_radius", o.minimumHoleRadiusMm},
+                            {"type", o.type},
+                            {"on_ground", o.onGround},
+                            {"regular_upper_surface", o.regularUpperSurface},
+                            {"projection_onto_border", o.projectionOntoBorder},
+                            {"perpendicular", o.perpendicularHypothesis},
+                            {"max_slot_width", o.maximumSlotWidthMm},
+                            {"max_base_width", o.maximumBaseWidthMm}},
+                           revision);
 }
 std::string CommandService::submitExport(const std::filesystem::path &path, std::uint64_t revision)
 {

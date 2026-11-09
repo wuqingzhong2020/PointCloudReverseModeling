@@ -10,6 +10,7 @@ endif()
 
 # 由使用者通过 CMAKE_PREFIX_PATH 或各包的 <Package>_DIR 提供依赖位置。
 find_package(Eigen3 CONFIG REQUIRED)
+find_package(Qhull CONFIG REQUIRED)
 find_package(nlohmann_json 3.11 CONFIG REQUIRED)
 find_package(PCL 1.15 CONFIG REQUIRED COMPONENTS common io)
 # 部分 OCCT/VTK 配置分别使用 Module 和 Config 模式查找 FreeType。
@@ -35,7 +36,7 @@ find_package(pybind11 CONFIG REQUIRED)
 
 # 两个程序共用的第三方库；各程序专用库在自己的 CMakeLists.txt 中链接。
 set(RM_COMMON_LIBRARIES
-    Eigen3::Eigen nlohmann_json::nlohmann_json pcl_common pcl_io Threads::Threads OpenSSL::Crypto
+    Eigen3::Eigen nlohmann_json::nlohmann_json pcl_common pcl_io Threads::Threads OpenSSL::Crypto Qhull::qhullcpp Qhull::qhull_r
     TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKTopAlgo TKPrim TKMesh TKFillet TKOffset TKBO TKBool
     TKDESTEP TKXCAF TKLCAF TKCAF TKXSBase
     RmCommandDefinitions CPython::Python pybind11::headers)

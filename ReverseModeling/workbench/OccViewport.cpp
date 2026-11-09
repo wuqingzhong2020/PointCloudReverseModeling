@@ -23,6 +23,7 @@
 #include <AIS_AnimationCamera.hxx>
 #include <AIS_InteractiveContext.hxx>
 #include <AIS_PointCloud.hxx>
+#include <AIS_Point.hxx>
 #include <AIS_TextLabel.hxx>
 #include <AIS_Shape.hxx>
 #include <AIS_Triangulation.hxx>
@@ -42,10 +43,13 @@
 #include <Graphic3d_RenderingParams.hxx>
 #include <Graphic3d_TransformPers.hxx>
 #include <Graphic3d_TypeOfLimit.hxx>
+#include <Graphic3d_ZLayerId.hxx>
+#include <Geom_CartesianPoint.hxx>
 #include <OpenGl_GraphicDriver.hxx>
 #include <Prs3d_DatumAspect.hxx>
 #include <Prs3d_Drawer.hxx>
 #include <Prs3d_LineAspect.hxx>
+#include <Prs3d_PointAspect.hxx>
 #include <Prs3d_Presentation.hxx>
 #include <Quantity_Color.hxx>
 #include <Quantity_TypeOfColor.hxx>
@@ -64,6 +68,7 @@
 #endif
 
 #include "workbench/OccModelPresentation.h"
+#include "workbench/ModelFocus.h"
 #include "workbench/OccTransformPreview.h"
 #include "workbench/OccMeasurementPresentation.h"
 #include "workbench/OccMeasurementPicking.h"
@@ -118,6 +123,9 @@ struct OccViewport::State {
     Handle(AIS_PointCloud) cloud;
     Handle(AIS_ViewCube) viewCube;
     Handle(AIS_RubberBand) selectionBand;
+    Handle(AIS_Point) focusMarker;
+    Handle(AIS_TextLabel) focusLabel;
+    std::string focusPartId;
     std::vector<Handle(AIS_InteractiveObject)> holeGuide;
     std::vector<Handle(AIS_InteractiveObject)> holePreview;
     std::vector<Handle(AIS_InteractiveObject)> plateEditReference;
@@ -203,6 +211,9 @@ void OccViewport::release() noexcept {
         state_->referencePresentation.reset();
         state_->measurementPresentation.reset();
         if (!state_->context.IsNull()) state_->context->RemoveAll(false);
+        state_->focusMarker.Nullify();
+        state_->focusLabel.Nullify();
+        state_->focusPartId.clear();
         state_->viewCube.Nullify();
         state_->selectionBand.Nullify();
         state_->cloud.Nullify();
@@ -707,7 +718,70 @@ void OccViewport::redraw()
         const double ratio = devicePixelRatioF();
         state_->model->updateLabels(qRound(width() * ratio), qRound(height() * ratio), ratio);
     }
+    updateFocusLocator();
     state_->view->Redraw();
+}
+
+void OccViewport::updateFocusLocator()
+{
+    if (state_->context.IsNull()) return;
+    if (!state_->focusMarker.IsNull()) state_->context->Erase(state_->focusMarker,false);
+    if (!state_->focusLabel.IsNull()) state_->context->Erase(state_->focusLabel,false);
+    if (state_->focusPartId.empty() || !state_->modelVisible || state_->transform || state_->measurementEnabled ||
+        state_->referencePickMode != ReferencePlanePickMode::None || state_->section.enabled) return;
+    const auto selected = std::find_if(state_->parts.begin(),state_->parts.end(),
+        [this](const auto &p) { return p.id == state_->focusPartId; });
+    if (selected == state_->parts.end() || selected->vertices.empty()) return;
+    int x0 = std::numeric_limits<int>::max(), y0 = x0, x1 = std::numeric_limits<int>::min(), y1 = x1;
+    Vec3 low = selected->vertices.front(), high = low;
+    for (const auto &p : selected->vertices)
+    {
+        int x,y; state_->view->Convert(p.x,p.y,p.z,x,y);
+        x0 = std::min(x0,x); x1 = std::max(x1,x); y0 = std::min(y0,y); y1 = std::max(y1,y);
+        low = {std::min(low.x,p.x),std::min(low.y,p.y),std::min(low.z,p.z)};
+        high = {std::max(high.x,p.x),std::max(high.y,p.y),std::max(high.z,p.z)};
+    }
+    const double ratio = devicePixelRatioF();
+    const int w = qRound(width()*ratio), h = qRound(height()*ratio);
+    // 只为整体视图中的小目标补充屏幕尺寸固定的定位标记，放大后显示正常选择高亮。
+    if (double(x1)-x0 >= 40*ratio || double(y1)-y0 >= 40*ratio || x1 < 0 || y1 < 0 || x0 >= w || y0 >= h) return;
+    if (state_->focusMarker.IsNull())
+    {
+        state_->focusMarker = new AIS_Point(new Geom_CartesianPoint(0,0,0));
+        state_->focusMarker->SetInfiniteState(true);
+        state_->focusMarker->SetZLayer(Graphic3d_ZLayerId_Topmost);
+        state_->focusLabel = new AIS_TextLabel();
+        state_->focusLabel->SetFont("Microsoft YaHei");
+        state_->focusLabel->SetZoomable(false);
+        state_->focusLabel->SetOwnAnchorPoint(true);
+        state_->focusLabel->SetHJustification(Graphic3d_HTA_LEFT);
+        state_->focusLabel->SetVJustification(Graphic3d_VTA_CENTER);
+        state_->focusLabel->SetDisplayType(Aspect_TODT_SUBTITLE);
+        state_->focusLabel->SetColorSubTitle(Quantity_Color(.031,.082,.129,Quantity_TOC_sRGB));
+        state_->focusLabel->SetInfiniteState(true);
+        state_->focusLabel->SetZLayer(Graphic3d_ZLayerId_TopOSD);
+    }
+    const Quantity_Color color(1.0,.65,.12,Quantity_TOC_sRGB);
+    const gp_Pnt anchor((low.x+high.x)*.5,(low.y+high.y)*.5,(low.z+high.z)*.5);
+    state_->focusMarker->SetComponent(new Geom_CartesianPoint(anchor));
+    state_->focusMarker->Attributes()->SetPointAspect(new Prs3d_PointAspect(Aspect_TOM_O,color,5*ratio));
+    const QString id = QString::fromStdString(selected->id);
+    const auto text = (id.startsWith(QStringLiteral("obstacle-")) ? QStringLiteral("障碍物 %1").arg(id.mid(9))
+                                                               : QStringLiteral("选中部件")).toUtf8();
+    state_->focusLabel->SetText(TCollection_ExtendedString(text.constData(),true));
+    state_->focusLabel->SetColor(color);
+    state_->focusLabel->SetHeight(14*ratio);
+    int x,y; state_->view->Convert(anchor.X(),anchor.Y(),anchor.Z(),x,y);
+    const int labelX = std::clamp(x+qRound(20*ratio),qRound(8*ratio),std::max(qRound(8*ratio),w-qRound(130*ratio)));
+    const int labelY = std::clamp(y-qRound(20*ratio),qRound(20*ratio),std::max(qRound(20*ratio),h-qRound(20*ratio)));
+    double ax,ay,az,bx,by,bz;
+    state_->view->Convert(x,y,ax,ay,az);
+    state_->view->Convert(labelX,labelY,bx,by,bz);
+    state_->focusLabel->SetPosition(anchor.Translated(gp_Vec(bx-ax,by-ay,bz-az)));
+    state_->context->Display(state_->focusMarker,0,-1,false);
+    state_->context->Redisplay(state_->focusMarker,false);
+    state_->context->Display(state_->focusLabel,0,-1,false);
+    state_->context->Redisplay(state_->focusLabel,false);
 }
 
 void OccViewport::setPointCloud(std::vector<CloudDisplayPoint> points,
@@ -747,6 +821,7 @@ void OccViewport::setCloudHeightColors(bool enabled)
 
 void OccViewport::setModel(std::vector<ModelDisplayPart> parts)
 {
+    state_->focusPartId.clear();
     state_->thicknessEditor->hide();
     endTransformPreview();
     setMeasurementEnabled(false);
@@ -861,6 +936,8 @@ void OccViewport::setSelectedObjects(const std::vector<ModelSelection> &selectio
                 std::find(valid.begin(), valid.end(), selection) == valid.end())
                 valid.push_back(selection);
     state_->selectedObjects = std::move(valid);
+    if (std::none_of(state_->selectedObjects.begin(),state_->selectedObjects.end(),
+        [this](const auto &s) { return s.partId == state_->focusPartId; })) state_->focusPartId.clear();
     try
     {
         if (state_->model) state_->model->selectObjects(state_->selectedObjects);
@@ -1148,6 +1225,35 @@ void OccViewport::advanceNavigationAnimation()
     catch (const Standard_Failure &error)
     {
         fail(QString::fromUtf8(error.what()));
+    }
+}
+
+void OccViewport::focusPart(const std::string &id)
+{
+    if (state_->view.IsNull()) return;
+    try
+    {
+        const auto camera = state_->view->Camera();
+        const auto eye = camera->Direction().Reversed(), up = camera->Up();
+        const auto focus = modelFocusView(state_->parts, id, {eye.X(),eye.Y(),eye.Z()},
+            {up.X(),up.Y(),up.Z()}, double(std::max(1,width())) / std::max(1,height()));
+        if (!focus) return;
+        stopNavigationAnimation();
+        clearSelectionRectangle();
+        const double distance = std::max(camera->Distance(),focus->scale * 4);
+        const auto c = focus->center, d = focus->towardEye, u = focus->up;
+        camera->SetProjectionType(Graphic3d_Camera::Projection_Orthographic);
+        camera->SetEyeAndCenter(gp_Pnt(c.x+d.x*distance,c.y+d.y*distance,c.z+d.z*distance),gp_Pnt(c.x,c.y,c.z));
+        camera->SetUp(gp_Dir(u.x,u.y,u.z));
+        camera->SetScale(focus->scale);
+        state_->focusPartId = id;
+        state_->view->ZFitAll();
+        state_->context->ClearDetected(false);
+        redraw();
+    }
+    catch (const Standard_Failure &error)
+    {
+        if (onError) onError(QString::fromUtf8(error.what()));
     }
 }
 
@@ -1685,7 +1791,7 @@ void OccViewport::mouseDoubleClickEvent(QMouseEvent *event)
             {
                 const QPoint center(qRound(label->pixelRect.center().x() / ratio),
                                     qRound(label->pixelRect.center().y() / ratio));
-                state_->thicknessEditor->open(label->partId, label->thicknessMm, mapToGlobal(center));
+                state_->thicknessEditor->open(label->partId, label->thicknessMm, mapToGlobal(center), label->unresolved);
             }
             event->accept();
             return;

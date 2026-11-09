@@ -9,6 +9,8 @@
 #include "commands/TaskOutput.h"
 #include "geometry/CloudEditing.h"
 #include "geometry/Geometry.h"
+#include "geometry/TBarRecognition.h"
+#include "geometry/OtherModelRecognition.h"
 #include "geometry/ModelExchange.h"
 #include "geometry/ReferencePlane.h"
 #include <cctype>
@@ -432,36 +434,60 @@ std::string ProjectOperations::submitReconstruct(const BeamParameters &parameter
 std::string ProjectOperations::submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
                                                            double endOverhangToleranceMm, bool recognizeWebHoles, double minimumHoleRadiusMm)
 {
+    return submitRecognizedReconstruct(
+        PlateBuildOptions{mirrorSymmetry, endOverhangToleranceMm, recognizeWebHoles, minimumHoleRadiusMm},
+        expectedRevision);
+}
+std::string ProjectOperations::submitRecognizedReconstruct(const PlateBuildOptions &options,
+                                                           std::uint64_t expectedRevision)
+{
+    validateTBarOptions(options);
     const auto snapshot = project();
     if (snapshot.revision != expectedRevision)
     {
         throw GeometryError("stale_revision", "工程已变化，请刷新后重建。");
     }
-    if (!snapshot.recognition)
-    {
-        throw GeometryError("no_recognition", "点云没有可用的板件识别结果，不使用默认板厚补建。");
-    }
+    if (!snapshot.cloud || (options.type != "other" && !snapshot.estimate))
+        throw GeometryError("no_cloud", "请先导入有有效点的点云。");
     auto *state = impl_.get();
-    return state->launch(
-        "ReconstructRecognized", expectedRevision,
-        [state, cloud = snapshot.cloud, recognition = *snapshot.recognition,
-         options = PlateBuildOptions{mirrorSymmetry, endOverhangToleranceMm, recognizeWebHoles, minimumHoleRadiusMm}](auto stop, const auto &progress) {
-            auto model = buildRecognizedPlates(recognition, options, stop, progress);
-            if (cloud) model = associateModelCloud(*model, *cloud, stop);
-            checkCancelled(stop);
-            std::lock_guard lock(state->stateMutex);
-            auto next = state->project;
-            ++next.revision;
-            next.modelId = state->session + "-model-" + std::to_string(next.revision);
-            next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-            next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-            next.deviation.reset();
-            next.lastExport.reset();
-            next.exportedPathUtf8.clear();
-            next.committedParameters.reset();
-            next.committedRecognitionOptions = options;
-            state->commitEdit(std::move(next), std::move(model), "重建模型");
-        });
+    return state->launch("ReconstructRecognized", expectedRevision,
+                         [state, cloud = snapshot.cloud, cached = snapshot.recognition,
+                          estimate = snapshot.estimate.value_or(BeamEstimate{}),
+                          options](auto stop, const auto &progress) {
+                             const ProgressCallback recognizeProgress = [&](double p, auto message) {
+                                 progress(0.3 * p, message);
+                             };
+                             auto recognition = options.type == "other"
+                                                    ? recognizeOtherModel(*cloud, stop, recognizeProgress)
+                                                : options.type == "tbar"
+                                                    ? recognizeTBar(*cloud, estimate, options, stop, recognizeProgress)
+                                                : cached && cached->type == "hbeam"
+                                                    ? *cached
+                                                    : recognizePlates(*cloud, estimate, stop, recognizeProgress);
+                             auto model = buildRecognizedPlates(recognition, options, stop,
+                                 [&](double p, auto message) { progress(0.3 + 0.25 * p, message); });
+                             model = reconstructModelObstacles(*model, *cloud, recognition, stop,
+                                 [&](double p, auto message) { progress(0.55 + 0.4 * p, message); });
+                             model = associateModelCloud(*model, *cloud, stop);
+                             checkCancelled(stop);
+                             std::lock_guard lock(state->stateMutex);
+                             auto next = state->project;
+                             ++next.revision;
+                             next.modelId = state->session + "-model-" + std::to_string(next.revision);
+                             next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
+                             next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
+                             next.deviation.reset();
+                             next.lastExport.reset();
+                             next.exportedPathUtf8.clear();
+                             next.committedParameters.reset();
+                             next.committedRecognitionOptions = options;
+                             next.recognition = recognition;
+                             if (options.type == "other")
+                             {
+                                 next.warnings = model->summary().warnings;
+                             }
+                             state->commitEdit(std::move(next), std::move(model), "重建模型");
+                         });
 }
 
 PlateEdit ProjectOperations::prepareDirectPlateEdit(const PlateEdit &request, bool all, std::uint64_t revision)
@@ -512,8 +538,11 @@ std::shared_ptr<const Model> ProjectOperations::previewLocalReconstruction(const
         source = impl_->model;
         cloud = impl_->project.cloud;
     }
-    if (!source || !cloud) throw GeometryError("no_local_source", "局部重建需要点云及其重建模型；单独导入的 CAD 没有对应点云。");
-    return reconstructLocalParts(*source, *cloud, request, impl_->context.stop, impl_->context.progress);
+    if (!source) throw GeometryError("no_model", "当前没有模型。");
+    if (!cloud && request.type != "box")
+        throw GeometryError("no_local_source", "平板重建需要对应点云；重建占用空间障碍物请选择包围盒。");
+    const CloudData empty;
+    return reconstructLocalParts(*source, cloud ? *cloud : empty, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision)
 {
@@ -618,6 +647,18 @@ void ProjectOperations::applyContourExpansion(const PlateContourExpansion &reque
     next.model = std::shared_ptr<const ModelSummary>(model,&model->summary());
     next.mesh = std::shared_ptr<const MeshData>(model,&model->mesh());
     impl_->commitEdit(std::move(next),std::move(model), "外扩板件轮廓");
+}
+
+std::vector<std::string> ProjectOperations::inspectConnectedParts(const std::string &seedPartId, std::uint64_t revision)
+{
+    std::shared_ptr<const Model> source;
+    {
+        std::lock_guard lock(impl_->stateMutex);
+        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新选择工件。");
+        source = impl_->model;
+    }
+    if (!source) throw GeometryError("no_model", "当前没有模型。");
+    return connectedModelParts(*source, seedPartId, impl_->context.stop, impl_->context.progress);
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision)

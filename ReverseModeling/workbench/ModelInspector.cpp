@@ -39,8 +39,16 @@ QString partName(QString id)
     if (mirrored) id.chop(7);
     QString name = id;
     if (id == QStringLiteral("web")) name = QStringLiteral("底板 / 腹板");
+    else if (id == QStringLiteral("other-base")) name = QStringLiteral("焊件底板");
+    else if (id.startsWith(QStringLiteral("other-wall-")))
+        name = QStringLiteral("焊件立板 / 连接组 %1").arg(id.mid(11));
     else if (id == QStringLiteral("flange-bottom")) name = QStringLiteral("侧板 1 / 翼板");
     else if (id == QStringLiteral("flange-top")) name = QStringLiteral("侧板 2 / 翼板");
+    else if (id.startsWith(QStringLiteral("tbar-")))
+        name = QStringLiteral("T排 %1 / %2")
+                   .arg(id.split(QLatin1Char('-')).value(1),
+                        id.endsWith(QStringLiteral("-base")) ? QStringLiteral("底板") : QStringLiteral("立板"));
+    else if (id.startsWith(QStringLiteral("obstacle-"))) name = QStringLiteral("障碍物 %1").arg(id.mid(9));
     else if (id.startsWith(QStringLiteral("rib-")))
     {
         const auto fields = id.split(QLatin1Char('-'));
@@ -108,6 +116,11 @@ ModelInspector::ModelInspector(QWidget *parent)
         m_properties->scrollToTop();
         if (onPartsSelected) onPartsSelected(ids);
     });
+    connect(m_tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int)
+    {
+        if (item->isSelected() && item->data(0, kindRole).toString() == QStringLiteral("part") && onPartClicked)
+            onPartClicked(item->data(0, idRole).toString().toStdString());
+    });
 }
 
 QTreeWidget *ModelInspector::tree() const { return m_tree; }
@@ -150,9 +163,14 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
         {
             const auto id = text(part.id);
             const auto name = partName(id);
-            const auto kind = part.thicknessUnresolved ? QStringLiteral("观测面") : QStringLiteral("部件");
-            const QString thickness = part.thicknessMm ? QString::number(*part.thicknessMm, 'f', 1)
-                : part.thicknessUnresolved ? QStringLiteral("未识别") : QStringLiteral("未提供");
+            const bool obstacle = model.obstacleParts.contains(part.id);
+            const auto plate = std::find_if(model.plates.begin(), model.plates.end(),
+                [&part](const auto &value) { return value.id == part.id; });
+            const bool upright = plate != model.plates.end() && !plate->uprightFootprint.empty();
+            const auto kind = obstacle ? QStringLiteral("障碍物") : upright ? QStringLiteral("连接组实体")
+                : part.thicknessUnresolved ? QStringLiteral("观测面") : QStringLiteral("部件");
+            const QString thickness = obstacle ? QStringLiteral("—") : part.thicknessMm ? QString::number(*part.thicknessMm, 'f', 1)
+                : part.thicknessUnresolved || !model.importedFormat.empty() ? QStringLiteral("未识别") : QStringLiteral("未提供");
             auto *item = new QTreeWidgetItem(m_modelNode, {name, kind, thickness});
             item->setData(0, kindRole, QStringLiteral("part"));
             item->setData(0, idRole, id);
@@ -161,17 +179,23 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
             swatch.fill(QColor::fromRgbF(part.colorSrgb[0], part.colorSrgb[1], part.colorSrgb[2]));
             item->setIcon(0, QIcon(swatch));
             m_parts.insert(id, item);
-            QString basis = !model.importedFormat.empty() ? QStringLiteral("导入文件未提供板厚，不作推测")
+            QString basis = !model.importedFormat.empty()
+                ? (model.importedThicknesses.contains(part.id) ? QStringLiteral("实体几何：两平行主面间距")
+                                                             : QStringLiteral("未能从实体几何确定等厚板厚"))
                 : !model.fromPointCloud ? QStringLiteral("手动建模参数")
                 : part.thicknessEstimated ? QStringLiteral("两侧板识别厚度的最大值")
                 : part.thicknessUnresolved ? QStringLiteral("仅观测面，缺少厚度依据") : QStringLiteral("点云顶边宽度识别");
-            const auto plate = std::find_if(model.plates.begin(), model.plates.end(),
-                [&part](const auto &value) { return value.id == part.id; });
+            if (upright) basis = plate->thicknessMm ? QStringLiteral("圆角矩形围板四条直边的顶边宽度")
+                : QStringLiteral("连接组未确定统一板厚；可双击标签输入，默认 1 mm");
+            if (plate != model.plates.end() && plate->method == "other_base_default_thickness")
+                basis = QStringLiteral("底板默认 1 mm（非实测），可手动修改；观测上表面固定");
             if (plate != model.plates.end() && plate->method.starts_with("explicit_mirror_of_"))
                 basis = QStringLiteral("显式镜像，沿用原板件厚度");
             if (model.thicknessOverrides.contains(part.id))
             {
-                basis = model.editSources.contains(part.id) ? QStringLiteral("板件编辑后实体板厚") : QStringLiteral("手动修改实体板厚（中面固定）");
+                basis = model.editSources.contains(part.id) ? QStringLiteral("板件编辑后实体板厚")
+                    : part.id == "other-base" ? QStringLiteral("手动修改底板厚度（观测上表面固定）")
+                    : QStringLiteral("手动修改实体板厚（中面固定）");
             }
             if (const auto mirrored = model.mirroredParts.find(part.id); mirrored != model.mirroredParts.end())
                 basis = QStringLiteral("镜像补全；来源部件：") + text(mirrored->second);
@@ -185,6 +209,7 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
                     basis += QStringLiteral("、") + text(generated->second.secondSourcePartId);
                 }
             }
+            if (obstacle) basis = QStringLiteral("不适用（避障包络）");
             PropertyRows rows{{QStringLiteral("名称"), name}, {QStringLiteral("部件 ID"), id},
                 {QStringLiteral("模型 ID"), text(project.modelId)}, {QStringLiteral("类型"), kind},
                 {QStringLiteral("板厚 mm"), thickness}, {QStringLiteral("厚度依据"), basis},
@@ -195,17 +220,29 @@ void ModelInspector::setProject(const ProjectSnapshot &project)
                 {QStringLiteral("坐标系"), QStringLiteral("项目坐标 / 世界轴对齐包围盒")},
                 {QStringLiteral("三角面数"), QString::number(part.triangles.size())},
                 {QStringLiteral("源文件"), text(project.sourcePathUtf8)}};
+            if (obstacle)
+            {
+                const auto &info = model.obstacleParts.at(part.id);
+                rows.append({QStringLiteral("用途"), info.boundingBox ? QStringLiteral("占用空间包围盒，不参与工件镜像")
+                                                                   : QStringLiteral("独立避障包络，不参与工件镜像")});
+                rows.append({QStringLiteral("支持点数"), QString::number(info.supportPoints)});
+                rows.append({QStringLiteral("包络分辨率 mm"), QString::number(info.resolutionMm, 'f', 2)});
+                rows.append({QStringLiteral("采样余量 mm"), QString::number(info.paddingMm, 'f', 2)});
+            }
             if (plate != model.plates.end())
             {
                 rows.insert(6, {QStringLiteral("支持点数"), QString::number(plate->supportPoints)});
                 rows.insert(7, {QStringLiteral("板厚离散度 mm"), QString::number(plate->thicknessSpreadMm, 'f', 1)});
                 if (model.fromPointCloud)
                 {
-                    rows.append({QStringLiteral("可见轮廓"), plate->outline.empty() ? QStringLiteral("直板近似")
+                    rows.append({QStringLiteral("可见轮廓"), upright ? QStringLiteral("直线/圆弧内外环")
+                        : plate->outline.empty() ? QStringLiteral("直板近似")
                         : QStringLiteral("点云直线/圆弧拟合")});
-                    if (plate->normalAxis == 1)
+                    if (plate->normalAxis == 1 && !upright)
                         rows.append({QStringLiteral("识别腹板孔"), QString::number(plate->holes.size())});
-                    if (plate->normalAxis == 0)
+                    if (plate->method.starts_with("other_") && plate->id != "other-base")
+                        rows.append({QStringLiteral("根部连接"), QStringLiteral("顶边垂直投影到底板；遮挡根部未实测")});
+                    else if (plate->normalAxis == 0)
                         rows.append({QStringLiteral("根部连接"), QStringLiteral("假设落在腹板面；遮挡孔洞/缺口未确认")});
                 }
             }

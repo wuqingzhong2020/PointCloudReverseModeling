@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QShortcut>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 
 #include "geometry/Geometry.h"
@@ -26,6 +27,7 @@ LocalReconstructionTool::LocalReconstructionTool(CommandService &service, OccVie
     m_selection->setWordWrap(true);
     layout->addWidget(m_selection);
     auto *form = new QFormLayout;
+    m_form = form;
     m_type = new QComboBox(this);
     m_type->setObjectName("localRebuildType");
     m_type->addItem(QStringLiteral("平板（保持原板面）"), "plate");
@@ -33,15 +35,11 @@ LocalReconstructionTool::LocalReconstructionTool(CommandService &service, OccVie
     m_type->addItem(QStringLiteral("包围盒"), "box");
     m_contour = new QComboBox(this);
     m_contour->setObjectName("localRebuildContour");
-    const char *labels[] = {"矩形", "圆形", "倒角矩形", "凸多边形", "任意多边形", "连续曲线"};
-    const char *values[] = {"rectangle", "circle", "chamfer_rectangle", "convex", "polygon", "smooth"};
-    for (int i = 0; i < 6; ++i)
-        m_contour->addItem(QString::fromUtf8(labels[i]), values[i]);
-    m_tolerance = new QDoubleSpinBox(this);
-    m_tolerance->setRange(0.1, 1000);
-    m_tolerance->setDecimals(1);
-    m_tolerance->setValue(2);
-    m_tolerance->setSuffix(" mm");
+    const struct { const char *label; const char *value; } contours[] = {
+        {"矩形", "rectangle"}, {"圆形", "circle"}, {"倒角矩形", "chamfer_rectangle"},
+        {"1/4孔角矩形", "quarter_hole_rectangle"}, {"圆角矩形", "rounded_rectangle"}};
+    for (const auto &contour : contours)
+        m_contour->addItem(QString::fromUtf8(contour.label), contour.value);
     m_corner = new QDoubleSpinBox(this);
     m_corner->setRange(0.1, 100000);
     m_corner->setDecimals(1);
@@ -49,16 +47,18 @@ LocalReconstructionTool::LocalReconstructionTool(CommandService &service, OccVie
     m_corner->setSuffix(" mm");
     form->addRow(QStringLiteral("重建为"), m_type);
     form->addRow(QStringLiteral("轮廓"), m_contour);
-    form->addRow(QStringLiteral("轮廓容差"), m_tolerance);
-    form->addRow(QStringLiteral("倒角退距"), m_corner);
+    m_cornerLabel = new QLabel(QStringLiteral("倒角退距"), this);
+    form->addRow(m_cornerLabel, m_corner);
     layout->addLayout(form);
-    auto *info = new QLabel(
-        QStringLiteral("Shift 点击选择多个部件。使用原部件关联的剩余点云，先删掉多余点再重建。\n"
-                       "只替换选中部件；其开孔、圆角等修改会被新轮廓替代。未选部件保持不变。\n"
-                       "平板保持原有板厚；仅拟合外轮廓，不重新识别内孔。水平板沿基准面法向（无基准面时为世界 Z）。"),
-        this);
-    info->setWordWrap(true);
-    layout->addWidget(info);
+    m_mirrorBottom = new QCheckBox(QStringLiteral("镜像重建竖直板下边"), this);
+    m_mirrorBottom->setObjectName("localRebuildMirrorBottom");
+    m_mirrorBottom->setChecked(true);
+    m_mirrorBottom->setToolTip(QStringLiteral("沿用原板底边补齐俯视扫描不可见的下部，并镜像上角；关闭后按可见点范围重建，仅处理上角。水平板不受影响。"));
+    layout->addWidget(m_mirrorBottom);
+    connect(m_mirrorBottom, &QCheckBox::toggled, this, [this] { invalidate(); });
+    m_info = new QLabel(this);
+    m_info->setWordWrap(true);
+    layout->addWidget(m_info);
     m_original = new QCheckBox(QStringLiteral("对比原模型（未应用）"), this);
     layout->addWidget(m_original);
     m_hint = new QLabel(this);
@@ -84,11 +84,8 @@ LocalReconstructionTool::LocalReconstructionTool(CommandService &service, OccVie
             invalidate();
             updateInputs(m_service.isIdle());
         });
-    for (auto *spin : {m_tolerance, m_corner})
-    {
-        connect(spin, &QDoubleSpinBox::valueChanged, this, [this] { invalidate(); });
-        connect(spin->findChild<QLineEdit *>(), &QLineEdit::returnPressed, this, [this] { preview(); });
-    }
+    connect(m_corner, &QDoubleSpinBox::valueChanged, this, [this] { invalidate(); });
+    connect(m_corner->findChild<QLineEdit *>(), &QLineEdit::returnPressed, this, [this] { preview(); });
     auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escape->setContext(Qt::WidgetWithChildrenShortcut);
     connect(escape, &QShortcut::activated, this, [this] { cancel(); });
@@ -123,7 +120,13 @@ void LocalReconstructionTool::selectionChanged(const std::vector<ModelSelection>
         invalidate();
         m_request.partIds = std::move(parts);
     }
-    m_selection->setText(m_request.partIds.empty() ? QStringLiteral("请选择原点云重建的部件")
+    const auto project = m_service.project();
+    if (project.model && (!project.cloud || std::any_of(m_request.partIds.begin(), m_request.partIds.end(), [&](const auto &id) {
+            return project.model->obstacleParts.contains(id) || project.model->partTransforms.contains(id) ||
+                   std::find(project.model->reconstructableParts.begin(), project.model->reconstructableParts.end(), id) == project.model->reconstructableParts.end();
+        })))
+        m_type->setCurrentIndex(m_type->findData("box"));
+    m_selection->setText(m_request.partIds.empty() ? QStringLiteral("请选择需要重建的模型部件")
                                                    : QStringLiteral("已选择 %1 个部件").arg(m_request.partIds.size()));
     updateInputs(true);
 }
@@ -166,10 +169,36 @@ void LocalReconstructionTool::updateInputs(bool idle)
 {
     const bool ready = m_active && idle && m_task.empty() && m_applyTask.empty();
     m_type->setEnabled(ready);
-    m_contour->setEnabled(ready && m_type->currentData() != "box");
+    const bool box = m_type->currentData() == "box";
+    const auto project = m_service.project();
+    const bool plateReady = project.model && project.cloud && !project.cloud->points.empty() &&
+        std::all_of(m_request.partIds.begin(), m_request.partIds.end(), [&](const auto &id) {
+            return !project.model->obstacleParts.contains(id) && !project.model->partTransforms.contains(id) &&
+                std::find(project.model->reconstructableParts.begin(), project.model->reconstructableParts.end(), id) != project.model->reconstructableParts.end();
+        });
+    if (auto *items = qobject_cast<QStandardItemModel *>(m_type->model()))
+        for (const auto value : {"plate", "horizontal"}) items->item(m_type->findData(value))->setEnabled(plateReady);
+    m_form->setRowVisible(m_contour, !box);
+    m_form->setRowVisible(m_corner, !box);
+    m_contour->setEnabled(ready && !box);
+    m_info->setText(box
+        ? QStringLiteral("按所选模型当前占用范围生成盒状障碍物，保留原包络余量；无需原始点云或板厚。\n"
+                         "Shift 可多选，每个对象单独生成包围盒。只替换所选对象，支持撤销；结果不显示板厚、不参与工件镜像。")
+        : QStringLiteral("Shift 点击选择多个部件。使用原部件关联的剩余点云，先删掉多余点再重建。\n"
+                         "只替换选中部件；其开孔、圆角等修改会被新轮廓替代。未选部件保持不变。\n"
+                         "平板保持原有板厚；仅拟合外轮廓，不重新识别内孔。水平板沿基准面法向（无基准面时为世界 Z）。"));
     const auto contour = m_contour->currentData().toString();
-    m_tolerance->setEnabled(ready && (contour == "polygon" || contour == "smooth") && m_type->currentData() != "box");
-    m_corner->setEnabled(ready && contour == "chamfer_rectangle" && m_type->currentData() != "box");
+    const bool quarterHole = contour == "quarter_hole_rectangle";
+    const bool rounded = contour == "rounded_rectangle";
+    m_cornerLabel->setText(quarterHole ? QStringLiteral("缺口半径")
+                                     : rounded ? QStringLiteral("圆角半径") : QStringLiteral("倒角退距"));
+    m_corner->setToolTip(quarterHole ? QStringLiteral("角部向内切除 1/4 圆孔，圆心位于原矩形角点；半径须小于短边一半。")
+                                   : rounded ? QStringLiteral("角部用与相邻直边相切的圆弧连接；半径须小于短边一半。")
+                                             : QStringLiteral("各角的倒角退距，须小于短边一半。"));
+    m_corner->setEnabled(ready && (contour == "chamfer_rectangle" || quarterHole || rounded) && m_type->currentData() != "box");
+    const bool cornerRectangle = contour == "chamfer_rectangle" || quarterHole || rounded;
+    m_mirrorBottom->setVisible(cornerRectangle && !box);
+    m_mirrorBottom->setEnabled(ready && cornerRectangle && m_type->currentData() == "plate");
     m_previewButton->setEnabled(ready && !m_request.partIds.empty());
     m_apply->setEnabled(ready && static_cast<bool>(m_preview));
     m_original->setEnabled(ready && static_cast<bool>(m_preview));
@@ -181,14 +210,15 @@ void LocalReconstructionTool::preview()
     invalidate();
     m_request.type = m_type->currentData().toString().toStdString();
     m_request.contour = m_contour->currentData().toString().toStdString();
-    m_request.toleranceMm = m_tolerance->value();
     m_request.cornerMm = m_corner->value();
+    m_request.mirrorBottom = m_mirrorBottom->isChecked();
     const auto project = m_service.project();
     m_request.up = project.referencePlane ? project.referencePlane->normal : Vec3{0, 0, 1};
     try
     {
         m_task = m_service.submitLocalReconstructionPreview(m_request, m_revision);
-        m_hint->setText(QStringLiteral("正在根据剩余点云计算预览…"));
+        m_hint->setText(m_request.type == "box" ? QStringLiteral("正在生成所选模型的占用空间包围盒…")
+                                                : QStringLiteral("正在根据剩余点云计算预览…"));
     }
     catch (const std::exception &error)
     {

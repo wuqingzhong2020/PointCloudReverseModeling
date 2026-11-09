@@ -12,6 +12,7 @@ class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
 class QCheckBox;
+class QFormLayout;
 
 namespace reverse::workbench
 {
@@ -50,9 +51,10 @@ class LocalReconstructionTool final : public QWidget
     std::string m_task, m_applyTask;
     bool m_active{}, m_showing{}, m_loading{};
     QComboBox *m_type{}, *m_contour{};
-    QDoubleSpinBox *m_tolerance{}, *m_corner{};
-    QLabel *m_selection{}, *m_hint{};
+    QDoubleSpinBox *m_corner{};
+    QLabel *m_selection{}, *m_hint{}, *m_cornerLabel{}, *m_info{};
+    QFormLayout *m_form{};
     QPushButton *m_previewButton{}, *m_apply{};
-    QCheckBox *m_original{};
+    QCheckBox *m_original{}, *m_mirrorBottom{};
 };
 } // namespace reverse::workbench

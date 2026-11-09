@@ -88,7 +88,7 @@ void buildRibbon(SARibbonBar *ribbon, WorkbenchActions &actions, QMenu *windows,
     auto *model = category->addPanel(QStringLiteral("模型修改"));
     auto *adjust = menu(ribbon, QStringLiteral("模型调整"), actions, {}, QStringLiteral("cube"));
     setActionHelp(adjust->menuAction(), QStringLiteral("修改板厚、外扩轮廓、生成贴板/底板或镜像补全。"),
-                  QStringLiteral("点击展开菜单并选择工具；按面板提示选板或选面，预览后应用。"),
+                  QStringLiteral("点击展开菜单并选择工具；“全部镜像补全”先选工件任意部件，再自动处理相连整组，其他工具按面板提示操作。"),
                   QStringLiteral("需要已有可见模型。钢结构是分组标题，不能点击。"));
     for (const auto id : WorkbenchActions::modelAdjustmentIds)
     {

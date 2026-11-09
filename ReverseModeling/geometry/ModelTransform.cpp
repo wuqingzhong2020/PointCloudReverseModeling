@@ -40,8 +40,10 @@ BeamFrame composeTransforms(const BeamFrame &a, const BeamFrame &b)
 }
 BeamFrame modelPartFrame(const ModelSummary &model, const std::string &partId)
 {
+    const auto initial = model.recognizedPartFrames.find(partId);
+    const auto &frame = initial == model.recognizedPartFrames.end() ? model.frame : initial->second;
     const auto found = model.partTransforms.find(partId);
-    return found == model.partTransforms.end() ? model.frame : composeTransforms(found->second, model.frame);
+    return found == model.partTransforms.end() ? frame : composeTransforms(found->second, frame);
 }
 BeamFrame modelTransformFrame(const ModelTransform &request)
 {

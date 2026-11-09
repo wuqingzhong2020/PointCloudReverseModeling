@@ -615,6 +615,18 @@ std::string CommandService::submitContourExpansionPreview(const PlateContourExpa
         return rm::CommandResult{rm::ResultKind::Success, {}, "预览完成；点击应用才修改模型。", {}, false};
     }, {}, false, "外扩板件轮廓预览");
 }
+std::string CommandService::submitConnectedPartsInspection(const std::string &seedPartId, std::uint64_t revision)
+{
+    auto *state = impl_.get();
+    return state->submit("ConnectedPartsInspection", revision, [state, seedPartId, revision](const auto &context, auto &) {
+        state->operations.setContext(context);
+        const auto parts = state->operations.inspectConnectedParts(seedPartId, revision);
+        rm::Array ids;
+        for (const auto &part : parts) ids.emplace_back(part);
+        return rm::CommandResult{rm::ResultKind::Success, {}, "已选中相连工件。", std::move(ids), false};
+    }, {}, false, "选择相连工件");
+}
+
 std::string CommandService::submitMirrorCompletionPreview(const MirrorCompletion &request, std::uint64_t revision)
 {
     auto *state = impl_.get();

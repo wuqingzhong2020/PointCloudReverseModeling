@@ -1,15 +1,28 @@
 ﻿/* 文件描述：局部重建只替换选中部件，验证裁剪后关联、规则拟合、原子失败、历史及录制回放。 */
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <numbers>
+#include <limits>
 #include <thread>
 
 #include <gtest/gtest.h>
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+#include <TopExp.hxx>
+#include <TopoDS.hxx>
+#include <NCollection_IndexedMap.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
+
 #include "commands/CommandService.h"
 #include "geometry/CloudEditing.h"
 #include "geometry/Geometry.h"
+#include "geometry/LocalReconstruction.h"
 
 namespace
 {
@@ -79,7 +92,7 @@ TEST(LocalReconstruction, CropUsesRemainingSourcePointsAndPreservesOtherPart)
 TEST(LocalReconstruction, AllContourRulesProduceValidModelsAndPreserveUnselected)
 {
     Fixture f;
-    for (const auto &rule : {"rectangle", "circle", "chamfer_rectangle", "convex", "polygon", "smooth"})
+    for (const auto &rule : {"rectangle", "circle", "chamfer_rectangle", "quarter_hole_rectangle", "rounded_rectangle", "convex", "polygon", "smooth"})
     {
         SCOPED_TRACE(rule);
         LocalReconstruction request{{"first"}};
@@ -94,6 +107,165 @@ TEST(LocalReconstruction, AllContourRulesProduceValidModelsAndPreserveUnselected
     box.type = "box";
     const auto after = reconstructLocalParts(*f.model, f.cloud, box);
     EXPECT_NEAR(after->summary().volumeMm3, f.model->summary().volumeMm3, 1e-5);
+}
+TEST(LocalReconstruction, QuarterHoleAndRoundedCornersHaveExactArcsAndDifferentMaterial)
+{
+    Fixture f;
+    std::vector<Vec3> points;
+    for (const auto &point : f.cloud.points)
+        if (point.position.y <= 80) points.push_back(point.position);
+    const detail::LocalPlateSource source{f.model->summary().plates.front(), {}, {}};
+    for (const auto &rule : {"quarter_hole_rectangle", "rounded_rectangle"})
+    {
+        SCOPED_TRACE(rule);
+        LocalReconstruction request{{"first"}};
+        request.contour = rule;
+        request.cornerMm = 10;
+        const bool quarterHole = request.contour == "quarter_hole_rectangle";
+        const auto rebuilt = detail::rebuildLocalShape(points, source, 10, request, {});
+        GProp_GProps volume;
+        BRepGProp::VolumeProperties(rebuilt.shape, volume);
+        const double removedArea = (quarterHole ? std::numbers::pi : 4 - std::numbers::pi) * 100;
+        EXPECT_NEAR(volume.Mass(), (100 * 80 - removedArea) * 10, 1e-5);
+        EXPECT_EQ(BRepClass3d_SolidClassifier(rebuilt.shape, gp_Pnt(4, 4, 5), 1e-7).State(),
+                  quarterHole ? TopAbs_OUT : TopAbs_IN);
+        EXPECT_EQ(BRepClass3d_SolidClassifier(rebuilt.shape, gp_Pnt(50, 40, 5), 1e-7).State(), TopAbs_IN);
+        NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edges;
+        TopExp::MapShapes(rebuilt.shape, TopAbs_EDGE, edges);
+        int circles = 0;
+        for (int i = 1; i <= edges.Extent(); ++i)
+        {
+            BRepAdaptor_Curve curve(TopoDS::Edge(edges(i)));
+            if (curve.GetType() != GeomAbs_Circle) continue;
+            ++circles;
+            EXPECT_NEAR(curve.Circle().Radius(), 10, 1e-7);
+            EXPECT_NEAR(curve.LastParameter() - curve.FirstParameter(), std::numbers::pi / 2, 1e-7);
+        }
+        EXPECT_EQ(circles, 8); // 上、下表面各四段真实圆弧。
+    }
+}
+// 竖板只保留顶端 20 mm 扫描点；原板高 80 mm。交换/反转板面轴并整体偏航，检验物理上下方向。
+TEST(LocalReconstruction, VerticalCornerMirrorRestoresHiddenBottomAndCanBeDisabled)
+{
+    const double angle = 0.37, c = std::cos(angle), s = std::sin(angle);
+    const auto rotate = [=](Vec3 p) { return Vec3{c * p.x - s * p.y, s * p.x + c * p.y, p.z}; };
+    const auto world = [=](Vec3 p) {
+        auto q = rotate(p);
+        return Vec3{q.x + 2300, q.y - 1400, q.z + 800};
+    };
+    std::vector<Vec3> points;
+    for (int z = 60; z <= 80; z += 2)
+        for (int x = 0; x <= 100; x += 5)
+            for (int y : {-5, 5})
+                points.push_back(world({double(x), double(y), double(z)}));
+    for (int normal = 0; normal < 3; ++normal)
+        for (bool heightIsU : {false, true})
+            for (double sign : {-1.0, 1.0})
+                for (const auto &rule : {"chamfer_rectangle", "quarter_hole_rectangle", "rounded_rectangle"})
+                {
+                    SCOPED_TRACE(::testing::Message() << rule << " normal=" << normal << " u=" << heightIsU << " sign=" << sign);
+                    Vec3 axes[3];
+                    axes[normal] = {0, 1, 0};
+                    axes[(normal + 1) % 3] = heightIsU ? Vec3{0, 0, sign} : Vec3{-sign, 0, 0};
+                    axes[(normal + 2) % 3] = heightIsU ? Vec3{sign, 0, 0} : Vec3{0, 0, sign};
+                    double lo[3] = {1e100, 1e100, 1e100}, hi[3] = {-1e100, -1e100, -1e100};
+                    for (double x : {0.0, 100.0})
+                        for (double y : {-5.0, 5.0})
+                            for (double z : {0.0, 80.0})
+                                for (int i = 0; i < 3; ++i)
+                                {
+                                    const double v = x * axes[i].x + y * axes[i].y + z * axes[i].z;
+                                    lo[i] = std::min(lo[i], v);
+                                    hi[i] = std::max(hi[i], v);
+                                }
+                    detail::LocalPlateSource source;
+                    source.plate = {"rib", {lo[0], lo[1], lo[2]}, {hi[0], hi[1], hi[2]}, normal, 10};
+                    source.frame.originMm = {2300, -1400, 800};
+                    source.frame.xAxis = rotate(axes[0]);
+                    source.frame.yAxis = rotate(axes[1]);
+                    source.frame.zAxis = rotate(axes[2]);
+                    LocalReconstruction request{{"rib"}};
+                    ASSERT_TRUE(request.mirrorBottom);
+                    request.contour = rule;
+                    request.cornerMm = 4;
+                    const double cornerArea = request.contour == "chamfer_rectangle" ? 8 :
+                        request.contour == "quarter_hole_rectangle" ? 4 * std::numbers::pi : 16 - 4 * std::numbers::pi;
+                    for (bool mirror : {true, false})
+                    {
+                        SCOPED_TRACE(mirror);
+                        request.mirrorBottom = mirror;
+                        const auto shape = detail::rebuildLocalShape(points, source, 10, request, {}).shape;
+                        GProp_GProps volume;
+                        BRepGProp::VolumeProperties(shape, volume);
+                        EXPECT_NEAR(volume.Mass(), (100 * (mirror ? 80 : 20) - (mirror ? 4 : 2) * cornerArea) * 10, 1e-5);
+                        const auto state = [&](Vec3 p) {
+                            const auto q = world(p);
+                            return BRepClass3d_SolidClassifier(shape, gp_Pnt(q.x, q.y, q.z), 1e-7).State();
+                        };
+                        EXPECT_EQ(state({50, 0, 5}), mirror ? TopAbs_IN : TopAbs_OUT);
+                        EXPECT_EQ(state({0.5, 0, 79.5}), TopAbs_OUT); // 上角始终按所选轮廓处理。
+                        EXPECT_EQ(state({0.5, 0, 60.5}), TopAbs_IN); // 关闭时可见下边为直角。
+                        EXPECT_EQ(state({0.5, 0, 0.5}), TopAbs_OUT); // 开启时原板底角镜像上角。
+                    }
+                }
+}
+TEST(LocalReconstruction, MirrorBottomDoesNotChangeHorizontalPlatesOrOtherContours)
+{
+    Fixture f;
+    for (const auto &rule : {"rectangle", "circle", "chamfer_rectangle", "quarter_hole_rectangle", "rounded_rectangle", "convex", "polygon", "smooth"})
+    {
+        LocalReconstruction request{{"first"}};
+        request.contour = rule;
+        const auto on = reconstructLocalParts(*f.model, f.cloud, request);
+        request.mirrorBottom = false;
+        const auto off = reconstructLocalParts(*f.model, f.cloud, request);
+        EXPECT_NEAR(on->summary().volumeMm3, off->summary().volumeMm3, 1e-5);
+        sameVertices(on->mesh(), off->mesh(), "first");
+    }
+    detail::LocalPlateSource source{{"rib", {0, -5, 0}, {100, 5, 80}, 1, 10}, {}, {}};
+    std::vector<Vec3> points;
+    for (int x = 0; x <= 100; x += 5)
+        for (int z = 60; z <= 80; z += 2)
+            for (int y : {-5, 5}) points.push_back({double(x), double(y), double(z)});
+    for (const auto &type : {"plate", "box"})
+    {
+        LocalReconstruction request{{"rib"}};
+        request.type = type;
+        request.contour = request.type == "box" ? "quarter_hole_rectangle" : "rectangle";
+        for (bool mirror : {true, false})
+        {
+            request.mirrorBottom = mirror;
+            const auto shape = detail::rebuildLocalShape(points, source, 10, request, {}).shape;
+            GProp_GProps volume;
+            BRepGProp::VolumeProperties(shape, volume);
+            EXPECT_NEAR(volume.Mass(), 100 * 20 * 10, 1e-5);
+        }
+    }
+}
+TEST(LocalReconstruction, ArcCornerRadiusLimitsAreAtomicAndBoxIgnoresContour)
+{
+    Fixture f;
+    for (const auto &rule : {"quarter_hole_rectangle", "rounded_rectangle"})
+    {
+        LocalReconstruction request{{"first"}};
+        request.contour = rule;
+        for (double radius : {0.0, -1.0, 40.0, 41.0, std::numeric_limits<double>::quiet_NaN()})
+        {
+            request.cornerMm = radius;
+            EXPECT_THROW((void)reconstructLocalParts(*f.model, f.cloud, request), GeometryError);
+        }
+        request.cornerMm = 40;
+        request.type = "box";
+        EXPECT_NEAR(reconstructLocalParts(*f.model, f.cloud, request)->summary().volumeMm3,
+                    f.model->summary().volumeMm3, 1e-5);
+        request.type = "plate";
+        request.cornerMm = 30;
+        request.partIds = {"first", "other"};
+        auto narrowSecond = f.cloud;
+        std::erase_if(narrowSecond.points, [](const auto &p) { return p.position.y > 190; });
+        EXPECT_THROW((void)reconstructLocalParts(*f.model, narrowSecond, request), GeometryError);
+        EXPECT_TRUE(f.model->summary().locallyReconstructedParts.empty());
+    }
 }
 TEST(LocalReconstruction, PreservesUnselectedManualThicknessAndPosition)
 {
@@ -206,6 +378,7 @@ TEST(LocalReconstruction, ServiceCropPreservesModelPreviewHistoryAndReplay)
     ASSERT_EQ(cropped.model, built.model);
     ASSERT_EQ(cropped.mesh, built.mesh);
     LocalReconstruction request{{"web"}};
+    request.contour = "quarter_hole_rectangle";
     const auto previewId = service.submitLocalReconstructionPreview(request, cropped.revision);
     done(service, previewId);
     auto preview = service.takeEdgePreview(previewId);
@@ -223,10 +396,20 @@ TEST(LocalReconstruction, ServiceCropPreservesModelPreviewHistoryAndReplay)
     EXPECT_EQ(service.project().model, built.model);
     done(service, service.submitLine("project.redo"));
     EXPECT_EQ(service.project().model, after.model);
+    request.contour = "rounded_rectangle";
+    request.mirrorBottom = false;
+    done(service, service.submitLocalReconstruction(request, service.project().revision));
+    after = service.project();
+    const auto step = dir / "rounded.step";
+    done(service, service.submitExport(step, after.revision));
+    EXPECT_NEAR(loadCadModel(step)->summary().volumeMm3, after.model->volumeMm3, 1e-5);
     done(service, service.submitStopRecording());
     std::ifstream stream(script);
     const std::string text{std::istreambuf_iterator<char>(stream), {}};
     EXPECT_NE(text.find("model.reconstruct_local"), std::string::npos);
+    EXPECT_NE(text.find("quarter_hole_rectangle"), std::string::npos);
+    EXPECT_NE(text.find("rounded_rectangle"), std::string::npos);
+    EXPECT_NE(text.find("--mirror-bottom false"), std::string::npos);
     EXPECT_EQ(text.find("LocalReconstructionPreview"), std::string::npos);
     const auto lateRecording = dir / "late-record.py";
     done(service, service.submitStartRecording(lateRecording));

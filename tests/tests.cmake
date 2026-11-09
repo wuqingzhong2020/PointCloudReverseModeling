@@ -25,6 +25,9 @@ list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelDisplayData.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelDisplayData.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelLabelVisibility.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelFocus.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelFocus.h")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/model_focus_tests.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ModelLabelVisibility.h")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointCloudDisplayData.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/PointCloudDisplayData.h")
@@ -48,6 +51,8 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_thickness_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_contour_tests.cpp")
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/thickness_label_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/thickness_label_editor_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ThicknessLabelEditor.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/ThicknessLabel.cpp")
 
 list(APPEND RM_SOURCES ${CMAKE_CURRENT_LIST_DIR}/plate_generation_tests.cpp)
@@ -57,3 +62,8 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/mirror_completion_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/local_reconstruction_tests.cpp")
 
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/plate_editing_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/tbar_recognition_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/other_model_recognition_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/obstacle_reconstruction_tests.cpp")

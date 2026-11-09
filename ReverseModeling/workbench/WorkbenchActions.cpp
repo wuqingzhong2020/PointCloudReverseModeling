@@ -59,6 +59,7 @@ WorkbenchActions::WorkbenchActions(QObject *parent)
                                 {OuterPlate, "outerPlate", "生成外扩贴板", "cube", Available},
                                 {BottomPlate, "bottomPlate", "生成下底板", "cube", Available},
                                 {MirrorComplete, "mirrorComplete", "镜像补全", "cube", Available},
+                                {MirrorCompleteAll, "mirrorCompleteAll", "全部镜像补全", "cube", Available},
                                 {WeldHole, "weldHole", "过焊孔", "hole", Available},
                                 {BottomHole, "bottomHole", "底边孔", "hole", Available},
                                 {Fillet, "fillet", "圆角/倒角", "cube", Available},

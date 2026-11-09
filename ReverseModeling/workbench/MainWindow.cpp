@@ -133,6 +133,8 @@ struct MainWindow::State
         Import,
         Reconstruct,
         DeleteModel,
+        SelectMirrorAssembly,
+        MirrorCompleteAll,
         EditThickness,
         Export,
         ExportCloud,
@@ -162,7 +164,8 @@ struct MainWindow::State
     EdgeTreatmentTool *edgeTool{};
     HoleTool *holeTool{};
     PlateAdjustmentTool *thicknessTool{};
-    std::uint64_t thicknessEditRevision{};
+    std::uint64_t thicknessEditRevision{}, mirrorSelectionRevision{};
+    std::vector<std::string> mirrorAssemblyParts;
     std::string thicknessEditPart;
     PlateAdjustmentTool *contourTool{};
     PlateAdjustmentTool *mirrorTool{};
@@ -260,6 +263,7 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         if (switching && !ids.empty()) state_->inspector->selectParts(ids);
         updateActions();
     };
+    state_->inspector->onPartClicked = [this](const std::string &id) { state_->viewport->focusPart(id); };
     state_->viewport->onModelObjectsSelected = [this](const std::vector<ModelSelection> &selections)
     {
         state_->inspector->selectObjects(selections);
@@ -734,6 +738,39 @@ MainWindow::MainWindow(QWidget *parent, StartupRequest startup)
         state_->workspace->showPanel(QStringLiteral("dock.operation"));
         state_->mirrorTool->begin();
     });
+    connect(actions.get(MirrorCompleteAll), &QAction::triggered, this, [this] {
+        if (!state_->service.isIdle() || !state_->activeTask.empty()) return;
+        state_->generationTool->cancel();
+        state_->localTool->cancel();
+        state_->plateEditTool->cancel();
+        state_->contourTool->cancel();
+        state_->mirrorTool->cancel();
+        state_->thicknessTool->cancel();
+        state_->holeTool->cancel();
+        state_->edgeTool->cancel();
+        state_->transformTool->cancel();
+        state_->referenceTool->cancel();
+        state_->actions->get(ActionId::Measure)->setChecked(false);
+        const auto project = state_->service.project();
+        if (!project.model || project.model->partIds.size() < 2) return;
+        const auto selected = state_->viewport->selectedParts();
+        if (selected.empty())
+        {
+            state_->status->setText(QStringLiteral("请先选择目标工件的任意一个部件，再执行全部镜像补全。"));
+            return;
+        }
+        state_->actions->get(ActionId::SelectSolid)->setChecked(true);
+        state_->mirrorSelectionRevision = project.revision;
+        try
+        {
+            state_->activeTask = state_->service.submitConnectedPartsInspection(selected.front(), project.revision);
+            state_->pending = State::Operation::SelectMirrorAssembly;
+            state_->cancellationRequested = false;
+            state_->progress->setValue(0);
+            updateActions();
+        }
+        catch (const std::exception &error) { reportError(text(error.what())); }
+    });
     connect(actions.get(PlateThickness), &QAction::triggered, this, [this] {
         state_->contourTool->cancel();
         state_->mirrorTool->cancel();
@@ -973,9 +1010,11 @@ void MainWindow::updateActions()
     actions.get(ActionId::Section)->setEnabled(sectionAvailable || (sectionEditable && project.section.enabled));
     actions.get(ActionId::Section)->setChecked(project.section.enabled);
     state_->sectionTool->sync(project, sectionEditable);
-    const bool canReconstruct = idle && project.cloud && project.recognition.has_value();
+    const bool hasCloud = project.cloud && !project.cloud->points.empty();
+    const bool canReconstruct = idle && hasCloud &&
+        (project.estimate.has_value() || state_->parameters->options().type == "other");
     actions.get(ActionId::Reconstruct)->setEnabled(canReconstruct);
-    state_->parameters->setEditable(canReconstruct);
+    state_->parameters->setEditable(idle && hasCloud);
     const bool currentModel = idle && project.model && (!project.model->importedFormat.empty() ||
         (!state_->parametersDirty && !state_->parameters->hasEdits()));
     actions.get(ActionId::ExportStep)->setEnabled(currentModel);
@@ -1029,10 +1068,11 @@ void MainWindow::updateActions()
     state_->generationTool->sync(project, idle);
     state_->localTool->sync(project, idle);
     state_->plateEditTool->sync(project,idle);
-    actions.get(ActionId::LocalReconstruct)->setEnabled(modelAvailable && project.cloud &&
-        !project.cloud->points.empty() && !project.model->reconstructableParts.empty() && !state_->transformTool->active());
+    actions.get(ActionId::LocalReconstruct)->setEnabled(modelAvailable && !state_->transformTool->active());
     for (const auto id : {ActionId::OuterPlate, ActionId::BottomPlate, ActionId::MirrorComplete})
         actions.get(id)->setEnabled(modelAvailable && !state_->transformTool->active());
+    actions.get(ActionId::MirrorCompleteAll)->setEnabled(modelAvailable && !state_->transformTool->active() &&
+        project.model->partIds.size() > 1 && !state_->viewport->selectedParts().empty());
     actions.get(ActionId::ExtendContour)->setEnabled(modelAvailable && !state_->transformTool->active());
     actions.get(ActionId::PlateThickness)->setEnabled(modelAvailable && !state_->transformTool->active());
     for (const auto id : {ActionId::WeldHole, ActionId::BottomHole})
@@ -1130,7 +1170,9 @@ void MainWindow::importCloud(const QString &path)
 
 void MainWindow::restoreRecognition()
 {
-    state_->parameters->setOptions({});
+    PlateBuildOptions defaults;
+    defaults.type = state_->parameters->options().type;
+    state_->parameters->setOptions(defaults);
     state_->parametersDirty = true;
     appendLog(QStringLiteral("已恢复默认识别参数，请重新生成模型。"));
     updateActions();
@@ -1141,9 +1183,7 @@ void MainWindow::reconstruct()
     try
     {
         const auto options = state_->parameters->options();
-        state_->activeTask = state_->service.submitRecognizedReconstruct(
-            options.mirrorSymmetry, state_->service.project().revision, options.endOverhangToleranceMm,
-            options.recognizeWebHoles, options.minimumHoleRadiusMm);
+        state_->activeTask = state_->service.submitRecognizedReconstruct(options,state_->service.project().revision);
         state_->pending = State::Operation::Reconstruct;
         state_->cancellationRequested = false;
         state_->progress->setValue(0);
@@ -1458,6 +1498,49 @@ void MainWindow::pollTask()
                 refreshDisplay(false);
                 state_->viewport->setSelectedParts({state_->thicknessEditPart});
                 state_->inspector->selectParts({state_->thicknessEditPart});
+            }
+            else if (operation == State::Operation::SelectMirrorAssembly)
+            {
+                if (state_->cancellationRequested) { updateActions(); return; }
+                if (project.revision != state_->mirrorSelectionRevision)
+                    throw std::runtime_error("工程已变化，请重新选择工件。");
+                std::vector<std::string> ids;
+                for (const auto &id : std::get<rm::Array>(task.result.value)) ids.push_back(std::get<std::string>(id));
+                state_->mirrorAssemblyParts = ids;
+                state_->viewport->setSelectedParts(ids);
+                state_->inspector->selectParts(ids);
+                if (ids.size() < 2)
+                    throw std::runtime_error("选中的部件没有相连板件，未执行镜像补全。");
+                appendLog(QStringLiteral("全部镜像补全：已自动选中相连工件，共 %1 个部件。").arg(ids.size()));
+                MirrorCompletion request;
+                if (std::find(ids.begin(), ids.end(), "web") != ids.end()) request.planePartId = "web";
+                else
+                {
+                    QStringList choices;
+                    for (const auto &id : ids) choices.push_back(text(id));
+                    bool accepted = false;
+                    const auto plane = QInputDialog::getItem(this, QStringLiteral("全部镜像补全"),
+                        QStringLiteral("已选中相连工件，请选择其中的镜像参考底板（腹板）："), choices, 0, false, &accepted);
+                    if (!accepted || plane.isEmpty()) { updateActions(); return; }
+                    request.planePartId = plane.toStdString();
+                }
+                for (const auto &id : ids) if (id != request.planePartId) request.partIds.push_back(id);
+                state_->activeTask = state_->service.submitMirrorCompletion(request, state_->mirrorSelectionRevision);
+                state_->pending = State::Operation::MirrorCompleteAll;
+                state_->cancellationRequested = false;
+                state_->progress->setValue(0);
+            }
+            else if (operation == State::Operation::MirrorCompleteAll)
+            {
+                refreshDisplay(false);
+                auto selected = state_->mirrorAssemblyParts;
+                if (project.model)
+                    for (const auto &[id, source] : project.model->mirroredParts)
+                        if (std::find(state_->mirrorAssemblyParts.begin(), state_->mirrorAssemblyParts.end(), source) !=
+                                state_->mirrorAssemblyParts.end() && std::find(selected.begin(), selected.end(), id) == selected.end())
+                            selected.push_back(id);
+                state_->viewport->setSelectedParts(selected);
+                state_->inspector->selectParts(selected);
             }
             else if (operation == State::Operation::DeleteModel)
             {

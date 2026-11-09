@@ -6,12 +6,15 @@
 #include <cmath>
 
 #include <QEvent>
+#include <QApplication>
 #include <QGuiApplication>
 #include <QHideEvent>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QScreen>
 #include <QToolTip>
+#include <QTimer>
 
 #include "workbench/ThicknessLabelEditor.h"
 
@@ -29,12 +32,11 @@ ThicknessLabelEditor::ThicknessLabelEditor(QWidget *parent) : QDoubleSpinBox(par
     setKeyboardTracking(false);
     setToolTip(QStringLiteral("回车修改此板件的板厚；Esc 或点击外部取消"));
     setMinimumSize(170, 34);
-    lineEdit()->installEventFilter(this);
-    installEventFilter(this);
+    qApp->installEventFilter(this);
     hide();
 }
 
-void ThicknessLabelEditor::open(const std::string &partId, double thicknessMm, const QPoint &globalCenter)
+void ThicknessLabelEditor::open(const std::string &partId, double thicknessMm, const QPoint &globalCenter, bool unresolved)
 {
     hide();
     if (partId.empty() || !std::isfinite(thicknessMm) || thicknessMm < minimum() || thicknessMm > maximum())
@@ -44,6 +46,7 @@ void ThicknessLabelEditor::open(const std::string &partId, double thicknessMm, c
     m_partId = partId;
     setValue(thicknessMm);
     m_initialValue = value(); // 防止输入框精度舍入使“未改值回车”提交一次修改。
+    m_initialUnresolved = unresolved;
     resize(std::max(170, sizeHint().width()), std::max(34, sizeHint().height()));
     QPoint position = globalCenter - QPoint(width() / 2, height() / 2);
     if (const auto *screen = QGuiApplication::screenAt(globalCenter))
@@ -61,6 +64,25 @@ void ThicknessLabelEditor::open(const std::string &partId, double thicknessMm, c
 
 bool ThicknessLabelEditor::eventFilter(QObject *object, QEvent *event)
 {
+    if (!isVisible() || m_partId.empty()) return QObject::eventFilter(object, event);
+    if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick)
+    {
+        const auto *mouse = static_cast<QMouseEvent *>(event);
+        if (!frameGeometry().contains(mouse->globalPosition().toPoint())) hide();
+    }
+    else if (event->type() == QEvent::ApplicationDeactivate ||
+             (object == this && event->type() == QEvent::WindowDeactivate))
+    {
+        hide();
+    }
+    else if ((object == this || object == lineEdit()) && event->type() == QEvent::FocusOut)
+    {
+        // 等 Qt 完成焦点切换；SpinBox 与自身编辑框互换焦点不算取消。
+        QTimer::singleShot(0, this, [this] {
+            const auto *focus = QApplication::focusWidget();
+            if (isVisible() && focus != this && (!focus || !isAncestorOf(focus))) hide();
+        });
+    }
     if ((object == this || object == lineEdit()) &&
         (event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride))
     {
@@ -82,7 +104,7 @@ bool ThicknessLabelEditor::eventFilter(QObject *object, QEvent *event)
             return true;
         }
     }
-    return QDoubleSpinBox::eventFilter(object, event);
+    return QObject::eventFilter(object, event);
 }
 
 void ThicknessLabelEditor::submit()
@@ -99,7 +121,7 @@ void ThicknessLabelEditor::submit()
     interpretText();
     const auto id = m_partId;
     const double thickness = value();
-    const bool changed = thickness != m_initialValue;
+    const bool changed = m_initialUnresolved || thickness != m_initialValue;
     hide();
     if (changed && onSubmitted)
     {
@@ -109,7 +131,9 @@ void ThicknessLabelEditor::submit()
 
 void ThicknessLabelEditor::hideEvent(QHideEvent *event)
 {
+    setValue(m_initialValue);
     m_partId.clear();
+    m_initialUnresolved = false;
     QDoubleSpinBox::hideEvent(event);
 }
 }

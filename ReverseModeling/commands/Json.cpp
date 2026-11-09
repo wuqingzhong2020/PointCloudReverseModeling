@@ -40,6 +40,18 @@ json platesJson(const std::vector<RecognizedPlate> &plates) {
             outline.push_back({{"kind", segment.arcMiddleMm ? "arc" : "line"},
                 {"firstMm", vectorJson(segment.firstMm)}, {"lastMm", vectorJson(segment.lastMm)},
                 {"arcMiddleMm", segment.arcMiddleMm ? vectorJson(*segment.arcMiddleMm) : json(nullptr)}});
+        auto &footprint = result.back()["uprightFootprint"] = json::array();
+        for (const auto &loop : plate.uprightFootprint)
+        {
+            auto edges = json::array();
+            for (const auto &segment : loop)
+            {
+                edges.push_back({{"kind", segment.arcMiddleMm ? "arc" : "line"},
+                    {"firstMm", vectorJson(segment.firstMm)}, {"lastMm", vectorJson(segment.lastMm)},
+                    {"arcMiddleMm", segment.arcMiddleMm ? vectorJson(*segment.arcMiddleMm) : json(nullptr)}});
+            }
+            footprint.push_back(std::move(edges));
+        }
     }
     return result;
 }
@@ -133,6 +145,16 @@ json toJson(const ProjectSnapshot& project) {
             {"parameters", parametersJson(m.parameters)}, {"solidCount", m.solidCount},
             {"surfaceCount", m.surfaceCount}, {"plates", platesJson(m.plates)},
             {"volumeMm3", m.volumeMm3}, {"partIds", m.partIds}};
+        result["model"]["obstacles"] = json::object();
+        for (const auto &[id, info] : m.obstacleParts)
+            result["model"]["obstacles"][id] = {{"supportPoints", info.supportPoints}, {"resolutionMm", info.resolutionMm},
+                {"paddingMm", info.paddingMm}, {"method", info.boundingBox ? "occupancy_bounding_box" : "point_cloud_convex_envelope"}};
+        result["model"]["importedThicknesses"] = json::object();
+        for (const auto &[id, info] : m.importedThicknesses)
+        {
+            result["model"]["importedThicknesses"][id] = {{"thicknessMm", info.thicknessMm},
+                {"centerMm", vectorJson(info.centerMm)}, {"normal", vectorJson(info.normal)}, {"method", "cad_parallel_faces"}};
+        }
         result["model"]["thicknessOverrides"] = json::object();
         for (const auto &[id, info] : m.thicknessOverrides)
         {
@@ -161,16 +183,27 @@ json toJson(const ProjectSnapshot& project) {
                 {"mirrorSymmetry", m.recognitionOptions.mirrorSymmetry},
                 {"endOverhangToleranceMm", m.recognitionOptions.endOverhangToleranceMm},
                 {"recognizeWebHoles", m.recognitionOptions.recognizeWebHoles},
-                {"minimumHoleRadiusMm", m.recognitionOptions.minimumHoleRadiusMm}};
+                {"minimumHoleRadiusMm", m.recognitionOptions.minimumHoleRadiusMm},
+                {"type", m.recognitionOptions.type},
+                {"onGround", m.recognitionOptions.onGround},
+                {"regularUpperSurface", m.recognitionOptions.regularUpperSurface},
+                {"projectionOntoBorder", m.recognitionOptions.projectionOntoBorder},
+                {"perpendicularHypothesis", m.recognitionOptions.perpendicularHypothesis},
+                {"maximumSlotWidthMm", m.recognitionOptions.maximumSlotWidthMm},
+                {"maximumBaseWidthMm", m.recognitionOptions.maximumBaseWidthMm}};
+            for (const auto &[id, frame] : m.recognizedPartFrames)
+                result["model"]["recognizedPartFrames"][id] = frameJson(frame);
             result["model"]["warnings"] = m.warnings;
         }
     }
     if (project.recognition) {
         result["recognition"] = {{"frame", frameJson(project.recognition->frame)},
-            {"plates", platesJson(project.recognition->plates)}, {"warnings", project.recognition->warnings},
-            {"scanSpacingMm", project.recognition->scanSpacingMm},
-            {"surfaceNoiseMm", project.recognition->surfaceNoiseMm},
-            {"contourToleranceMm", project.recognition->contourToleranceMm}};
+                                 {"plates", platesJson(project.recognition->plates)},
+                                 {"warnings", project.recognition->warnings},
+                                 {"type", project.recognition->type},
+                                 {"scanSpacingMm", project.recognition->scanSpacingMm},
+                                 {"surfaceNoiseMm", project.recognition->surfaceNoiseMm},
+                                 {"contourToleranceMm", project.recognition->contourToleranceMm}};
     }
     if (project.lastExport) {
         const auto& e = *project.lastExport;

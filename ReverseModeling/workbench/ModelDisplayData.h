@@ -71,7 +71,7 @@ struct ModelDisplayPart
 [[nodiscard]] bool isValidModelSelection(const ModelDisplayPart &part, const ModelSelection &selection);
 
 // 网格和摘要必须属于同一次建模；部件归属或索引不一致时抛出 std::invalid_argument。
-// 板厚只取自已生成模型的参数，未知部件不猜测板厚。
+// 板厚取自模型参数、点云识别或导入实体的几何检测；未知部件不猜测板厚。
 [[nodiscard]] std::vector<ModelDisplayPart> makeModelDisplayParts(
     const MeshData &mesh, const ModelSummary &model, const Vec3 &displayOrigin);
 }

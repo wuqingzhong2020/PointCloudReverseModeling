@@ -135,7 +135,7 @@ private:
 void recognizeWebHoles(const CloudData &cloud, PlateRecognition &recognition, std::stop_token stop)
 {
     auto found=std::find_if(recognition.plates.begin(),recognition.plates.end(),[](const auto &p){return p.id=="web";});
-    if(found==recognition.plates.end() || !found->thicknessMm) return;
+    if(found==recognition.plates.end() || (!found->thicknessMm && recognition.type != "other")) return;
     auto &web=*found;const double x0=web.minimumMm.x,z0=web.minimumMm.z,base=web.maximumMm.y;
     const double length=web.maximumMm.x-x0,width=web.maximumMm.z-z0;
     // 最多约二百万格，分辨率随扫描密度变化；不按固定毫米值直接把小孔填掉。
@@ -202,7 +202,7 @@ void recognizeWebHoles(const CloudData &cloud, PlateRecognition &recognition, st
 TopoDS_Shape cutObservedWebHoles(const TopoDS_Shape &shape, const RecognizedPlate &plate, std::stop_token stop)
 {
     if(plate.holes.empty()) return shape;
-    if(plate.normalAxis!=1 || !plate.thicknessMm) throw GeometryError("invalid_hole","腹板孔需要有厚度的水平板。");
+    if(plate.normalAxis!=1) throw GeometryError("invalid_hole","腹板孔需要水平板或观测面。");
     NCollection_List<TopoDS_Shape> tools;
     for(const auto &hole:plate.holes)
     {
@@ -233,12 +233,21 @@ TopoDS_Shape cutObservedWebHoles(const TopoDS_Shape &shape, const RecognizedPlat
         }
         BRepBuilderAPI_MakeFace face(wire.Wire(),true);
         if(!face.IsDone()) throw GeometryError("invalid_hole","孔轮廓不能构成有效平面。");
-        tools.Append(BRepPrimAPI_MakePrism(face.Face(),gp_Vec(0,*plate.thicknessMm+2,0)).Shape());
+        tools.Append(BRepPrimAPI_MakePrism(face.Face(),gp_Vec(0,plate.thicknessMm.value_or(0)+2,0)).Shape());
     }
     NCollection_List<TopoDS_Shape> arguments;arguments.Append(shape);
     BRepAlgoAPI_Cut cut;cut.SetArguments(arguments);cut.SetTools(tools);cut.SetNonDestructive(true);
     occ::handle<HoleProgress> progress=new HoleProgress(stop);cut.Build(progress->Start());check(stop);
     if(!cut.IsDone() || cut.HasErrors() || cut.Shape().IsNull()) throw GeometryError("hole_failed","腹板识别孔切除失败，原模型未改变。");
+    if (!plate.thicknessMm)
+    {
+        TopExp_Explorer faces(cut.Shape(), TopAbs_FACE);
+        if (!faces.More()) throw GeometryError("hole_failed", "开孔后没有有效底板观测面。");
+        const auto result = faces.Current();
+        faces.Next();
+        if (faces.More()) throw GeometryError("hole_failed", "识别孔将底板观测面分裂，未提交结果。");
+        return result;
+    }
     TopExp_Explorer solids(cut.Shape(),TopAbs_SOLID);
     if(!solids.More()) throw GeometryError("hole_failed","腹板开孔未保留有效实体。");
     const auto result=TopoDS::Solid(solids.Current());solids.Next();

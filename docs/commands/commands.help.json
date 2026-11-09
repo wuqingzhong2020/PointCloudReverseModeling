@@ -407,8 +407,8 @@
       "commands": [
         {
           "name": "reconstruct_local",
-          "summary": "按编辑后的点云局部重建指定部件，保留未选部件",
-          "usage": "model.reconstruct_local --parts <[\"部件ID\",...]> [--type plate|horizontal|box] [--contour rectangle|circle|chamfer_rectangle|convex|polygon|smooth] [--up <[X,Y,Z]>] [--tolerance 2] [--corner 5]",
+          "summary": "局部重建所选部件或生成占用空间包围盒，保留未选部件",
+          "usage": "model.reconstruct_local --parts <[\"部件ID\",...]> [--type plate|horizontal|box] [--contour rectangle|circle|chamfer_rectangle|quarter_hole_rectangle|rounded_rectangle|convex|polygon|smooth] [--up <[X,Y,Z]>] [--tolerance 2] [--corner 5] [--mirror-bottom true]",
           "params": [
             {
               "name": "parts",
@@ -421,7 +421,7 @@
               },
               "min_size": 1,
               "required": true,
-              "description": "与点云关联的原重建部件 ID；整批成功才替换，未选部件保持不变。选中部件已有开孔等修改由新识别结果替代。"
+              "description": "所选模型部件 ID；平板规则要求原始点云关联，包围盒不要求。整批成功才替换，未选部件保持不变；选中部件的手工修改会被替代。"
             },
             {
               "name": "type",
@@ -434,7 +434,7 @@
                 "box"
               ],
               "default": "plate",
-              "description": "plate 保持原板面方向及板厚；horizontal 采用指定水平法向；box 按原板件方向拟合点云包围盒。"
+              "description": "plate 保持原板面方向及板厚；horizontal 采用指定水平法向；box 按当前模型占用范围生成盒状障碍物，沿当前部件坐标系，不要求点云关联；轮廓参数不生效。"
             },
             {
               "name": "contour",
@@ -445,12 +445,14 @@
                 "rectangle",
                 "circle",
                 "chamfer_rectangle",
+                "quarter_hole_rectangle",
+                "rounded_rectangle",
                 "convex",
                 "polygon",
                 "smooth"
               ],
               "default": "rectangle",
-              "description": "矩形、包络圆、倒角矩形、凸包、凹多边形、连续曲线；包围盒忽略轮廓。仅拟合外轮廓，不重新识别内孔。"
+              "description": "矩形、包络圆、倒角矩形、1/4孔角矩形、圆角矩形、凸包、凹多边形、连续曲线；包围盒忽略轮廓。仅拟合外轮廓，不重新识别内孔。"
             },
             {
               "name": "up",
@@ -497,7 +499,15 @@
               ],
               "default": 5.0,
               "unit": "mm",
-              "description": "倒角矩形各角退距，必须小于较短边的一半。"
+              "description": "倒角矩形的角部退距，或 1/4孔角矩形/圆角矩形的半径；必须小于较短边的一半。"
+            },
+            {
+              "name": "mirror_bottom",
+              "binding": "option",
+              "option": "--mirror-bottom",
+              "type": "bool",
+              "default": true,
+              "description": "仅对原板面方向的竖直板及三种角部矩形生效：按原板底边补齐下部并镜像上角。关闭时按可见点范围重建，仅处理上角；水平板及其他轮廓忽略。"
             }
           ],
           "returns": {
@@ -540,8 +550,83 @@
         {
           "name": "reconstruct",
           "summary": "按点云识别板厚重建",
-          "usage": "model.reconstruct [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]",
+          "usage": "model.reconstruct [--type hbeam|tbar|other] [--mirror false] [--end-tolerance 30] [--web-holes true] [--min-hole-radius 5]",
           "params": [
+            {
+              "name": "type",
+              "binding": "option",
+              "option": "--type",
+              "type": "enum",
+              "values": [
+                "hbeam",
+                "tbar",
+                "other"
+              ],
+              "default": "hbeam",
+              "description": "重建工件类型；other 为俯视底板焊件，按直线/圆弧顶边垂直投影恢复连接，保留独立障碍物"
+            },
+            {
+              "name": "on_ground",
+              "binding": "option",
+              "option": "--on-ground",
+              "type": "bool",
+              "default": true,
+              "description": "T 排置于地面；关闭表示台架"
+            },
+            {
+              "name": "regular_upper_surface",
+              "binding": "option",
+              "option": "--regular-upper-surface",
+              "type": "bool",
+              "default": true,
+              "description": "T 排规则顶边；异形直 T 关闭"
+            },
+            {
+              "name": "projection_onto_border",
+              "binding": "option",
+              "option": "--projection-onto-border",
+              "type": "bool",
+              "default": false,
+              "description": "T 排端边投影到底板边界"
+            },
+            {
+              "name": "perpendicular",
+              "binding": "option",
+              "option": "--perpendicular",
+              "type": "bool",
+              "default": true,
+              "description": "T 排立板与底板垂直约束；斜 T 关闭"
+            },
+            {
+              "name": "max_slot_width",
+              "binding": "option",
+              "option": "--max-slot-width",
+              "type": "float",
+              "default": 50.0,
+              "ranges": [
+                [
+                  0,
+                  1000
+                ]
+              ],
+              "unit": "mm",
+              "description": "T 排顶边无支持断带的最大连接宽度"
+            },
+            {
+              "name": "max_base_width",
+              "binding": "option",
+              "option": "--max-base-width",
+              "type": "float",
+              "default": 250.0,
+              "ranges": [
+                [
+                  20,
+                  1000
+                ]
+              ],
+              "unit": "mm",
+              "description": "T 排底板识别宽度上限"
+            },
             {
               "name": "mirror",
               "binding": "option",

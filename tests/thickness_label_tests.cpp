@@ -52,4 +52,13 @@ TEST(ThicknessLabel, HighDpiAndInvalidTargets)
         {"hidden", 20, QRect()}};
     EXPECT_FALSE(hitThicknessLabel(invalid, QPointF(120, 60), 1));
 }
+
+TEST(ThicknessLabel, UnknownLabelIsEditableWithOneMillimeterDefault)
+{
+    const std::vector<ThicknessLabelTarget> labels{{"other-base", 1.0, QRect(200, 100, 160, 48), true}};
+    const auto target = hitThicknessLabel(labels, QPointF(120, 60), 2);
+    ASSERT_TRUE(target);
+    EXPECT_TRUE(target->unresolved);
+    EXPECT_DOUBLE_EQ(target->thicknessMm, 1.0);
+}
 }

@@ -136,6 +136,9 @@ struct RecognizedPlate {
     std::string method;
     std::vector<PlateBoundarySegment> outline; // 空表示矩形；非空为有观测依据的闭合直线/圆弧轮廓。
     std::vector<ObservedWebHole> holes; // 俯视可见的腹板圆孔/长圆孔，不包含筋板角缺口。
+    // 其他焊件的竖直连接组：底板面上的外环及内环，沿 +y 拉伸到 maximumMm.y。
+    // 保留弯板/相接板组的占用轮廓；高度不是板厚，不能套用等厚平板局部重建。
+    std::vector<std::vector<PlateBoundarySegment>> uprightFootprint;
 };
 
 struct PlateRecognition {
@@ -145,6 +148,8 @@ struct PlateRecognition {
     double scanSpacingMm{}; // 腹板支持面面积/点数给出的等效采样间距，不等同相机标定精度。
     double surfaceNoiseMm{}; // 腹板残差 MAD 的稳健尺度。
     double contourToleranceMm{}; // 由采样间距和噪声自动估计的拟合容差。
+    std::string type{"hbeam"};
+    std::vector<std::pair<std::string, BeamFrame>> plateFrames; // 存在时为该板件自身的项目坐标系。
 };
 
 struct PlateBuildOptions {
@@ -152,6 +157,13 @@ struct PlateBuildOptions {
     double endOverhangToleranceMm{30.0}; // 只收齐底板沿梁长方向的小突出；0 表示保留观测端部。
     bool recognizeWebHoles{true};
     double minimumHoleRadiusMm{5.0}; // 小于此半径的腹板孔忽略；0 仍受扫描分辨率限制。
+    std::string type{"hbeam"}; // hbeam / tbar / other；后两者在重建时独立识别。
+    bool onGround{true};
+    bool regularUpperSurface{true};
+    bool projectionOntoBorder{};
+    bool perpendicularHypothesis{true};
+    double maximumSlotWidthMm{50.0};
+    double maximumBaseWidthMm{250.0};
     bool operator==(const PlateBuildOptions &) const = default;
 };
 
@@ -264,14 +276,23 @@ struct GeneratedPlateInfo
 struct LocalReconstruction
 {
     std::vector<std::string> partIds;
-    std::string type{"plate"}; // plate 原板面方向、horizontal 指定水平法向、box 定向包围盒。
+    std::string type{"plate"}; // plate 原板面方向、horizontal 指定水平法向、box 当前模型占用空间包围盒。
     std::string contour{"rectangle"};
     Vec3 up{0, 0, 1};
     double toleranceMm{2}; // 凹轮廓采样/简化尺度。
-    double cornerMm{5}; // 倒角矩形的角部退距。
+    double cornerMm{5}; // 倒角退距或圆弧角部半径。
+    bool mirrorBottom{true}; // 三种角部矩形：按原竖板底边补齐下部，并镜像上角。
+};
+
+struct ObstacleInfo
+{
+    std::uint64_t supportPoints{};
+    double resolutionMm{}, paddingMm{}; // 扫描包络的体素尺度和采样余量，不是板厚。
+    bool boundingBox{}; // 已由局部重建转换为占用空间盒状障碍物。
 };
 
 struct ModelSummary {
+    std::map<std::string, ObstacleInfo> obstacleParts; // 独立避障实体，不参与工件镜像/板件重建。
     std::map<std::string, std::vector<std::string>> editSources; // 分割/合并来源；不受相机影响。
     std::map<std::string, std::string> localSourceUnavailable;
     std::uint64_t nextSplitId{1};
@@ -284,10 +305,12 @@ struct ModelSummary {
     std::map<std::string, GeneratedPlateInfo> generatedPlates;
     std::uint64_t nextGeneratedPlateId{1};
     std::vector<std::string> contourExpandedParts; // 外轮廓已修改，不再适用原矩形板偏差算法。
+    std::map<std::string, PlateThicknessInfo> importedThicknesses; // 导入实体的几何板厚与当前主面锚点，非手动修改。
     std::map<std::string, PlateThicknessInfo> thicknessOverrides; // 用户明确修改的板厚。
     std::vector<std::string> holeEditedParts; // 开孔后不再适用矩形板件偏差算法。
     std::vector<std::string> edgeTreatedParts; // 已做边处理的部件不适用矩形板件偏差算法。
     BeamFrame frame;
+    std::map<std::string, BeamFrame> recognizedPartFrames; // T 排等各板件的初始项目坐标系。
     std::map<std::string, BeamFrame> partTransforms; // 部件相对生成/导入位置的累计项目坐标刚体变换。
     BeamParameters parameters;
     std::uint64_t solidCount{};
@@ -296,7 +319,7 @@ struct ModelSummary {
     std::vector<RecognizedPlate> plates;
     std::uint64_t surfaceCount{};
     bool fromPointCloud{};
-    std::string importedFormat; // 空值为本地生成；step/cwrm 为导入几何，不推测板厚。
+    std::string importedFormat; // 空值为本地生成；step/cwrm 为导入几何，板厚由等厚实体主面计算。
     PlateBuildOptions recognitionOptions;
     std::vector<std::string> warnings;
 };

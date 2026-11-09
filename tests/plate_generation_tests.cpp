@@ -386,6 +386,7 @@ TEST(PlateGeneration, RejectsWrongFaceCurvedOrNotchedSupport)
 TEST(PlateGeneration, RejectsInvalidParametersAndCancellationWithoutChangingSource)
 {
     const auto source = model(BRepPrimAPI_MakeBox(200, 100, 12).Shape());
+    const double originalVolume = source->summary().volumeMm3;
     auto r = base();
     for (double d : {0.0, -1.0, 1001.0, std::numeric_limits<double>::quiet_NaN()})
     {
@@ -406,7 +407,8 @@ TEST(PlateGeneration, RejectsInvalidParametersAndCancellationWithoutChangingSour
     stop.request_stop();
     EXPECT_THROW((void)generateModelPlate(*source, base(), stop.get_token()), GeometryError);
     EXPECT_EQ(source->summary().solidCount, 1);
-    EXPECT_EQ(source->summary().volumeMm3, 240000);
+    EXPECT_EQ(source->summary().volumeMm3, originalVolume);
+    EXPECT_NEAR(originalVolume, 240000, 1e-6);
 }
 TEST(PlateGeneration, StableIdsDeletionThicknessEditingAndStepRoundTrip)
 {

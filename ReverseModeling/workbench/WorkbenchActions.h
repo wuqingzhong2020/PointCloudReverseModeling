@@ -37,6 +37,7 @@ enum class ActionId
     OuterPlate,
     BottomPlate,
     MirrorComplete,
+    MirrorCompleteAll,
     WeldHole,
     BottomHole,
     Fillet,
@@ -76,7 +77,7 @@ class WorkbenchActions final : public QObject
     QAction *get(ActionId id) const;
     static constexpr std::array modelAdjustmentIds{
         ActionId::PlateThickness, ActionId::ExtendContour, ActionId::OuterPlate,
-        ActionId::BottomPlate, ActionId::MirrorComplete};
+        ActionId::BottomPlate, ActionId::MirrorComplete, ActionId::MirrorCompleteAll};
 
   private:
     std::array<QAction *, static_cast<std::size_t>(ActionId::Count)> m_actions{};

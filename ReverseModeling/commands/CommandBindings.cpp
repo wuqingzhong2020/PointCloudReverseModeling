@@ -256,6 +256,7 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
         request.up = {up[0].as<double>(), up[1].as<double>(), up[2].as<double>()};
         request.toleranceMm = args.at("tolerance").as<double>();
         request.cornerMm = args.at("corner").as<double>();
+        request.mirrorBottom = args.at("mirror_bottom").as<bool>();
         operations.applyLocalReconstruction(request, revision);
     });
     bindBusiness(manager, operations, "model.set_thickness", [&operations](const rm::Arguments &args, auto revision) {
@@ -393,9 +394,16 @@ void registerApplicationCommandHandlers(rm::CommandManager &manager, ProjectOper
         (void)operations.submitExportCloud(commandPath(args.at("path").as<std::string>()), revision);
     });
     bindBusiness(manager, operations, "model.reconstruct", [&operations](const rm::Arguments &args, auto revision) {
-        (void)operations.submitRecognizedReconstruct(args.at("mirror").as<bool>(), revision,
-                                                     args.at("end_tolerance").as<double>(),
-                                                     args.at("web_holes").as<bool>(), args.at("min_hole_radius").as<double>());
+        PlateBuildOptions o{args.at("mirror").as<bool>(), args.at("end_tolerance").as<double>(),
+                            args.at("web_holes").as<bool>(), args.at("min_hole_radius").as<double>()};
+        o.type = args.at("type").as<std::string>();
+        o.onGround = args.at("on_ground").as<bool>();
+        o.regularUpperSurface = args.at("regular_upper_surface").as<bool>();
+        o.projectionOntoBorder = args.at("projection_onto_border").as<bool>();
+        o.perpendicularHypothesis = args.at("perpendicular").as<bool>();
+        o.maximumSlotWidthMm = args.at("max_slot_width").as<double>();
+        o.maximumBaseWidthMm = args.at("max_base_width").as<double>();
+        (void)operations.submitRecognizedReconstruct(o, revision);
     });
     bindBusiness(manager, operations, "model.parametric", [&operations](const rm::Arguments &args, auto revision) {
         const auto json = commandJson(rm::Value(args));

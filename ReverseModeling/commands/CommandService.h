@@ -130,6 +130,7 @@ public:
     [[nodiscard]] std::string submitProjectHistory(CloudHistoryAction action, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitReconstruct(const BeamParameters& parameters,
         std::uint64_t expectedRevision, std::optional<BeamFrame> frameOverride = {});
+    [[nodiscard]] std::string submitRecognizedReconstruct(const PlateBuildOptions &options, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitRecognizedReconstruct(bool mirrorSymmetry, std::uint64_t expectedRevision,
                                                          double endOverhangToleranceMm = 30.0,
                                                          bool recognizeWebHoles = true, double minimumHoleRadiusMm = 5.0);
@@ -140,6 +141,7 @@ public:
     [[nodiscard]] std::string submitExportModelCloud(const std::filesystem::path &path, double spacing, std::uint64_t revision);
     [[nodiscard]] std::string submitExportCloud(const std::filesystem::path& path, std::uint64_t expectedRevision);
     [[nodiscard]] std::string submitDeviation(std::uint64_t expectedRevision);
+    [[nodiscard]] std::string submitConnectedPartsInspection(const std::string &seedPartId, std::uint64_t revision);
     [[nodiscard]] std::string submitMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision);
     [[nodiscard]] std::string submitMirrorCompletionPreview(const MirrorCompletion &request, std::uint64_t revision);
     [[nodiscard]] std::string submitPlateGeneration(const PlateGeneration &request, std::uint64_t revision);

@@ -192,7 +192,9 @@ TEST_F(FileExchange, StepImportsNestedPlacedInstancesAndConvertsDeclaredUnits)
         reverse::workbench::makeModelDisplayParts(model->mesh(), model->summary(), model->summary().frame.originMm);
     ASSERT_EQ(display.size(), 2);
     EXPECT_EQ(display[0].colorSrgb, display[1].colorSrgb); // 统一浅灰实体，使用深色轮廓区分部件。
-    EXPECT_FALSE(display[0].thicknessMm);
+    ASSERT_TRUE(display[0].thicknessMm);
+    EXPECT_NEAR(*display[0].thicknessMm, 10, 1e-6);
+    EXPECT_EQ(model->summary().importedThicknesses.size(), 2);
     EXPECT_FALSE(display[0].thicknessUnresolved);
     EXPECT_THROW((void)reverse::evaluateDeviation(cloud(), *model), reverse::GeometryError);
 }
@@ -212,6 +214,12 @@ TEST_F(FileExchange, CwrmV2PreservesSolidsStandaloneFacesAndPlacement)
     EXPECT_EQ(model->summary().surfaceCount, 1);
     EXPECT_NEAR(model->summary().volumeMm3, 6000, 1e-6);
     EXPECT_NEAR(model->summary().frame.originMm.z, 165, 1e-6);
+    ASSERT_EQ(model->summary().importedThicknesses.size(), 1);
+    EXPECT_NEAR(model->summary().importedThicknesses.at("imported-part-1").thicknessMm, 10, 1e-6);
+    const auto parts = reverse::workbench::makeModelDisplayParts(model->mesh(), model->summary(), {});
+    ASSERT_TRUE(parts[0].thicknessMm);
+    EXPECT_FALSE(parts[1].thicknessMm); // 独立曲面没有可计算的实体板厚。
+    EXPECT_TRUE(model->summary().thicknessOverrides.empty());
     const auto exported = reverse::exportStep(*model, file(u8"转换.step"));
     EXPECT_TRUE(exported.valid);
     EXPECT_EQ(exported.surfaceCount, 1);

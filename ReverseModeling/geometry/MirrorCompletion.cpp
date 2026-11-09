@@ -11,6 +11,7 @@
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <GProp_GProps.hxx>
 #include <Message_ProgressIndicator.hxx>
 #include <Message_ProgressScope.hxx>
@@ -70,6 +71,18 @@ template <class Operation> TopoDS_Shape booleanShape(const TopoDS_Shape &a, cons
     return operation.Shape();
 }
 } // namespace
+bool mirrorPartsConnected(const TopoDS_Shape &a, const TopoDS_Shape &b, double toleranceMm, std::stop_token stop)
+{
+    if (stop.stop_requested()) throw GeometryError("cancelled", "工件选择已取消。");
+    BRepExtrema_DistShapeShape distance;
+    distance.LoadS1(a);
+    distance.LoadS2(b);
+    Handle(MirrorProgress) progress = new MirrorProgress(stop);
+    distance.Perform(progress->Start());
+    if (stop.stop_requested()) throw GeometryError("cancelled", "工件选择已取消。");
+    if (!distance.IsDone()) throw GeometryError("connection_failed", "无法判断部件连接关系，未执行镜像补全。");
+    return distance.Value() <= toleranceMm;
+}
 TopoDS_Shape mirrorPlate(const TopoDS_Shape &source, const PlateThicknessInfo &plane)
 {
     gp_Trsf transform;

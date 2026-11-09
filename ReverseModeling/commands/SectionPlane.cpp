@@ -32,17 +32,31 @@ std::optional<ReferencePlane> bottomSectionPlane(const ProjectSnapshot &project)
     if (!project.model && project.recognition)
     {
         const auto &recognition = *project.recognition;
-        const auto web = std::find_if(recognition.plates.begin(), recognition.plates.end(),
-            [](const auto &plate) { return plate.id == "web" && plate.normalAxis == 1; });
-        if (web != recognition.plates.end()) return planeAt(recognition.frame, centerOf(*web));
+        const auto web = std::find_if(recognition.plates.begin(), recognition.plates.end(), [](const auto &plate) {
+            return (plate.id == "web" || plate.id == "other-base" ||
+                    (plate.id.starts_with("tbar-") && plate.id.ends_with("-base"))) &&
+                   plate.normalAxis == 1;
+        });
+        if (web != recognition.plates.end())
+        {
+            const auto frame = std::find_if(recognition.plateFrames.begin(), recognition.plateFrames.end(),
+                                            [&](const auto &entry) { return entry.first == web->id; });
+            return planeAt(frame == recognition.plateFrames.end() ? recognition.frame : frame->second, centerOf(*web));
+        }
     }
     if (!project.model || !project.model->importedFormat.empty()) return {};
     const auto &model = *project.model;
-    if (std::find(model.partIds.begin(), model.partIds.end(), "web") == model.partIds.end()) return {};
-    const auto web = std::find_if(model.plates.begin(), model.plates.end(),
-        [](const auto &plate) { return plate.id == "web" && plate.normalAxis == 1; });
+    const auto web = std::find_if(model.plates.begin(), model.plates.end(), [](const auto &plate) {
+        return (plate.id == "web" || plate.id == "other-base" ||
+                (plate.id.starts_with("tbar-") && plate.id.ends_with("-base"))) &&
+               plate.normalAxis == 1;
+    });
     if (web == model.plates.end() && model.fromPointCloud) return {};
-    return planeAt(modelPartFrame(model, "web"), web == model.plates.end() ? Vec3{} : centerOf(*web));
+    if (web == model.plates.end() &&
+        std::find(model.partIds.begin(), model.partIds.end(), "web") == model.partIds.end())
+        return {};
+    return planeAt(modelPartFrame(model, web == model.plates.end() ? "web" : web->id),
+                   web == model.plates.end() ? Vec3{} : centerOf(*web));
 }
 
 std::optional<ReferencePlane> selectedSectionPlane(const ProjectSnapshot &project, SectionPlaneSource source)

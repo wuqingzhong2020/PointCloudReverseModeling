@@ -35,7 +35,11 @@ class ReconstructionPanel final : public QWidget
     void closeRequested();
 
   private:
-    QCheckBox *m_mirror;
+    QComboBox *m_template{}, *m_tbarPreset{}, *m_support{};
+    QWidget *m_hOptions{}, *m_tbarOptions{}, *m_otherOptions{};
+    QCheckBox *m_regular{}, *m_projection{}, *m_perpendicular{};
+    QDoubleSpinBox *m_slotWidth{}, *m_baseWidth{};
+    void updateTBarPreset();
     QCheckBox *m_webHoles;
     QDoubleSpinBox *m_minimumHoleRadius;
     QDoubleSpinBox *m_endOverhangTolerance;

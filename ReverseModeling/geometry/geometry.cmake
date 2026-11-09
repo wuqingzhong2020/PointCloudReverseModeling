@@ -49,3 +49,12 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ModelExchange.cpp")
 list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ModelExchange.h")
 
 include("${CMAKE_CURRENT_LIST_DIR}/assembly/assembly.cmake")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/TBarRecognition.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/TBarRecognition.h")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/OtherModelRecognition.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/EnclosureThickness.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/OtherModelRecognition.h")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/ObstacleReconstruction.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/ObstacleReconstruction.h")

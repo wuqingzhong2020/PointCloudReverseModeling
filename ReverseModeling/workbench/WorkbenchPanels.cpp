@@ -64,20 +64,22 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     setMinimumWidth(300);
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    auto *templateChoice = new QComboBox(this);
+    auto *templateChoice = m_template = new QComboBox(this);
     templateChoice->setObjectName(QStringLiteral("parameters.template"));
-    templateChoice->addItem(QStringLiteral("H型钢 / H型钢（默认）"), QStringLiteral("h-beam"));
+    templateChoice->addItem(QStringLiteral("H型钢 / H型钢（默认）"), QStringLiteral("hbeam"));
     templateChoice->setToolTip(QStringLiteral("使用点云板件识别重建 H 型钢（含筋板）。"));
+    templateChoice->addItem(QStringLiteral("T排 / T排（默认）"), QStringLiteral("tbar"));
+    templateChoice->addItem(QStringLiteral("其他模型 / 俯视焊件"), QStringLiteral("other"));
+    templateChoice->setToolTip(QStringLiteral("按工件类型选择对应的点云识别与板件连接规则。"));
     layout->addWidget(templateChoice);
     auto *scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     auto *content = new QWidget(scroll);
-    auto *body = new QVBoxLayout(content);
-    m_mirror = new QCheckBox(QStringLiteral("镜像对称（补建另一侧）"), content);
-    m_mirror->setObjectName(QStringLiteral("parameters.mirrorSymmetry"));
-    m_mirror->setToolTip(QStringLiteral("默认关闭。开启后沿腹板中面（未定厚时为观测面）镜像翼板和筋板；镜像部分不是点云实测。"));
-    body->addWidget(m_mirror);
-    connect(m_mirror, &QCheckBox::toggled, this, &ReconstructionPanel::markEdited);
+    auto *groups = new QVBoxLayout(content);
+    groups->setContentsMargins(0, 0, 0, 0);
+    m_hOptions = new QWidget(content);
+    groups->addWidget(m_hOptions);
+    auto *body = new QVBoxLayout(m_hOptions);
     auto *endToleranceRow = new QWidget(content);
     auto *endToleranceLayout = new QFormLayout(endToleranceRow);
     endToleranceLayout->setContentsMargins(0, 0, 0, 0);
@@ -119,6 +121,75 @@ ReconstructionPanel::ReconstructionPanel(QWidget *parent)
     });
     connect(m_minimumHoleRadius, &QDoubleSpinBox::valueChanged, this, &ReconstructionPanel::markEdited);
     body->addStretch();
+    m_tbarOptions = new QWidget(content);
+    auto *tbar = new QFormLayout(m_tbarOptions);
+    tbar->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    m_tbarPreset = new QComboBox(m_tbarOptions);
+    m_tbarPreset->setObjectName(QStringLiteral("parameters.tbarPreset"));
+    m_tbarPreset->addItems({QStringLiteral("规则直 T 排"), QStringLiteral("异形直 T 排"), QStringLiteral("规则斜 T 排"),
+                            QStringLiteral("自定义")});
+    tbar->addRow(QStringLiteral("T 排类型"), m_tbarPreset);
+    m_support = new QComboBox(m_tbarOptions);
+    m_support->addItems({QStringLiteral("地面"), QStringLiteral("台架")});
+    tbar->addRow(QStringLiteral("放置方式"), m_support);
+    m_regular = new QCheckBox(QStringLiteral("规则上表面"), m_tbarOptions);
+    m_projection = new QCheckBox(QStringLiteral("边界投影"), m_tbarOptions);
+    m_perpendicular = new QCheckBox(QStringLiteral("垂直拼装约束"), m_tbarOptions);
+    m_regular->setChecked(true);
+    m_perpendicular->setChecked(true);
+    m_regular->setToolTip(QStringLiteral("规则类型拟合直线顶边；异形类型保留扫描可见的折线和槽口。"));
+    m_projection->setToolTip(QStringLiteral("开启时将立板端边连接到底板端部边界；关闭时保持顶边端点的投影位置。"));
+    m_perpendicular->setToolTip(QStringLiteral("关闭后从立板支持点拟合倾角，适用于斜 T 排；需要足够的立板侧面数据。"));
+    for (auto *check : {m_regular, m_projection, m_perpendicular})
+    {
+        tbar->addRow(check);
+        connect(check, &QCheckBox::toggled, this, [this] {
+            updateTBarPreset();
+            markEdited();
+        });
+    }
+    m_slotWidth = new QDoubleSpinBox(m_tbarOptions);
+    m_slotWidth->setRange(0, 1000);
+    m_slotWidth->setValue(50);
+    m_slotWidth->setSuffix(QStringLiteral(" mm"));
+    m_baseWidth = new QDoubleSpinBox(m_tbarOptions);
+    m_baseWidth->setRange(20, 1000);
+    m_baseWidth->setValue(250);
+    m_baseWidth->setSuffix(QStringLiteral(" mm"));
+    tbar->addRow(QStringLiteral("插槽最大宽度"), m_slotWidth);
+    tbar->addRow(QStringLiteral("底板宽度上限"), m_baseWidth);
+    connect(m_support, &QComboBox::currentIndexChanged, this, &ReconstructionPanel::markEdited);
+    connect(m_slotWidth, &QDoubleSpinBox::valueChanged, this, &ReconstructionPanel::markEdited);
+    connect(m_baseWidth, &QDoubleSpinBox::valueChanged, this, &ReconstructionPanel::markEdited);
+    connect(m_tbarPreset, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (m_settingValues || index == 3)
+            return;
+        m_settingValues = true;
+        m_regular->setChecked(index != 1);
+        m_projection->setChecked(index == 1);
+        m_perpendicular->setChecked(index != 2);
+        m_settingValues = false;
+        markEdited();
+    });
+    m_otherOptions = paragraph(QStringLiteral(
+        "用于单个底板上的直立筋板、圆角围板等焊件。请先裁剪掉大面积地面及其他工件。\n\n"
+        "按可见顶边的直线、圆弧恢复连接轮廓，并假设立板垂直落到底板。"
+        "同高相接板可能保留为连接组；非连接外形适当简化。\n\n"
+        "底板厚度默认 1 mm，可修改；规则圆角围板按顶边宽度测厚。"
+        "遮挡根部缺口不自动补造；剩余扫描物体保留为独立障碍物。"), content);
+    groups->addWidget(m_otherOptions);
+    m_otherOptions->hide();
+    connect(m_template, &QComboBox::currentIndexChanged, this, [this] {
+        const bool tbar = m_template->currentData().toString() == QStringLiteral("tbar");
+        const bool other = m_template->currentData().toString() == QStringLiteral("other");
+        m_hOptions->setVisible(!tbar && !other);
+        m_tbarOptions->setVisible(tbar);
+        m_otherOptions->setVisible(other);
+        markEdited();
+    });
+    groups->addWidget(m_tbarOptions);
+    m_tbarOptions->hide();
+    groups->addStretch();
     scroll->setWidget(content);
     layout->addWidget(scroll, 1);
     auto *footer = new QWidget(this);
@@ -143,18 +214,44 @@ void ReconstructionPanel::markEdited()
 
 PlateBuildOptions ReconstructionPanel::options() const
 {
-    return {m_mirror->isChecked(), m_endOverhangTolerance->value(), m_webHoles->isChecked(), m_minimumHoleRadius->value()};
+    PlateBuildOptions o{false, m_endOverhangTolerance->value(), m_webHoles->isChecked(),
+                        m_minimumHoleRadius->value()};
+    o.type = m_template->currentData().toString().toStdString();
+    o.onGround = m_support->currentIndex() == 0;
+    o.regularUpperSurface = m_regular->isChecked();
+    o.projectionOntoBorder = m_projection->isChecked();
+    o.perpendicularHypothesis = m_perpendicular->isChecked();
+    o.maximumSlotWidthMm = m_slotWidth->value();
+    o.maximumBaseWidthMm = m_baseWidth->value();
+    return o;
 }
 
 void ReconstructionPanel::setOptions(const PlateBuildOptions &options)
 {
     m_settingValues = true;
-    m_mirror->setChecked(options.mirrorSymmetry);
+    m_template->setCurrentIndex(m_template->findData(QString::fromStdString(options.type)));
+    m_support->setCurrentIndex(options.onGround ? 0 : 1);
+    m_regular->setChecked(options.regularUpperSurface);
+    m_projection->setChecked(options.projectionOntoBorder);
+    m_perpendicular->setChecked(options.perpendicularHypothesis);
+    m_slotWidth->setValue(options.maximumSlotWidthMm);
+    m_baseWidth->setValue(options.maximumBaseWidthMm);
     m_endOverhangTolerance->setValue(options.endOverhangToleranceMm);
     m_webHoles->setChecked(options.recognizeWebHoles);
     m_minimumHoleRadius->setValue(options.minimumHoleRadiusMm);
     m_settingValues = false;
     m_hasEdits = false;
+    updateTBarPreset();
+}
+
+void ReconstructionPanel::updateTBarPreset()
+{
+    if (m_settingValues)
+        return;
+    const bool a = m_regular->isChecked(), b = m_projection->isChecked(), c = m_perpendicular->isChecked();
+    m_settingValues = true;
+    m_tbarPreset->setCurrentIndex(a && !b && c ? 0 : !a && b && c ? 1 : a && !b && !c ? 2 : 3);
+    m_settingValues = false;
 }
 
 void ReconstructionPanel::acceptEdits()
@@ -169,7 +266,8 @@ bool ReconstructionPanel::hasEdits() const
 
 void ReconstructionPanel::setEditable(bool editable)
 {
-    m_mirror->setEnabled(editable);
+    m_template->setEnabled(editable);
+    m_tbarOptions->setEnabled(editable);
     m_endOverhangTolerance->setEnabled(editable);
     m_restore->setEnabled(editable);
     m_webHoles->setEnabled(editable);

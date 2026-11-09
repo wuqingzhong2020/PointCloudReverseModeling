@@ -7,6 +7,7 @@
 #include "core/Types.h"
 namespace reverse::detail
 {
+bool mirrorPartsConnected(const TopoDS_Shape &a, const TopoDS_Shape &b, double toleranceMm, std::stop_token stop);
 TopoDS_Shape mirrorPlate(const TopoDS_Shape &source, const PlateThicknessInfo &plane);
 double mirrorOverlapVolume(const TopoDS_Shape &a, const TopoDS_Shape &b, std::stop_token stop);
 // 相接或重叠且能合并为单实体时返回合并板；分离时返回空形状。

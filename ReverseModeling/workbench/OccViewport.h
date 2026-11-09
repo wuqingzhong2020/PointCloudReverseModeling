@@ -71,6 +71,7 @@ public:
     std::function<bool()> onEditEscape;
     std::function<bool()> hasEditContextMenu;
     void fitAll();
+    void focusPart(const std::string &id);
     void showBottomView(const Vec3 &normal, const Vec3 &longitudinal);
     std::function<void(const QString&)> onError;
     std::function<void(const CloudSelectionRect &, CloudSelectionMode, bool editLast)> onCloudSelection;
@@ -101,6 +102,7 @@ public:
     void rebuildCloud();
     void rebuildMesh();
     void redraw();
+    void updateFocusLocator();
     void createViewCube();
     void updateViewCubeScale();
     void advanceNavigationAnimation();

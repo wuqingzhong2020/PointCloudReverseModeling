@@ -7,7 +7,7 @@ class ReconstructLocalCommand
 {
 public:
     enum class TypeValue { Value0, Value1, Value2 };
-    enum class ContourValue { Value0, Value1, Value2, Value3, Value4, Value5 };
+    enum class ContourValue { Value0, Value1, Value2, Value3, Value4, Value5, Value6, Value7 };
     struct Args
     {
         rm::Array parts{};
@@ -16,6 +16,7 @@ public:
         rm::Array up{};
         double tolerance{};
         double corner{};
+        bool mirror_bottom{};
     };
     static constexpr const char *name() { return "model.reconstruct_local"; }
     static rm::CommandDefinition definition();

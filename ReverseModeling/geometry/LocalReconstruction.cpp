@@ -1,5 +1,6 @@
 ﻿/* 文件描述：由剩余支持点生成平板或包围盒，支持规则轮廓及保留凹部的栅格外轮廓。 */
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -14,7 +15,12 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
+#include <GC_MakeArcOfCircle.hxx>
 #include <GProp_GProps.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <GeomAPI_Interpolate.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <NCollection_HArray1.hxx>
@@ -179,7 +185,75 @@ std::vector<P> concave(const std::vector<P> &p, double tolerance, std::stop_toke
         throw GeometryError("complex_contour", "轮廓过于复杂，请增大轮廓容差后重试。");
     return best;
 }
+// 按角选择倒角或精确的 90° 圆弧；孔角以矩形顶点为圆心，普通圆角与两条直边相切。
+TopoDS_Wire cornerRectangle(double x0, double x1, double y0, double y1, double bottom,
+                           double radius, const std::string &contour, const std::array<bool, 4> &treated)
+{
+    if (radius * 2 >= std::min(x1 - x0, y1 - y0))
+        throw GeometryError("invalid_corner", "倒角退距或角部半径必须小于板件较短边的一半。");
+    const P corners[] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
+    std::array<P, 4> incoming, outgoing;
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto c = corners[i], prev = corners[(i + 3) % 4], next = corners[(i + 1) % 4];
+        const double r = treated[i] ? radius : 0;
+        const double before = std::hypot(prev.x - c.x, prev.y - c.y);
+        const double after = std::hypot(next.x - c.x, next.y - c.y);
+        incoming[i] = {c.x + r * (prev.x - c.x) / before, c.y + r * (prev.y - c.y) / before};
+        outgoing[i] = {c.x + r * (next.x - c.x) / after, c.y + r * (next.y - c.y) / after};
+    }
+    const auto point = [bottom](P p) { return gp_Pnt(p.x, p.y, bottom); };
+    BRepBuilderAPI_MakeWire wire;
+    for (int i = 0; i < 4; ++i)
+    {
+        wire.Add(BRepBuilderAPI_MakeEdge(point(outgoing[(i + 3) % 4]), point(incoming[i])));
+        if (!treated[i])
+            continue;
+        if (contour == "chamfer_rectangle")
+            wire.Add(BRepBuilderAPI_MakeEdge(point(incoming[i]), point(outgoing[i])));
+        else
+        {
+            const double ratio = contour == "quarter_hole_rectangle" ? 1 / std::sqrt(2.0) : 1 - 1 / std::sqrt(2.0);
+            const auto c = corners[i];
+            const P middle{c.x + (incoming[i].x + outgoing[i].x - 2 * c.x) * ratio,
+                           c.y + (incoming[i].y + outgoing[i].y - 2 * c.y) * ratio};
+            GC_MakeArcOfCircle arc(point(incoming[i]), point(middle), point(outgoing[i]));
+            if (!arc.IsDone())
+                throw GeometryError("invalid_corner", "角部圆弧生成失败，请调整半径。");
+            wire.Add(BRepBuilderAPI_MakeEdge(arc.Value()));
+        }
+    }
+    if (!wire.IsDone())
+        throw GeometryError("invalid_contour", "角部轮廓无法闭合，原部件保留。");
+    return wire.Wire();
+}
 } // namespace
+
+TopoDS_Shape rebuildOccupancyBox(const TopoDS_Shape &shape, const BeamFrame &frame, std::stop_token stop)
+{
+    check(stop);
+    gp_Trsf placement;
+    placement.SetValues(frame.xAxis.x, frame.yAxis.x, frame.zAxis.x, frame.originMm.x,
+                        frame.xAxis.y, frame.yAxis.y, frame.zAxis.y, frame.originMm.y,
+                        frame.xAxis.z, frame.yAxis.z, frame.zAxis.z, frame.originMm.z);
+    // 几何变换使用独立副本，不能改变预览前或撤销历史中的拓扑。
+    const auto local = BRepBuilderAPI_Transform(shape, placement.Inverted(), true).Shape();
+    Bnd_Box bounds;
+    BRepBndLib::AddOptimal(local, bounds, false, false);
+    if (bounds.IsVoid() || bounds.IsOpen())
+        throw GeometryError("invalid_box", "所选模型没有有限的占用范围，无法生成包围盒。");
+    double x0, y0, z0, x1, y1, z1;
+    bounds.Get(x0, y0, z0, x1, y1, z1);
+    if (x1 - x0 <= 1e-6 || y1 - y0 <= 1e-6 || z1 - z0 <= 1e-6)
+        throw GeometryError("flat_box", "所选模型没有三维占用范围，无法生成实体包围盒。");
+    check(stop);
+    const auto box = BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, z0), x1 - x0, y1 - y0, z1 - z0).Shape();
+    const auto result = BRepBuilderAPI_Transform(box, placement, true).Shape();
+    if (result.IsNull() || !BRepCheck_Analyzer(result).IsValid())
+        throw GeometryError("invalid_box", "占用空间包围盒无效，原模型未改变。");
+    check(stop);
+    return result;
+}
 
 LocalReconstructionShape rebuildLocalShape(const std::vector<Vec3> &points, const LocalPlateSource &source,
                                            std::optional<double> thickness, const LocalReconstruction &request,
@@ -220,6 +294,34 @@ LocalReconstructionShape rebuildLocalShape(const std::vector<Vec3> &points, cons
         z0 = std::min(z0, z);
         z1 = std::max(z1, z);
     }
+    const bool cornerContour = request.contour == "chamfer_rectangle" ||
+                               request.contour == "quarter_hole_rectangle" || request.contour == "rounded_rectangle";
+    std::array<bool, 4> treated{true, true, true, true};
+    // 世界 Z 为俯视扫描的上下方向。板面距竖直不超过 15° 时，沿原板框架中较竖直的面内轴补底。
+    // 只补齐到原板底边，保留点云清理后的顶边和左右边界。
+    if (request.type == "plate" && cornerContour && std::abs(n.z) <= std::sin(15.0 * std::acos(-1.0) / 180.0))
+    {
+        const bool heightIsU = std::abs(u.z) > std::abs(v.z);
+        const bool positiveUp = (heightIsU ? u.z : v.z) > 0;
+        if (request.mirrorBottom)
+        {
+            const int heightAxis = (normal + (heightIsU ? 1 : 2)) % 3;
+            const double lows[] = {low.x, low.y, low.z}, highs[] = {high.x, high.y, high.z};
+            const double originalHalfHeight = (highs[heightAxis] - lows[heightAxis]) / 2;
+            auto &lower = heightIsU ? x0 : y0;
+            auto &upper = heightIsU ? x1 : y1;
+            if (positiveUp)
+                lower = std::min(lower, -originalHalfHeight);
+            else
+                upper = std::max(upper, originalHalfHeight);
+        }
+        else if (heightIsU)
+            treated = positiveUp ? std::array<bool, 4>{false, true, true, false}
+                                 : std::array<bool, 4>{true, false, false, true};
+        else
+            treated = positiveUp ? std::array<bool, 4>{false, false, true, true}
+                                 : std::array<bool, 4>{true, true, false, false};
+    }
     const double width = x1 - x0, height = y1 - y0;
     if (width < 1e-3 || height < 1e-3)
         throw GeometryError("degenerate_projection", "点云投影退化为线或点；请选择保持原板面方向，或调整基准面。");
@@ -242,19 +344,15 @@ LocalReconstructionShape rebuildLocalShape(const std::vector<Vec3> &points, cons
         wire = BRepBuilderAPI_MakeWire(
             BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(center.x, center.y, bottom), gp_Dir(0, 0, 1)), radius)));
     }
+    else if (!box && cornerContour)
+    {
+        wire = cornerRectangle(x0, x1, y0, y1, bottom, request.cornerMm, request.contour, treated);
+    }
     else
     {
         std::vector<P> outline;
         if (box || request.contour == "rectangle")
             outline = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
-        else if (request.contour == "chamfer_rectangle")
-        {
-            const double c = request.cornerMm;
-            if (c * 2 >= std::min(width, height))
-                throw GeometryError("invalid_corner", "倒角退距不能达到板件较短边的一半。");
-            outline = {{x0 + c, y0}, {x1 - c, y0}, {x1, y0 + c}, {x1, y1 - c},
-                       {x1 - c, y1}, {x0 + c, y1}, {x0, y1 - c}, {x0, y0 + c}};
-        }
         else if (request.contour == "convex")
             outline = hull(projected);
         else
