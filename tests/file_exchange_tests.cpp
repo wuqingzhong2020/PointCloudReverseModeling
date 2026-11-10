@@ -206,7 +206,7 @@ TEST_F(FileExchange, CwrmV2PreservesSolidsStandaloneFacesAndPlacement)
     builder.MakeCompound(compound);
     builder.Add(compound, BRepPrimAPI_MakeBox(gp_Pnt(100, 200, 300), 10, 20, 30).Shape());
     builder.Add(compound, BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 0, 10, 0, 20).Shape());
-    const auto input = file(u8"柏楚模型（中文）.cwrm");
+    const auto input = file(u8"CWRM模型（中文）.cwrm");
     write(input, cwrm(compound));
     const auto model = reverse::loadCadModel(input);
     EXPECT_EQ(model->summary().importedFormat, "cwrm");

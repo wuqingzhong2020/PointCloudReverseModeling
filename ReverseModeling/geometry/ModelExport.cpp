@@ -215,7 +215,7 @@ StepExportResult exportStep(const Model &model, const std::filesystem::path &req
         input.close();
         result.fileBytes = std::filesystem::file_size(staged.file);
         checkpoint(stop, progress, 0.95, "提交已验证的 STEP 文件");
-        detail::commitWithoutOverwrite(staged.file, target);
+        detail::commitWithoutOverwrite(staged.file, target, stop);
         result.valid = true;
     }
     catch (const Standard_Failure &failure)

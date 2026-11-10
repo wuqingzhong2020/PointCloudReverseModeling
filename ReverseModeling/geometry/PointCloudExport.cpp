@@ -78,7 +78,7 @@ CloudExportResult exportPointCloud(const CloudData &cloud, const std::filesystem
     }
     const CloudExportResult result{cloud.points.size(), std::filesystem::file_size(staged.file), cloud.hasIntensity};
     checkpoint(0.99, "提交 PCD 文件");
-    detail::commitWithoutOverwrite(staged.file, target);
+    detail::commitWithoutOverwrite(staged.file, target, stop);
     return result; // 提交后不再响应取消，以免已成功落盘却报告失败。
 }
 } // namespace reverse

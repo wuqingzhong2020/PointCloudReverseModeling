@@ -25,6 +25,9 @@
 namespace reverse
 {
 using detail::model::appendMesh;
+using detail::model::appendModelPart;
+using detail::model::beginModelPresentation;
+using detail::model::PartBounds;
 using detail::model::bounds;
 using detail::model::checkedVolume;
 using detail::model::checkpoint;
@@ -166,23 +169,11 @@ std::shared_ptr<const Model> completeModelMirror(const Model &model, const Mirro
     }
     if (!changed)
         throw GeometryError("already_symmetric", "选中板件的镜像区域已存在，无需补全；原模型未修改。");
-    result->mesh = {};
-    result->mesh.partIds = result->summary.partIds;
-    result->summary.volumeMm3 = 0;
-    BRep_Builder builder;
-    builder.MakeCompound(result->compound);
+    beginModelPresentation(*result);
     for (std::size_t i = 0; i < result->plates.size(); ++i)
     {
-        auto &part = result->plates[i];
         checkpoint(stop, progress, 0.5 + 0.49 * i / result->plates.size(), "生成镜像显示网格");
-        part.shape = BRepBuilderAPI_Copy(part.shape, true, false).Shape();
-        const auto box = bounds(part.shape);
-        part.minimum = {box[0], box[1], box[2]};
-        part.maximum = {box[3], box[4], box[5]};
-        builder.Add(result->compound, part.shape);
-        if (part.shape.ShapeType() == TopAbs_SOLID)
-            result->summary.volumeMm3 += checkedVolume(part.shape);
-        appendMesh(part.shape, static_cast<std::uint32_t>(i), result->mesh);
+        appendModelPart(*result, i, PartBounds::World);
     }
     checkpoint(stop, progress, 1, "镜像补全完成");
     return publishModel(std::move(result), stop);
@@ -224,23 +215,11 @@ std::shared_ptr<const Model> setModelStructuralSteel(const Model &model, const S
                 plate.uprightFootprint.clear();
             }
         }
-        summary.volumeMm3 = 0;
-        result->mesh = {};
-        result->mesh.partIds = summary.partIds;
-        BRep_Builder builder;
-        builder.MakeCompound(result->compound);
+        beginModelPresentation(*result);
         for (std::size_t i = 0; i < result->plates.size(); ++i)
         {
-            auto &p = result->plates[i];
             checkpoint(stop, progress, 0.5 + 0.49 * i / result->plates.size(), "生成型钢显示网格");
-            p.shape = BRepBuilderAPI_Copy(p.shape, true, false).Shape();
-            const auto box = bounds(p.shape);
-            p.minimum = {box[0], box[1], box[2]};
-            p.maximum = {box[3], box[4], box[5]};
-            builder.Add(result->compound, p.shape);
-            if (p.shape.ShapeType() == TopAbs_SOLID)
-                summary.volumeMm3 += checkedVolume(p.shape);
-            appendMesh(p.shape, static_cast<std::uint32_t>(i), result->mesh);
+            appendModelPart(*result, i, PartBounds::World);
         }
         checkpoint(stop, progress, 1, "型钢调整完成");
         return publishModel(std::move(result), stop);
@@ -303,20 +282,11 @@ std::shared_ptr<const Model> generateModelPlate(const Model &model, const PlateG
                                 "新增板厚大于轮廓窄边尺寸，不再是适合的板件；请减小板厚或增大外扩量。");
         result->summary.thicknessOverrides[id] = thickness;
         ++result->summary.solidCount;
-        result->summary.volumeMm3 = 0;
-        result->mesh = {};
-        result->mesh.partIds = result->summary.partIds;
-        BRep_Builder builder;
-        builder.MakeCompound(result->compound);
+        beginModelPresentation(*result);
         for (std::size_t i = 0; i < result->plates.size(); ++i)
         {
-            auto &p = result->plates[i];
             checkpoint(stop, progress, 0.5 + 0.49 * i / result->plates.size(), "生成附加板显示网格");
-            p.shape = BRepBuilderAPI_Copy(p.shape, true, false).Shape();
-            builder.Add(result->compound, p.shape);
-            if (p.shape.ShapeType() == TopAbs_SOLID)
-                result->summary.volumeMm3 += checkedVolume(p.shape);
-            appendMesh(p.shape, static_cast<std::uint32_t>(i), result->mesh);
+            appendModelPart(*result, i);
         }
         checkpoint(stop, progress, 1, "附加板生成完成：" + id);
         return publishModel(std::move(result), stop);

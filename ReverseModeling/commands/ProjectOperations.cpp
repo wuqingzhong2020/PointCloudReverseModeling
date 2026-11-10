@@ -133,27 +133,86 @@ struct ProjectOperations::Impl
         return model;
     }
 
-    void reportModelCommit(std::string_view label, std::uint64_t revision, std::size_t parts) const noexcept
+    void reportCommit(std::string_view event, std::string_view label, std::uint64_t revision,
+                      std::string_view countName, std::size_t count) const noexcept
     {
         try
         {
-            const auto message = "model.commit operation=" + std::string(label) +
-                " revision=" + std::to_string(revision) + " parts=" + std::to_string(parts);
+            const auto message = std::string(event) + " operation=" + std::string(label) +
+                " revision=" + std::to_string(revision) + " " + std::string(countName) + "=" + std::to_string(count);
             if (context.diagnostic)
             {
                 context.diagnostic(message);
             }
             else
             {
-                logging::write(QtInfoMsg, "model", QString::fromUtf8(message.data(),
+                logging::write(QtInfoMsg, "project", QString::fromUtf8(message.data(),
                     static_cast<qsizetype>(message.size())));
             }
         }
         catch (...)
         {
             // 诊断输出失败不能把已经提交的编辑报告为失败，也不能回滚用户模型。
-            logging::write(QtWarningMsg, "model", QStringLiteral("模型已提交，但诊断回调失败。"));
+            logging::write(QtWarningMsg, "project", QStringLiteral("工程已提交，但诊断回调失败。"));
         }
+    }
+
+    void reportModelCommit(std::string_view label, std::uint64_t revision, std::size_t parts) const noexcept
+    {
+        reportCommit("model.commit", label, revision, "parts", parts);
+    }
+
+    // 导入替换工程并建立撤销基线；计算阶段不修改当前工程。
+    void commitImport(ProjectSnapshot next, std::shared_ptr<const Model> geometry, std::uint64_t revision)
+    {
+        const bool isCloud = static_cast<bool>(next.cloud);
+        const auto count = isCloud ? next.cloud->points.size() : next.model->partIds.size();
+        {
+            std::lock_guard lock(stateMutex);
+            checkCommitRevision(revision, context.stop);
+            next.revision = revision + 1;
+            if (isCloud)
+            {
+                next.cloudId = session + "-cloud-" + std::to_string(next.revision);
+            }
+            else
+            {
+                next.modelId = session + "-model-" + std::to_string(next.revision);
+            }
+            history.establishBaseline(ProjectContent::capture(next, geometry));
+            project = std::move(next);
+            model = std::move(geometry);
+        }
+        reportCommit("project.import", isCloud ? "导入点云" : "导入模型", revision + 1,
+                     isCloud ? "points" : "parts", count);
+    }
+
+    void commitSelection(std::shared_ptr<const CloudSelection> selected,
+                         std::shared_ptr<const CloudSelectionRecipe> recipe, std::uint64_t revision)
+    {
+        const auto count = selected->size();
+        {
+            std::lock_guard lock(stateMutex);
+            checkCommitRevision(revision, context.stop, "工程已变化，请重新框选。");
+            project.selection = std::move(selected);
+            project.selectionRecipe = std::move(recipe);
+            ++project.revision;
+        }
+        reportCommit("cloud.selection", "选择点云", revision + 1, "selected", count);
+    }
+
+    void commitCloudEdit(ProjectSnapshot next, CloudEditMode mode, std::uint64_t revision)
+    {
+        const auto count = next.cloud->points.size();
+        const std::string label = mode == CloudEditMode::KeepSelection ? "截取点云" : "删除点云";
+        {
+            std::lock_guard lock(stateMutex);
+            checkCommitRevision(revision, context.stop);
+            next.revision = revision + 1;
+            next.cloudId = session + "-cloud-" + std::to_string(next.revision);
+            commitEdit(std::move(next), model, label);
+        }
+        reportCommit("cloud.commit", label, revision + 1, "points", count);
     }
 
     // 调用者持有 stateMutex，检查与发布之间不能释放锁。
@@ -270,23 +329,17 @@ std::string ProjectOperations::submitImport(const std::filesystem::path &path)
         throw GeometryError("unsupported_format", "支持导入 PCD、STEP/STP 和 CWRM 文件");
     if (extension != ".pcd")
     {
-        return state->runOperation(version, [state, absolutePath](auto stop, const auto &progress) {
+        return state->runOperation(version, [state, absolutePath, version](auto stop, const auto &progress) {
             auto model = loadCadModel(absolutePath, stop, progress);
             ProjectSnapshot next;
             next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
             next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
             next.sourcePathUtf8 = utf8Path(absolutePath);
             next.warnings = model->summary().warnings;
-            checkCancelled(stop);
-            std::lock_guard lock(state->stateMutex);
-            next.revision = state->project.revision + 1;
-            next.modelId = state->session + "-model-" + std::to_string(next.revision);
-            state->history.establishBaseline(ProjectContent::capture(next, model));
-            state->project = std::move(next);
-            state->model = std::move(model);
+            state->commitImport(std::move(next), std::move(model), version);
         });
     }
-    return state->runOperation(version, [state, absolutePath](auto stop, const auto &progress) {
+    return state->runOperation(version, [state, absolutePath, version](auto stop, const auto &progress) {
         auto cloud = loadPointCloud(absolutePath, LengthUnit::Millimeter, stop,
                                    [&](double p, auto m) { progress(p * 0.65, m); });
         ProjectSnapshot next;
@@ -294,12 +347,7 @@ std::string ProjectOperations::submitImport(const std::filesystem::path &path)
         analyzeCloud(next, stop, [&](double p, auto m) { progress(0.65 + p * 0.35, m); });
         checkCancelled(stop);
         next.sourcePathUtf8 = utf8Path(absolutePath);
-        std::lock_guard lock(state->stateMutex);
-        next.revision = state->project.revision + 1;
-        next.cloudId = state->session + "-cloud-" + std::to_string(next.revision);
-        state->history.establishBaseline(ProjectContent::capture(next, {}));
-        state->project = std::move(next);
-        state->model.reset();
+        state->commitImport(std::move(next), {}, version);
     });
 }
 
@@ -353,11 +401,7 @@ std::string ProjectOperations::submitCloudSelection(const CloudSelectionRect &re
                 if (mode != CloudSelectionMode::Clear)
                     recipe->regions.push_back({rectangle, mode});
             }
-            checkCancelled(stop);
-            std::lock_guard lock(state->stateMutex);
-            state->project.selection = std::move(selected);
-            state->project.selectionRecipe = std::move(recipe);
-            ++state->project.revision;
+            state->commitSelection(std::move(selected), std::move(recipe), snapshot.revision);
         });
 }
 
@@ -424,20 +468,16 @@ std::string ProjectOperations::submitCloudEdit(CloudEditMode mode, std::uint64_t
             {
                 next.warnings.push_back("点云已更新，已有模型保持不变；可选择部件进行局部重建。");
             }
-            checkCancelled(stop);
-            std::lock_guard lock(state->stateMutex);
-            next.revision = state->project.revision + 1;
-            next.cloudId = state->session + "-cloud-" + std::to_string(next.revision);
-            state->commitEdit(std::move(next), state->model, mode == CloudEditMode::KeepSelection ? "截取点云" : "删除点云");
+            state->commitCloudEdit(std::move(next), mode, snapshot.revision);
         });
 }
 
 std::string ProjectOperations::submitCloudHistory(CloudHistoryAction action, std::uint64_t expectedRevision)
 {
     auto *state = impl_.get();
-    return state->runOperation(expectedRevision, [state, action](auto stop, const auto &) {
+    return state->runOperation(expectedRevision, [state, action, expectedRevision](auto stop, const auto &) {
         std::lock_guard lock(state->stateMutex);
-        checkCancelled(stop);
+        state->checkCommitRevision(expectedRevision, stop);
         const bool reset = action == CloudHistoryAction::Reset;
         if (!reset && action != CloudHistoryAction::Undo && action != CloudHistoryAction::Redo)
             throw GeometryError("invalid_edit", "未知工程历史操作。");
@@ -919,10 +959,11 @@ std::string ProjectOperations::submitDeviation(std::uint64_t expectedRevision)
     if (!model || !cloud)
         throw GeometryError("no_model", "A cloud and reconstructed model are required.");
     auto *state = impl_.get();
-    return state->runOperation(expectedRevision, [state, model, cloud](auto stop, const auto &progress) {
+    return state->runOperation(expectedRevision, [state, model, cloud, expectedRevision](auto stop, const auto &progress) {
         auto result = std::make_shared<const DeviationResult>(evaluateDeviation(*cloud, *model, stop, progress));
         checkCancelled(stop);
         std::lock_guard lock(state->stateMutex);
+        state->checkCommitRevision(expectedRevision, stop);
         state->project.deviation = std::move(result);
     });
 }
@@ -968,11 +1009,7 @@ void ProjectOperations::selectIndices(const rm::Array &indices, CloudSelectionMo
     auto result = std::make_shared<const CloudSelection>(selected.begin(), selected.end());
     auto recipe = std::make_shared<CloudSelectionRecipe>();
     recipe->initialIndices = result;
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    impl_->project.selection = std::move(result);
-    impl_->project.selectionRecipe = std::move(recipe);
-    ++impl_->project.revision;
+    impl_->commitSelection(std::move(result), std::move(recipe), snapshot.revision);
 }
 
 ProjectSnapshot ProjectOperations::project() const

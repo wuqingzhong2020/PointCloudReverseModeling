@@ -24,7 +24,7 @@ namespace reverse::detail
 {
 std::string decodeCwrm(std::string_view encoded)
 {
-    // CypModeler utilities.dll 的 ShapeWriter<2> 使用固定格式密钥、AES-128-ECB、零填充及 Base64。
+    // CWRM v2 容器使用固定格式密钥、AES-128-ECB、零填充及 Base64。
     constexpr unsigned char key[] = "5ec6-868b-48f2-b";
     std::string compact;
     compact.reserve(encoded.size());

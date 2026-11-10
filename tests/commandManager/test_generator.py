@@ -4,18 +4,93 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import contextlib
 import io
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "commandManager/generator"))
 from definition_loader import load_definition, DefinitionError
-from rm_command_gen import main
+from rm_command_gen import main, write_changed
+from generation_output import plan_output, source_list
 
 VALID = '''rm_module(name="demo", summary="示例")
 rm_define(name="run", summary="运行", usage="demo.run --count <1..3>",
 params=[{"name":"count", "binding":"option", "option":"--count", "type":"int", "ranges":[[1,3]], "default":2}])
 '''
+
+
+class OutputPlanningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "generated"
+
+    def test_planning_does_not_create_or_modify_files(self):
+        plan = plan_output(self.root, {"demo/Demo.cpp": "// hello\r\n"})
+        self.assertFalse(self.root.exists())
+        self.assertEqual(plan.deletes, ())
+        self.assertEqual(plan.writes[0][1], b"\xef\xbb\xbf// hello\n")
+
+    def test_malformed_ownership_is_a_definition_error(self):
+        self.root.mkdir()
+        manifest = self.root / ".rm-generated.json"
+        for records in [[], {"demo.cpp": 1}, {"demo.cpp": "invalid"}, {"../outside": "0" * 64}]:
+            with self.subTest(records=records):
+                manifest.write_text(json.dumps(records), encoding="utf-8")
+                with self.assertRaises(DefinitionError):
+                    plan_output(self.root, {"demo.cpp": "generated"})
+        self.assertFalse((self.root / "demo.cpp").exists())
+
+    def test_validation_does_not_publish_earlier_valid_outputs(self):
+        self.root.mkdir()
+        unmanaged = self.root / "user.cpp"
+        unmanaged.write_text("user code", encoding="utf-8")
+        with self.assertRaises(DefinitionError):
+            plan_output(self.root, {"safe.cpp": "generated", "user.cpp": "replacement"})
+        self.assertFalse((self.root / "safe.cpp").exists())
+        self.assertEqual(unmanaged.read_text(encoding="utf-8"), "user code")
+
+    def test_check_returns_no_writes_or_deletes_and_preserves_timestamps(self):
+        for path, data in plan_output(self.root, {"demo.md": "hello"}).writes:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        before = {p: p.stat().st_mtime_ns for p in self.root.iterdir()}
+        plan = plan_output(self.root, {"demo.md": "hello"}, check=True)
+        self.assertEqual(plan.writes, ())
+        self.assertEqual(plan.deletes, ())
+        self.assertEqual(before, {p: p.stat().st_mtime_ns for p in self.root.iterdir()})
+
+    def test_source_list_retains_all_modules_in_stable_order(self):
+        cmake = source_list({"one/One.cpp": "", "two/Two.h": ""}, {"one.md": ""}).decode()
+        self.assertIn('RM_GENERATED_SOURCES "${RM_COMMAND_OUTPUT}/one/One.cpp"', cmake)
+        self.assertIn('RM_GENERATED_HEADERS "${RM_COMMAND_OUTPUT}/two/Two.h"', cmake)
+        self.assertIn('RM_GENERATED_DOCS "${RM_COMMAND_DOCS}/one.md"', cmake)
+
+    def test_write_failure_cleans_temporary_file_and_preserves_target(self):
+        self.root.mkdir()
+        target = self.root / "generated.cpp"
+        target.write_bytes(b"previous generation")
+        staging = self.root / "staging"
+        original_factory = tempfile.NamedTemporaryFile
+
+        class FailedStream:
+            def __init__(self, name):
+                self.name = name
+
+            def write(self, data):
+                raise OSError("simulated disk full")
+
+        @contextlib.contextmanager
+        def failed_writer(**kwargs):
+            with original_factory(**kwargs) as stream:
+                yield FailedStream(stream.name)
+
+        with patch("rm_command_gen.tempfile.NamedTemporaryFile", failed_writer):
+            with self.assertRaisesRegex(OSError, "simulated disk full"):
+                write_changed(target, b"next generation", staging)
+        self.assertEqual(target.read_bytes(), b"previous generation")
+        self.assertEqual(list(staging.iterdir()), [])
 
 
 class DefinitionTests(unittest.TestCase):

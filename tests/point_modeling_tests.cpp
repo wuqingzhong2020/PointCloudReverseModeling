@@ -9,6 +9,8 @@
 #include <thread>
 #include <fstream>
 #include <cmath>
+#include <functional>
+#include <limits>
 namespace
 {
 using namespace reverse;
@@ -148,4 +150,138 @@ TEST(PointModeling, ServiceObstacleUsesFullCloudAndWorldOrigin)
     EXPECT_EQ(wait(service,service.submitPointModeling(r,service.project().revision)).state,TaskState::Failed);
     EXPECT_EQ(service.project().model,model); std::filesystem::remove(path);
 }
+
+TEST(PointModeling, DefaultCutPreservesBaseWhileAllScopeRemovesIt)
+{
+    const auto source = buildBeam({}, {100, 40, 60, 4, 5, 3, {}});
+    const auto originalVolume = source->summary().volumeMm3;
+    auto cut = rectangle();
+    cut.cut = true;
+    cut.method = "diagonal";
+    cut.width = 0;
+    cut.height = 2000;
+    cut.points = {{-1000, -1000, 1000}, {1000, 1000, 1000}};
+    ASSERT_EQ(cut.cutScope, "no_base");
+    const auto retained = buildModelByPoints(source.get(), cut);
+    EXPECT_EQ(retained->summary().partIds, std::vector<std::string>{"web"});
+    EXPECT_EQ(retained->summary().solidCount, 1u);
+    EXPECT_NEAR(retained->summary().volumeMm3, 100 * 4 * 50, 1e-6);
+    cut.cutScope = "all";
+    const auto removed = buildModelByPoints(source.get(), cut);
+    EXPECT_TRUE(removed->summary().partIds.empty());
+    EXPECT_TRUE(removed->mesh().triangles.empty());
+    EXPECT_NEAR(removed->summary().volumeMm3, 0, 1e-9);
+    EXPECT_DOUBLE_EQ(source->summary().volumeMm3, originalVolume);
+    EXPECT_EQ(source->summary().partIds.size(), 3u);
 }
+
+TEST(PointModeling, ExtrudesToReferenceFromBothSidesOfTiltedPlane)
+{
+    const Vec3 origin{1e6, -2e6, 3e6};
+    const Vec3 normal{0, 0.6, 0.8};
+    for (const double distance : {-30.0, 30.0})
+    {
+        SCOPED_TRACE(distance);
+        auto request = rectangle();
+        request.toPlane = true;
+        request.origin = origin;
+        request.normal = normal;
+        request.height = 123; // 自动至参考面时不使用手填高度。
+        request.width = 12;
+        request.points = {{origin.x, origin.y + normal.y * distance, origin.z + normal.z * distance},
+                          {origin.x + 80, origin.y + normal.y * distance, origin.z + normal.z * distance}};
+        const auto profile = pointModelProfile(request);
+        EXPECT_NEAR(profile.height, 30, 1e-8);
+        EXPECT_NEAR(profile.extrusion.y, -normal.y * distance, 1e-8);
+        EXPECT_NEAR(profile.extrusion.z, -normal.z * distance, 1e-8);
+        for (const auto &corner : profile.contour)
+        {
+            const auto endDistance = normal.y * (corner.y + profile.extrusion.y - origin.y) +
+                                     normal.z * (corner.z + profile.extrusion.z - origin.z);
+            EXPECT_NEAR(endDistance, 0, 1e-8);
+        }
+        EXPECT_NEAR(buildModelByPoints(nullptr, request)->summary().volumeMm3, 80 * 12 * 30, 1e-3);
+    }
+}
+
+TEST(PointModeling, InvalidReferenceAndNonFiniteInputReturnActionableError)
+{
+    struct InvalidInput
+    {
+        const char *name;
+        std::function<void(PointModeling &)> change;
+    };
+    const InvalidInput cases[]{
+        {"zero normal", [](auto &r) { r.normal = {}; }},
+        {"invalid axis", [](auto &r) { r.xAxis.x = std::numeric_limits<double>::quiet_NaN(); }},
+        {"invalid origin", [](auto &r) { r.origin.y = std::numeric_limits<double>::infinity(); }},
+        {"invalid point", [](auto &r) { r.points.front().z = std::numeric_limits<double>::quiet_NaN(); }},
+        {"infinite dimension", [](auto &r) { r.length = std::numeric_limits<double>::infinity(); }},
+        {"negative dimension", [](auto &r) { r.width = -1; }},
+        {"on reference plane",
+         [](auto &r)
+         {
+             r.toPlane = true;
+             for (auto &p : r.points)
+             {
+                 p.z = 0;
+             }
+         }},
+        {"polyline reversal", [](auto &r)
+         {
+             r.shape = "polyline";
+             r.points = {{0, 0, 50}, {50, 0, 50}, {0, 0, 50}};
+         }}};
+    for (const auto &test : cases)
+    {
+        SCOPED_TRACE(test.name);
+        auto request = rectangle();
+        test.change(request);
+        try
+        {
+            (void)buildModelByPoints(nullptr, request);
+            FAIL() << "Invalid geometry input must not produce a model";
+        }
+        catch (const GeometryError &error)
+        {
+            EXPECT_EQ(error.code(), "invalid_point_model");
+            EXPECT_GT(std::string(error.what()).size(), 0u);
+        }
+    }
+}
+
+TEST(PointModeling, CancellationAfterGeometryCalculationPreservesSource)
+{
+    const auto source = buildModelByPoints(nullptr, rectangle());
+    const auto originalTriangles = source->mesh().triangles;
+    const auto originalVolume = source->summary().volumeMm3;
+    auto addition = rectangle();
+    for (auto &point : addition.points)
+    {
+        point.y += 100;
+    }
+    std::stop_source cancellation;
+    bool completedGeometry = false;
+    try
+    {
+        (void)buildModelByPoints(source.get(), addition, cancellation.get_token(),
+                                 [&](double fraction, std::string_view)
+                                 {
+                                     if (fraction == 1.0)
+                                     {
+                                         completedGeometry = true;
+                                         cancellation.request_stop();
+                                     }
+                                 });
+        FAIL() << "Cancellation before publishing the model must be honored";
+    }
+    catch (const GeometryError &error)
+    {
+        EXPECT_EQ(error.code(), "cancelled");
+    }
+    EXPECT_TRUE(completedGeometry);
+    EXPECT_DOUBLE_EQ(source->summary().volumeMm3, originalVolume);
+    EXPECT_EQ(source->mesh().triangles, originalTriangles);
+    EXPECT_EQ(source->summary().partIds.size(), 1u);
+}
+} // namespace

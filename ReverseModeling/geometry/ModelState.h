@@ -43,6 +43,17 @@ struct Model::Impl
 
 namespace reverse::detail::model
 {
+enum class PartBounds
+{
+    Preserve,
+    World
+};
+
+// 重建显示派生数据，不改变板件身份、计数或编辑元数据。
+void beginModelPresentation(Model::Impl &model);
+// 三角化会写入 OCCT TShape，必须先复制所有部件，包括本次未编辑的部件。
+void appendModelPart(Model::Impl &model, std::size_t index, PartBounds boundsPolicy = PartBounds::Preserve);
+
 void checkpoint(std::stop_token stop, const ProgressCallback &progress, double fraction, std::string_view stage);
 double checkedVolume(const TopoDS_Shape &shape);
 std::array<double, 6> bounds(const TopoDS_Shape &shape);

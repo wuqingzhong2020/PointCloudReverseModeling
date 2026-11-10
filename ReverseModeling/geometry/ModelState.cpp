@@ -8,6 +8,8 @@
 #include <utility>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
+#include <BRep_Builder.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -29,6 +31,34 @@
 
 namespace reverse::detail::model
 {
+
+void beginModelPresentation(Model::Impl &model)
+{
+    model.mesh = {};
+    model.mesh.partIds = model.summary.partIds;
+    model.summary.volumeMm3 = 0;
+    BRep_Builder builder;
+    builder.MakeCompound(model.compound);
+}
+
+void appendModelPart(Model::Impl &model, std::size_t index, PartBounds boundsPolicy)
+{
+    auto &part = model.plates.at(index);
+    part.shape = BRepBuilderAPI_Copy(part.shape, true, false).Shape();
+    if (boundsPolicy == PartBounds::World)
+    {
+        const auto box = bounds(part.shape);
+        part.minimum = {box[0], box[1], box[2]};
+        part.maximum = {box[3], box[4], box[5]};
+    }
+    BRep_Builder builder;
+    builder.Add(model.compound, part.shape);
+    if (part.shape.ShapeType() == TopAbs_SOLID)
+    {
+        model.summary.volumeMm3 += checkedVolume(part.shape);
+    }
+    appendMesh(part.shape, static_cast<std::uint32_t>(index), model.mesh);
+}
 
 void checkpoint(std::stop_token stop, const ProgressCallback &progress, double fraction, std::string_view stage)
 {

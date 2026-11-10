@@ -38,6 +38,12 @@ struct StagedFile
         }
         throw GeometryError("output_not_writable", "无法分配独立的临时导出目录");
     }
+    // 唯一拥有暂存文件；隐式复制会让另一实例提前删除仍在导出的文件。
+    StagedFile(const StagedFile &) = delete;
+    StagedFile &operator=(const StagedFile &) = delete;
+    StagedFile(StagedFile &&) = delete;
+    StagedFile &operator=(StagedFile &&) = delete;
+
     ~StagedFile()
     {
         std::error_code ignored;
@@ -48,8 +54,14 @@ struct StagedFile
     }
 };
 
-inline void commitWithoutOverwrite(const std::filesystem::path &temporary, const std::filesystem::path &target)
+inline void commitWithoutOverwrite(const std::filesystem::path &temporary, const std::filesystem::path &target,
+                                   std::stop_token stop = {})
 {
+    // 最后一次进度回调也可能收到取消；直到发布前仍允许中止，发布后不再报告取消。
+    if (stop.stop_requested())
+    {
+        throw GeometryError("cancelled", "导出已取消，未发布文件。");
+    }
 #ifdef _WIN32
     // 不设置 MOVEFILE_REPLACE_EXISTING；同盘移动在目标已存在时失败。
     if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))

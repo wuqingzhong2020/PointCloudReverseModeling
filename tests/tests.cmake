@@ -1,4 +1,4 @@
-﻿list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/service_tests.cpp")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/service_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/project_history_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/project_operation_tests.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/application_log_tests.cpp")
@@ -92,3 +92,12 @@ list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/D
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/WorkbenchTheme.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/WorkbenchActions.cpp")
 list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/WorkbenchActionHelp.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/EditorActionPolicy.cpp")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/EditorActionPolicy.h")
+list(APPEND RM_HEARDERS "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/workbench/WorkbenchActionId.h")
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/editor_action_policy_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/model_presentation_tests.cpp")
+
+list(APPEND RM_SOURCES "${CMAKE_CURRENT_LIST_DIR}/export_transaction_tests.cpp")

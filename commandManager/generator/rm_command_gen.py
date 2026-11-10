@@ -1,19 +1,19 @@
 """RmCommandGen: safe definitions -> C++ descriptors and Markdown, using Jinja2."""
 from __future__ import annotations
 import argparse
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-import hashlib
-import json
 import os
 from pathlib import Path
 import sys
 import tempfile
 import time
 from definition_loader import load_manifest, load_definition, DefinitionError, require
+from generation_output import plan_output, source_list
 
 
 @contextmanager
-def generation_lock(path):
+def generation_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as lock:
         if lock.tell() == 0:
@@ -44,33 +44,23 @@ def generation_lock(path):
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def safe_child(root, relative):
-    relative = Path(relative)
-    require(not relative.is_absolute() and ".." not in relative.parts, "unsafe generated path")
-    path = root / relative
-    require(path.resolve().is_relative_to(root.resolve()), "generated path escapes output")
-    for ancestor in [path, *path.parents]:
-        if ancestor == root.parent:
-            break
-        require(not ancestor.is_symlink(), "generated output traverses a symlink")
-    return path
-
-
-def write_changed(path, data, staging):
+def write_changed(path: Path, data: bytes, staging: Path) -> None:
     if path.exists() and path.read_bytes() == data:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     staging.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=staging, delete=False) as stream:
-        temporary = Path(stream.name)
-        stream.write(data)
+    temporary = None
     try:
+        with tempfile.NamedTemporaryFile(dir=staging, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(data)
         temporary.replace(path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", nargs="?", choices=("check", "generate", "docs"), default="generate",
                         help="check 仅检查声明；generate 生成源码；docs 仅生成 Markdown/帮助元数据")
@@ -121,43 +111,13 @@ def main(argv=None):
             pending_writes, pending_deletes = [], []
             plans = [(root, content) for root, content in [(output, files), (docroot, docs)] if root]
             for root, contents in plans:
-                manifest_path = safe_child(root, ".rm-generated.json")
-                old = json.loads(manifest_path.read_text("utf-8")) if manifest_path.exists() else {}
-                new = dict(old) if args.module else {}
-                for name, text in contents.items():
-                    if args.module and "/" in name and name.split("/")[0] != args.module:
-                        continue
-                    if args.module and root == docroot and name not in (args.module + ".md", "commands.help.json"):
-                        continue
-                    path = safe_child(root, name)
-                    data = text.replace("\r\n", "\n").encode("utf-8-sig" if path.suffix in (".h", ".cpp") else "utf-8")
-                    if args.check:
-                        require(path.exists() and path.read_bytes() == data, f"generated file is stale: {path}")
-                    elif path.exists() and name not in old:
-                        require(path.read_bytes() == data, f"refusing to overwrite unmanaged file: {path}")
-                    if not args.check:
-                        pending_writes.append((path, data))
-                    new[name] = hashlib.sha256(data).hexdigest()
-                for name, digest in old.items():
-                    selected = not args.module or name.startswith(args.module + "/") or name == args.module + ".md"
-                    if name not in contents and selected:
-                        path = safe_child(root, name)
-                        require(not args.check, f"obsolete generated file: {path}")
-                        if path.exists():
-                            require(hashlib.sha256(path.read_bytes()).hexdigest() == digest, f"obsolete file has local edits: {path}")
-                            pending_deletes.append(path)
-                        new.pop(name, None)
-                if not args.check:
-                    pending_writes.append((manifest_path, (json.dumps(new, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()))
+                plan = plan_output(root, contents, module=args.module,
+                                   is_docs=root == docroot, check=args.check)
+                pending_writes.extend(plan.writes)
+                pending_deletes.extend(plan.deletes)
             if not args.check and output:
-                cmake = "# Generated from the complete module manifest.\n"
-                for name in files:
-                    variable = "RM_GENERATED_SOURCES" if name.endswith(".cpp") else "RM_GENERATED_HEADERS"
-                    cmake += f'list(APPEND {variable} "${{RM_COMMAND_OUTPUT}}/{name}")\n'
-                if docroot:
-                    for name in docs:
-                        cmake += f'list(APPEND RM_GENERATED_DOCS "${{RM_COMMAND_DOCS}}/{name}")\n'
-                pending_writes.append((staging / "sources.cmake", cmake.encode()))
+                pending_writes.append((staging / "sources.cmake",
+                                       source_list(files, docs if docroot else {})))
             if not args.check:
                 # Finish validation before publishing anything. Staging stays in the build tree.
                 for path, data in pending_writes:

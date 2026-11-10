@@ -1,4 +1,4 @@
-﻿/* 文件描述：柏楚式有序选点、尺寸调整、切除范围和参考面障碍物向导。 */
+﻿/* 文件描述：有序选点、尺寸调整、切除范围和参考面障碍物向导。 */
 #pragma once
 #include <QWidget>
 #include "commands/CommandService.h"
@@ -42,6 +42,10 @@ private:
     void selectReference(bool clear);
     void selectObstaclePoints();
     void updateObstacleSelection();
+    void syncSelection(const ProjectSnapshot &project);
+    void finishPreviewTask(const ProjectSnapshot &project);
+    void finishApplyTask();
+    void traceState(const char *event, const QString &detail = {}) const noexcept;
     PointModeling request(bool inferred = false) const;
     Vec3 displayOrigin() const;
     CommandService &m_service;

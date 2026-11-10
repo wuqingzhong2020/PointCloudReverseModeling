@@ -4,7 +4,7 @@
 
 运行时基线为 `LibPackByVcpkgWindows` 的 CPython **3.15.2 自由线程共享 SDK（3.15t）**。其本地 `python3` overlay 将 libffi、mpdecimal、zlib、OpenSSL、SQLite3、Zstandard、bzip2、liblzma 和 Expat 九个公共 C 库作为依赖。实际产品使用时仍须按所选平台、Debug/Release 和部署内容验证对应模块及动态库。
 
-本规范中的“必须、禁止”约束项目脚本；SDK 已编入的模块、实际发布内容和尚未实现的宿主接口分别判断。构建依据见 [CPython 介绍与编译探索](../reference/CPython介绍与编译探索.md)和 SDK 的 [python3 配方](../../LibPackByVcpkgWindows/ports/python3/portfile.cmake)；扩展设计参考 [pybind11 文档](../reference/pybind11介绍与编译探索.md)及 [Python 嵌入与命令化回归测试方案](../reference/Python嵌入与命令化回归测试方案.md)。
+本规范中的“必须、禁止”约束项目脚本；SDK 已编入的模块、实际发布内容和尚未实现的宿主接口分别判断。构建依据为所用 CPython SDK 的 python3 构建配方；扩展设计遵循 pybind11 官方文档。
 
 ## 1 运行环境与依赖边界
 

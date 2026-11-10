@@ -18,6 +18,7 @@
 #include "workbench/CrossPlateTool.h"
 #include "workbench/DockWorkspace.h"
 #include "workbench/EdgeTreatmentTool.h"
+#include "workbench/EditorActionPolicy.h"
 #include "workbench/EndCapTool.h"
 #include "workbench/HoleTool.h"
 #include "workbench/LocalReconstructionTool.h"
@@ -42,6 +43,20 @@
 
 namespace reverse::workbench
 {
+namespace
+{
+void applyActionOverrides(WorkbenchActions &actions, const ActionOverrides &overrides)
+{
+    for (std::size_t index = 0; index < overrides.size(); ++index)
+    {
+        if (overrides[index].has_value())
+        {
+            actions.get(static_cast<ActionId>(index))->setEnabled(*overrides[index]);
+        }
+    }
+}
+} // namespace
+
 void MainWindow::updateActions()
 {
     const bool workbenchIdle = state_->activeTask.empty() && !state_->closing && !state_->startupPending;
@@ -236,63 +251,22 @@ void MainWindow::updateActions()
                               !state_->viewport->selectedParts().empty();
     actions.get(ActionId::Move)->setEnabled(editablePart);
     actions.get(ActionId::Rotate)->setEnabled(editablePart);
-    if (state_->transformTool->active())
+    const EditorActivity activity{
+        .transform = state_->transformTool->active(),
+        .edge = state_->edgeTool->active(),
+        .plateAdjustment = state_->holeTool->active() || state_->thicknessTool->active() ||
+                           state_->contourTool->active() || state_->mirrorTool->active(),
+        .fixedPickGeneration = state_->generationTool->active() || state_->steelTool->active() ||
+                               state_->crossTool->active() || state_->capTool->active(),
+        .localReconstruction = state_->localTool->active() || state_->plateEditTool->active(),
+        .directPlateEdit = state_->plateEditTool->active() && state_->plateEditTool->direct(),
+        .referencePlane = state_->referenceTool->picking()};
+    if (activity.transform)
     {
         state_->viewport->setCloudEditingEnabled(false);
         state_->viewport->setModelPickingEnabled(false);
-        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::SelectSolid,
-                              ActionId::Select, ActionId::AddSelection, ActionId::RemoveSelection, ActionId::Measure,
-                              ActionId::BasePlane, ActionId::DeleteModel, ActionId::CropCloud, ActionId::DeleteCloud,
-                              ActionId::ShowModel})
-            actions.get(id)->setEnabled(false);
     }
-    else
-        actions.get(ActionId::ShowModel)->setEnabled(true);
-    if (state_->edgeTool->active())
-    {
-        for (const auto id :
-             {ActionId::SelectPoint, ActionId::SelectFace, ActionId::SelectSolid, ActionId::Measure, ActionId::Move,
-              ActionId::Rotate, ActionId::BasePlane, ActionId::DeleteModel, ActionId::ShowModel, ActionId::ExportStep,
-              ActionId::ExportModel, ActionId::ExportModelCloud, ActionId::ExportAndExit})
-            actions.get(id)->setEnabled(false);
-    }
-    if (state_->holeTool->active() || state_->thicknessTool->active() ||
-        (state_->contourTool->active() || state_->mirrorTool->active()))
-    {
-        for (const auto id :
-             {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::Measure, ActionId::Move,
-              ActionId::Rotate, ActionId::BasePlane, ActionId::DeleteModel, ActionId::ShowModel, ActionId::ExportStep,
-              ActionId::ExportModel, ActionId::ExportModelCloud, ActionId::ExportAndExit})
-            actions.get(id)->setEnabled(false);
-    }
-    if (state_->generationTool->active() || state_->steelTool->active() ||
-        (state_->crossTool->active() || state_->capTool->active()))
-    {
-        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::SelectSolid,
-                              ActionId::Measure, ActionId::Move, ActionId::Rotate, ActionId::BasePlane,
-                              ActionId::DeleteModel, ActionId::ShowModel, ActionId::ExportStep, ActionId::ExportModel,
-                              ActionId::ExportModelCloud, ActionId::ExportAndExit})
-            actions.get(id)->setEnabled(false);
-    }
-    if (state_->localTool->active() || state_->plateEditTool->active())
-    {
-        for (const auto id :
-             {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::Measure, ActionId::Move,
-              ActionId::Rotate, ActionId::BasePlane, ActionId::DeleteModel, ActionId::ShowModel, ActionId::ExportStep,
-              ActionId::ExportModel, ActionId::ExportModelCloud, ActionId::ExportAndExit})
-            actions.get(id)->setEnabled(false);
-    }
-    if (state_->plateEditTool->active() && state_->plateEditTool->direct())
-    {
-        for (const auto id : {ActionId::AddSelection, ActionId::RemoveSelection})
-            actions.get(id)->setEnabled(false);
-    }
-    if (state_->referenceTool->picking())
-    {
-        for (const auto id : {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::SelectSolid,
-                              ActionId::CropCloud, ActionId::DeleteCloud})
-            actions.get(id)->setEnabled(false);
-    }
+    applyActionOverrides(actions, editorActionOverrides(activity));
     state_->pointTool->sync(project, idle);
     if (state_->pointTool->active())
     {
@@ -302,21 +276,13 @@ void MainWindow::updateActions()
                  : pickMode == ModelPickMode::Body ? ActionId::SelectSolid
                                                    : ActionId::SelectPoint)
             ->setChecked(true);
-        for (const auto id :
-             {ActionId::SelectPoint, ActionId::SelectEdge, ActionId::SelectFace, ActionId::SelectSolid,
-              ActionId::Measure, ActionId::BasePlane, ActionId::DeleteModel, ActionId::CropCloud, ActionId::DeleteCloud,
-              ActionId::Section, ActionId::ShowThickness, ActionId::ExportAndExit})
-            actions.get(id)->setEnabled(false);
+        applyActionOverrides(actions, pointModelingActionOverrides(
+            idle, state_->pointTool->selectingObstaclePoints(), state_->pointTool->showingPreview()));
         state_->viewport->setThicknessEditingEnabled(false);
-        for (const auto id : {ActionId::Select, ActionId::AddSelection, ActionId::RemoveSelection})
-            actions.get(id)->setEnabled(idle && state_->pointTool->selectingObstaclePoints());
         if (pickMode == ModelPickMode::Face || state_->pointTool->showingPreview())
         {
             actions.get(ActionId::ShowModel)->setChecked(true);
         }
-        actions.get(ActionId::ShowModel)
-            ->setEnabled(idle && state_->pointTool->selectingObstaclePoints() && !state_->pointTool->showingPreview());
-        actions.get(ActionId::ShowCloud)->setEnabled(false);
     }
     setActionHelpContext(actions.get(ActionId::BasePlane),
                          !idle                                 ? QStringLiteral("请等待当前任务完成。")

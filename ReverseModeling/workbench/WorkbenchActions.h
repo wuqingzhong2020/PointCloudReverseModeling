@@ -8,71 +8,13 @@
 
 #include <QObject>
 
+#include "workbench/WorkbenchActionId.h"
+
 class QAction;
 
 namespace reverse::workbench
 {
 
-enum class ActionId
-{
-    Open,
-    ExportStep,
-    ExportAndExit,
-    ExportCloud,
-    ExportModel,
-    ExportModelCloud,
-    Undo,
-    Redo,
-    Reset,
-    CropCloud,
-    DeleteCloud,
-    Parameters,
-    Reconstruct,
-    StopReconstruct,
-    LocalReconstruct,
-    BuildByPoints,
-    ObstacleByPoints,
-    PlateThickness,
-    ExtendContour,
-    ChannelSteel,
-    AngleSteel,
-    OuterPlate,
-    BottomPlate,
-    CrossPlate,
-    EndCapPlate,
-    MirrorComplete,
-    MirrorCompleteAll,
-    WeldHole,
-    BottomHole,
-    Fillet,
-    Move,
-    Rotate,
-    DeleteModel,
-    Measure,
-    BasePlane,
-    Deviation,
-    Select,
-    AddSelection,
-    RemoveSelection,
-    SelectPoint,
-    SelectEdge,
-    SelectFace,
-    SelectSolid,
-    ShowCloud,
-    CloudHeight,
-    CloudSolid,
-    ShowModel,
-    ShowThickness,
-    ModelSolid,
-    ModelWire,
-    Section,
-    BottomView,
-    CancelTask,
-    StartRecording,
-    StopRecording,
-    ExecuteScript,
-    Count
-};
 
 class WorkbenchActions final : public QObject
 {

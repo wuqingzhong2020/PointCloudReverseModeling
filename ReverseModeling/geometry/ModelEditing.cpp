@@ -34,6 +34,9 @@
 namespace reverse
 {
 using detail::model::appendMesh;
+using detail::model::appendModelPart;
+using detail::model::beginModelPresentation;
+using detail::model::PartBounds;
 using detail::model::checkedVolume;
 using detail::model::checkpoint;
 using detail::model::publishModel;
@@ -133,22 +136,13 @@ std::shared_ptr<const Model> treatModelEdges(const Model &model, const EdgeTreat
             if (std::find(treated.begin(), treated.end(), currentPart) == treated.end())
                 treated.push_back(currentPart);
         }
-        result->mesh = {};
-        result->mesh.partIds = result->summary.partIds;
-        result->summary.volumeMm3 = 0;
-        BRep_Builder builder;
-        builder.MakeCompound(result->compound);
+        beginModelPresentation(*result);
         for (std::size_t i = 0; i < result->plates.size(); ++i)
         {
             auto &p = result->plates[i];
             currentPart = p.id;
             checkpoint(stop, progress, 0.75 + 0.24 * i / result->plates.size(), "更新圆角 / 倒角显示网格");
-            // 三角化也会修改 TShape；未编辑部件同样复制，避免触碰历史快照。
-            p.shape = BRepBuilderAPI_Copy(p.shape, true, false).Shape();
-            builder.Add(result->compound, p.shape);
-            if (p.shape.ShapeType() == TopAbs_SOLID)
-                result->summary.volumeMm3 += checkedVolume(p.shape);
-            appendMesh(p.shape, static_cast<std::uint32_t>(i), result->mesh);
+            appendModelPart(*result, i);
         }
         checkpoint(stop, progress, 1, "圆角 / 倒角计算完成");
         return publishModel(std::move(result), stop);
@@ -420,22 +414,13 @@ std::shared_ptr<const Model> addModelHole(const Model &model, const PlateHole &r
         auto &edited = result->summary.holeEditedParts;
         if (std::find(edited.begin(), edited.end(), request.partId) == edited.end())
             edited.push_back(request.partId);
-        result->mesh = {};
-        result->mesh.partIds = result->summary.partIds;
-        result->summary.volumeMm3 = 0;
-        BRep_Builder builder;
-        builder.MakeCompound(result->compound);
+        beginModelPresentation(*result);
         for (std::size_t i = 0; i < result->plates.size(); ++i)
         {
             auto &p = result->plates[i];
             currentPart = p.id;
             checkpoint(stop, progress, 0.75 + 0.24 * i / result->plates.size(), "更新开孔显示网格");
-            // 三角化也会修改 TShape；未编辑部件同样复制，避免触碰历史快照。
-            p.shape = BRepBuilderAPI_Copy(p.shape, true, false).Shape();
-            builder.Add(result->compound, p.shape);
-            if (p.shape.ShapeType() == TopAbs_SOLID)
-                result->summary.volumeMm3 += checkedVolume(p.shape);
-            appendMesh(p.shape, static_cast<std::uint32_t>(i), result->mesh);
+            appendModelPart(*result, i);
         }
         checkpoint(stop, progress, 1, "开孔完成");
         return publishModel(std::move(result), stop);

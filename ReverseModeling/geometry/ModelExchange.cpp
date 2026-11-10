@@ -115,7 +115,7 @@ StepExportResult detail::writeCwrmShape(const TopoDS_Shape &shape, const ModelSu
     StepExportResult result{actual.solidCount, actual.volumeMm3, std::filesystem::file_size(staged.file), true,
         actual.surfaceCount};
     checkpoint(stop, progress, 0.99, "提交已验证的 CWRM 文件");
-    detail::commitWithoutOverwrite(staged.file, target);
+    detail::commitWithoutOverwrite(staged.file, target, stop);
     return result;
 }
 

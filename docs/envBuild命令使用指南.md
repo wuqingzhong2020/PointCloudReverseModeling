@@ -328,7 +328,7 @@ python envBuild.py prepareRun debug
 python envBuild.py prepareRun release_debug --dry-run
 ```
 
-它补齐 Qt 和其他 DLL、平台插件、`qt.conf`、OCCT 资源及相关许可材料，不编译也不启动程序。需要对应模式的 EXE、CMake 生成信息和可访问的 SDK 运行文件；缺少程序或构建信息时先 `compile`。独立的 `deployqt` 和 `--with-qt` 均不再提供，Qt 已包含在完整部署流程中。
+它补齐 Qt 和其他 DLL、平台插件、`qt.conf`、OCCT 资源及相关许可材料，不编译也不启动程序。需要对应模式的 EXE、CMake 生成信息和可访问的 SDK 运行文件；缺少程序或构建信息时先 `compile`。不提供独立的 `deployqt` 和 `--with-qt`，Qt 已包含在完整部署流程中。
 
 ### 5.7 package：打包已有程序
 

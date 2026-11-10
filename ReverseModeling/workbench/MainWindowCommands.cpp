@@ -42,7 +42,7 @@ void MainWindow::importCloud()
             .value(QStringLiteral("files/lastImportDirectory"), QStringLiteral("D:/projectWQZ/other-resource/cloud"))
             .toString(),
         QStringLiteral(
-            "支持的文件 (*.pcd *.step *.stp *.cwrm);;PCD 点云 (*.pcd);;STEP 模型 (*.step *.stp);;柏楚模型 (*.cwrm)"));
+            "支持的文件 (*.pcd *.step *.stp *.cwrm);;PCD 点云 (*.pcd);;STEP 模型 (*.step *.stp);;CWRM 模型 (*.cwrm)"));
     importCloud(path);
 }
 

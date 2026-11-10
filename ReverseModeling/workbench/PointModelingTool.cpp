@@ -1,4 +1,5 @@
 ﻿/* 文件描述：选点建模的交互状态机，预览与最终提交均通过命令服务。 */
+#include "commands/ApplicationLog.h"
 #include "workbench/PointModelingTool.h"
 #include "workbench/DockWorkspace.h"
 #include "commands/SectionPlane.h"
@@ -166,6 +167,7 @@ void PointModelingTool::begin(bool obstacle)
     if (m_obstacle) { m_section->setChecked(true); m_offset->setValue(10); m_reverse->setChecked(false); }
     m_direction->setCurrentIndex(bottomSectionPlane(p) ? 0 : 1); m_loading=false;
     restart();
+    traceState("begin");
     if (onChanged) onChanged();
 }
 void PointModelingTool::restart()
@@ -320,6 +322,7 @@ void PointModelingTool::updateObstacleSelection()
         }
     }
     const auto count = m_obstacleSelection->size();
+    traceState("selection", QStringLiteral("selected=%1 retained=%2").arg(count).arg(m_retainedPoints));
     if (count == 0)
     {
         m_hint->setText(QStringLiteral("框内没有原始点云。灰色外形是模型；可隐藏“实体”查看彩色点云后重新框选。"));
@@ -460,6 +463,7 @@ void PointModelingTool::apply()
 void PointModelingTool::cancel()
 {
     if (!m_active) return;
+    traceState("cancel");
     m_active=false; m_clipApplied=false; m_clipDirty=true; if (!m_task.empty()) (void)m_service.cancel(m_task);
     invalidate(); m_viewport.setPointModelingPicking(false);
     m_viewport.setSelectedObjects({}); m_referenceSelection.clear(); m_obstacleSelection.reset();
@@ -467,37 +471,112 @@ void PointModelingTool::cancel()
     m_viewport.setReferencePlane(p.referencePlane,p.section,displayOrigin(),selectedSectionPlane(p,p.section.source));
     updateUi(); if (onChanged) onChanged();
 }
-void PointModelingTool::sync(const ProjectSnapshot &project,bool idle)
+void PointModelingTool::traceState(const char *event, const QString &detail) const noexcept
 {
-    if (m_loading) return;
-    if (m_active && (project.cloudId!=m_cloudId || project.modelId!=m_modelId) && m_applyTask.empty()) cancel();
-    if (m_active && project.selection!=m_selection)
+    try
     {
-        m_selection=project.selection; invalidate(); m_revision=project.revision;
-        if (selectingObstaclePoints())
-        {
-            m_obstacleSelection=m_selection;
-            m_hint->setText(QStringLiteral("点云已框选，正在准备预览…"));
-            updateObstacleSelection();
-            if (m_retainedPoints>=3) m_debounce->start();
-        }
+        logging::write(QtInfoMsg, "point-modeling",
+            QStringLiteral("point_modeling.%1 revision=%2 step=%3 obstacle=%4 %5")
+                .arg(QString::fromLatin1(event)).arg(m_revision).arg(m_step).arg(m_obstacle).arg(detail));
     }
-    if (!m_task.empty() && m_service.task(m_task).finished())
+    catch (...)
     {
-        const auto task=m_service.task(m_task); auto result=m_service.takeEdgePreview(m_task); m_task.clear();
-        if (m_active && m_pendingValid && project.revision==m_revision)
-        {
-            m_hint->setText(QString::fromUtf8(task.message.c_str()));
-            if (result && task.state==TaskState::Succeeded) { m_preview=std::move(result); showModel(false); }
-        }
+        // 诊断格式化失败不改变向导状态。
     }
-    if (!m_applyTask.empty() && m_service.task(m_applyTask).finished())
+}
+
+void PointModelingTool::syncSelection(const ProjectSnapshot &project)
+{
+    if (!m_active || project.selection == m_selection)
     {
-        const auto task=m_service.task(m_applyTask); m_applyTask.clear(); cancel();
-        if (task.result.committed && onCommitted) onCommitted();
-        m_hint->setText(QString::fromUtf8(task.message.c_str()));
+        return;
     }
-    if (m_active && idle && m_task.empty() && !m_preview) m_revision=project.revision;
+    m_selection = project.selection;
+    invalidate();
+    m_revision = project.revision;
+    if (!selectingObstaclePoints())
+    {
+        return;
+    }
+    m_obstacleSelection = m_selection;
+    m_hint->setText(QStringLiteral("点云已框选，正在准备预览…"));
+    updateObstacleSelection();
+    if (m_retainedPoints >= 3)
+    {
+        m_debounce->start();
+    }
+}
+
+void PointModelingTool::finishPreviewTask(const ProjectSnapshot &project)
+{
+    if (m_task.empty())
+    {
+        return;
+    }
+    const auto task = m_service.task(m_task);
+    if (!task.finished())
+    {
+        return;
+    }
+    auto result = m_service.takeEdgePreview(m_task);
+    const auto taskId = QString::fromStdString(m_task);
+    m_task.clear();
+    if (!m_active || !m_pendingValid || project.revision != m_revision)
+    {
+        traceState("preview_discarded", QStringLiteral("task=%1 current_revision=%2 active=%3 valid=%4")
+            .arg(taskId).arg(project.revision).arg(m_active).arg(m_pendingValid));
+        return;
+    }
+    m_hint->setText(QString::fromUtf8(task.message.c_str()));
+    if (result && task.state == TaskState::Succeeded)
+    {
+        m_preview = std::move(result);
+        showModel(false);
+        traceState("preview_ready", QStringLiteral("task=%1").arg(taskId));
+    }
+}
+
+void PointModelingTool::finishApplyTask()
+{
+    if (m_applyTask.empty())
+    {
+        return;
+    }
+    const auto task = m_service.task(m_applyTask);
+    if (!task.finished())
+    {
+        return;
+    }
+    traceState("apply_finished", QStringLiteral("task=%1 committed=%2")
+        .arg(QString::fromStdString(m_applyTask)).arg(task.result.committed));
+    m_applyTask.clear();
+    cancel();
+    if (task.result.committed && onCommitted)
+    {
+        onCommitted();
+    }
+    m_hint->setText(QString::fromUtf8(task.message.c_str()));
+}
+
+void PointModelingTool::sync(const ProjectSnapshot &project, bool idle)
+{
+    if (m_loading)
+    {
+        return;
+    }
+    const bool sourceChanged = project.cloudId != m_cloudId || project.modelId != m_modelId;
+    if (m_active && sourceChanged && m_applyTask.empty())
+    {
+        traceState("source_changed", QStringLiteral("current_revision=%1").arg(project.revision));
+        cancel();
+    }
+    syncSelection(project);
+    finishPreviewTask(project);
+    finishApplyTask();
+    if (m_active && idle && m_task.empty() && !m_preview)
+    {
+        m_revision = project.revision;
+    }
     updateUi();
 }
 void PointModelingTool::hideEvent(QHideEvent *event)
