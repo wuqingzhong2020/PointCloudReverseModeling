@@ -35,6 +35,7 @@ add_custom_command(OUTPUT "${_rm_codegen_stamp}"
     COMMENT "Generating command descriptors and help" VERBATIM)
 add_custom_target(rm_command_codegen DEPENDS "${_rm_codegen_stamp}")
 add_library(RmCommandDefinitions STATIC ${RM_GENERATED_SOURCES} ${RM_GENERATED_HEADERS})
+rm_apply_compiler_options(RmCommandDefinitions)
 add_dependencies(RmCommandDefinitions rm_command_codegen)
 target_include_directories(RmCommandDefinitions PUBLIC "${RM_COMMAND_OUTPUT}")
 target_link_libraries(RmCommandDefinitions PUBLIC RmCommandManager)

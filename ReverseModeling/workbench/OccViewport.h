@@ -17,13 +17,21 @@
 #include "core/ReferencePlane.h"
 #include "geometry/ModelTransform.h"
 
-namespace reverse::workbench {
+namespace reverse::workbench
+{
 
-enum class ReferencePlanePickMode { None, ThreePoints, Face, OrderedPoints };
+enum class ReferencePlanePickMode
+{
+    None,
+    ThreePoints,
+    Face,
+    OrderedPoints
+};
 
-class OccViewport final : public QWidget {
-public:
-    explicit OccViewport(QWidget* parent = nullptr);
+class OccViewport final : public QWidget
+{
+  public:
+    explicit OccViewport(QWidget *parent = nullptr);
     ~OccViewport() override;
 
     void setPointCloud(std::vector<CloudDisplayPoint> points, std::shared_ptr<const CloudSelection> selection = {});
@@ -52,10 +60,10 @@ public:
     std::function<void(int)> onEndCapEdgeSelected;
     void setHolePreview(const PlateHoleBase &base, const PlateHole &request, const Vec3 &origin);
     void clearHolePreview();
-    void setBatchHolePreview(const std::vector<std::pair<PlateHoleBase,PlateHole>> &items,const Vec3 &origin);
+    void setBatchHolePreview(const std::vector<std::pair<PlateHoleBase, PlateHole>> &items, const Vec3 &origin);
     void setPlateCropEnabled(bool enabled, bool preserveRectangle = false);
-    void setPlateEditReference(const std::vector<ModelDisplayPart> &original,
-        const std::vector<std::string> &sources, const std::string &target, bool removedMaterial);
+    void setPlateEditReference(const std::vector<ModelDisplayPart> &original, const std::vector<std::string> &sources,
+                               const std::string &target, bool removedMaterial);
     void clearPlateEditReference();
     std::function<void(const CloudSelectionRect &)> onPlateCrop;
     void setReferencePlane(std::shared_ptr<const ReferencePlane> plane, PlaneSection section, const Vec3 &origin,
@@ -77,7 +85,7 @@ public:
     void fitAll();
     void focusPart(const std::string &id);
     void showBottomView(const Vec3 &normal, const Vec3 &longitudinal);
-    std::function<void(const QString&)> onError;
+    std::function<void(const QString &)> onError;
     std::function<void(const CloudSelectionRect &, CloudSelectionMode, bool editLast)> onCloudSelection;
     std::function<void(const QPoint &)> onCloudContextMenu;
     std::function<void(const std::vector<ModelSelection> &)> onModelObjectsSelected;
@@ -85,16 +93,16 @@ public:
     std::function<void(const PointMeasurementResult &)> onMeasurementCompleted;
 
   protected:
-    QPaintEngine* paintEngine() const override;
-    bool event(QEvent* event) override;
-    void showEvent(QShowEvent* event) override;
-    void paintEvent(QPaintEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
-    void mousePressEvent(QMouseEvent* event) override;
-    void mouseReleaseEvent(QMouseEvent* event) override;
-    void mouseMoveEvent(QMouseEvent* event) override;
-    void mouseDoubleClickEvent(QMouseEvent* event) override;
-    void wheelEvent(QWheelEvent* event) override;
+    QPaintEngine *paintEngine() const override;
+    bool event(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
     void leaveEvent(QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
 
@@ -112,7 +120,7 @@ public:
     void updateViewCubeScale();
     void advanceNavigationAnimation();
     void stopNavigationAnimation();
-    void fail(const QString& message);
+    void fail(const QString &message);
     void clearSelectionRectangle();
     void updateMeasurementPicking();
     void updateReferencePresentation();

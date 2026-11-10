@@ -8,8 +8,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling/ReverseModeling.cmake")
 # 单元测试程序专用的源码和头文件。
 include("${CMAKE_CURRENT_LIST_DIR}/tests.cmake")
 add_executable(ReverseServiceTests ${RM_SOURCES} ${RM_HEARDERS})
+rm_apply_compiler_options(ReverseServiceTests)
 add_executable(ApplicationLogProbe application_log_probe.cpp
     ../ReverseModeling/commands/ApplicationLog.cpp)
+rm_apply_compiler_options(ApplicationLogProbe)
 target_include_directories(ApplicationLogProbe PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling")
 target_compile_definitions(ApplicationLogProbe PRIVATE QT_MESSAGELOGCONTEXT)
 target_link_libraries(ApplicationLogProbe PRIVATE Qt6::Core)
@@ -46,6 +48,7 @@ add_executable(WorkbenchDockTests dock_workspace_tests.cpp
     ../ReverseModeling/workbench/WorkbenchActions.h
     ../ReverseModeling/workbench/WorkbenchActionHelp.cpp
     ../ReverseModeling/workbench/resources/workbench.qrc)
+rm_apply_compiler_options(WorkbenchDockTests)
 target_include_directories(WorkbenchDockTests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../ReverseModeling")
 target_link_libraries(WorkbenchDockTests PRIVATE Qt6::Widgets ads::qtadvanceddocking-qt6 GTest::gtest)
 set_target_properties(WorkbenchDockTests PROPERTIES FOLDER "qtc_runnable" AUTORCC ON)

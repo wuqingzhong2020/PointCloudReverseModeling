@@ -4,6 +4,7 @@
  * 手写同步几何业务，通过不可变快照提交结果；由固定命令工作线程调用。
  */
 #include "commands/ProjectOperations.h"
+#include "commands/ApplicationLog.h"
 #include "commands/ProjectHistory.h"
 #include "commands/SectionPlane.h"
 #include "commands/TaskOutput.h"
@@ -118,8 +119,76 @@ struct ProjectOperations::Impl
         model = std::move(geometry);
     }
 
+    std::shared_ptr<const Model> requireModel(std::uint64_t revision, std::string_view staleMessage) const
+    {
+        std::lock_guard lock(stateMutex);
+        if (project.revision != revision)
+        {
+            throw GeometryError("stale_revision", std::string(staleMessage));
+        }
+        if (!model)
+        {
+            throw GeometryError("no_model", "当前没有模型。");
+        }
+        return model;
+    }
+
+    void reportModelCommit(std::string_view label, std::uint64_t revision, std::size_t parts) const noexcept
+    {
+        try
+        {
+            const auto message = "model.commit operation=" + std::string(label) +
+                " revision=" + std::to_string(revision) + " parts=" + std::to_string(parts);
+            if (context.diagnostic)
+            {
+                context.diagnostic(message);
+            }
+            else
+            {
+                logging::write(QtInfoMsg, "model", QString::fromUtf8(message.data(),
+                    static_cast<qsizetype>(message.size())));
+            }
+        }
+        catch (...)
+        {
+            // 诊断输出失败不能把已经提交的编辑报告为失败，也不能回滚用户模型。
+            logging::write(QtWarningMsg, "model", QStringLiteral("模型已提交，但诊断回调失败。"));
+        }
+    }
+
+    // 调用者持有 stateMutex，检查与发布之间不能释放锁。
+    void checkCommitRevision(std::uint64_t revision, std::stop_token stop,
+                             std::string_view message = "工程已变化，请重新计算后应用。") const
+    {
+        checkCancelled(stop);
+        if (project.revision != revision)
+        {
+            throw GeometryError("stale_revision", std::string(message));
+        }
+    }
+
+    void commitModelEdit(std::shared_ptr<const Model> geometry, std::uint64_t revision,
+                         std::string label, std::string_view staleMessage = "工程已变化，请重新预览后应用。")
+    {
+        // 删除最后一个部件时 geometry 为空，提交明确的空模型状态。
+        const auto partCount = geometry ? geometry->summary().partIds.size() : 0;
+        {
+            std::lock_guard lock(stateMutex);
+            checkCommitRevision(revision, context.stop, staleMessage);
+            auto next = project;
+            ++next.revision;
+            next.modelId = geometry ? session + "-model-" + std::to_string(next.revision) : std::string{};
+            next.model = geometry ? std::shared_ptr<const ModelSummary>(geometry, &geometry->summary()) : nullptr;
+            next.mesh = geometry ? std::shared_ptr<const MeshData>(geometry, &geometry->mesh()) : nullptr;
+            commitEdit(std::move(next), std::move(geometry), label);
+        }
+        // 回调可读取工程快照，必须在释放状态锁后执行。
+        reportModelCommit(label, revision + 1, partCount);
+    }
+
     using Work = std::function<void(std::stop_token, const ProgressCallback &)>;
-    std::string launch(std::string, std::uint64_t expectedRevision, Work work)
+    // 同步执行；线程和任务 ID 由 CommandService 管理。保留旧入口的空字符串返回契约。
+    std::string runOperation(std::uint64_t expectedRevision, Work work)
     {
         {
             std::lock_guard lock(stateMutex);
@@ -201,7 +270,7 @@ std::string ProjectOperations::submitImport(const std::filesystem::path &path)
         throw GeometryError("unsupported_format", "支持导入 PCD、STEP/STP 和 CWRM 文件");
     if (extension != ".pcd")
     {
-        return state->launch("ImportModel", version, [state, absolutePath](auto stop, const auto &progress) {
+        return state->runOperation(version, [state, absolutePath](auto stop, const auto &progress) {
             auto model = loadCadModel(absolutePath, stop, progress);
             ProjectSnapshot next;
             next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
@@ -217,7 +286,7 @@ std::string ProjectOperations::submitImport(const std::filesystem::path &path)
             state->model = std::move(model);
         });
     }
-    return state->launch("ImportPointCloud", version, [state, absolutePath](auto stop, const auto &progress) {
+    return state->runOperation(version, [state, absolutePath](auto stop, const auto &progress) {
         auto cloud = loadPointCloud(absolutePath, LengthUnit::Millimeter, stop,
                                    [&](double p, auto m) { progress(p * 0.65, m); });
         ProjectSnapshot next;
@@ -252,8 +321,7 @@ std::string ProjectOperations::submitCloudSelection(const CloudSelectionRect &re
         throw GeometryError("invalid_selection", "原框选已失效或选择方式已变化，请重新框选。");
     }
     auto *state = impl_.get();
-    return state->launch(
-        "SelectCloud", expectedRevision, [state, snapshot, rectangle, mode, editLast](auto stop, const auto &progress) {
+    return state->runOperation(expectedRevision, [state, snapshot, rectangle, mode, editLast](auto stop, const auto &progress) {
             std::shared_ptr<const CloudSelection> selected;
             auto recipe = std::make_shared<CloudSelectionRecipe>();
             if (editLast)
@@ -310,8 +378,7 @@ std::string ProjectOperations::submitCloudEdit(CloudEditMode mode, std::uint64_t
         throw GeometryError("empty_selection", "请先框选需要处理的点云。");
     }
     auto *state = impl_.get();
-    return state->launch(
-        mode == CloudEditMode::KeepSelection ? "CropCloud" : "DeleteCloud", expectedRevision,
+    return state->runOperation(expectedRevision,
         [state, snapshot, mode, selectionOverride = std::move(selectionOverride)](auto stop, const auto &progress) {
             // Resolve explicit regions locally. Failure/cancellation must not change live selection.
             auto selection = snapshot.selection;
@@ -368,7 +435,7 @@ std::string ProjectOperations::submitCloudEdit(CloudEditMode mode, std::uint64_t
 std::string ProjectOperations::submitCloudHistory(CloudHistoryAction action, std::uint64_t expectedRevision)
 {
     auto *state = impl_.get();
-    return state->launch("ProjectHistory", expectedRevision, [state, action](auto stop, const auto &) {
+    return state->runOperation(expectedRevision, [state, action](auto stop, const auto &) {
         std::lock_guard lock(state->stateMutex);
         checkCancelled(stop);
         const bool reset = action == CloudHistoryAction::Reset;
@@ -413,10 +480,12 @@ std::string ProjectOperations::submitReconstruct(const BeamParameters &parameter
         throw GeometryError("no_frame", "Provide an explicit frame; this cloud has no usable PCA initial frame.");
     const auto frame = frameOverride ? *frameOverride : snapshot.estimate->frame;
     auto *state = impl_.get();
-    return state->launch("Reconstruct", expectedRevision, [state, parameters, frame](auto stop, const auto &progress) {
+    return state->runOperation(expectedRevision, [state, parameters, frame, expectedRevision](auto stop, const auto &progress) {
         auto model = buildBeam(frame, parameters, stop, progress);
         checkCancelled(stop);
-        std::lock_guard lock(state->stateMutex);
+        std::unique_lock lock(state->stateMutex);
+        state->checkCommitRevision(expectedRevision, stop);
+        const auto partCount = model->summary().partIds.size();
         auto next = state->project;
         ++next.revision;
         next.modelId = state->session + "-model-" + std::to_string(next.revision);
@@ -428,6 +497,8 @@ std::string ProjectOperations::submitReconstruct(const BeamParameters &parameter
         next.committedParameters = parameters;
         next.committedRecognitionOptions.reset();
         state->commitEdit(std::move(next), std::move(model), "手动参数建模");
+        lock.unlock();
+        state->reportModelCommit("手动参数建模", expectedRevision + 1, partCount);
     });
 }
 
@@ -450,10 +521,10 @@ std::string ProjectOperations::submitRecognizedReconstruct(const PlateBuildOptio
     if (!snapshot.cloud || (options.type != "other" && !snapshot.estimate))
         throw GeometryError("no_cloud", "请先导入有有效点的点云。");
     auto *state = impl_.get();
-    return state->launch("ReconstructRecognized", expectedRevision,
+    return state->runOperation(expectedRevision,
                          [state, cloud = snapshot.cloud, cached = snapshot.recognition,
                           estimate = snapshot.estimate.value_or(BeamEstimate{}),
-                          options](auto stop, const auto &progress) {
+                          options, expectedRevision](auto stop, const auto &progress) {
                              const ProgressCallback recognizeProgress = [&](double p, auto message) {
                                  progress(0.3 * p, message);
                              };
@@ -470,7 +541,9 @@ std::string ProjectOperations::submitRecognizedReconstruct(const PlateBuildOptio
                                  [&](double p, auto message) { progress(0.55 + 0.4 * p, message); });
                              model = associateModelCloud(*model, *cloud, stop);
                              checkCancelled(stop);
-                             std::lock_guard lock(state->stateMutex);
+                             std::unique_lock lock(state->stateMutex);
+                             state->checkCommitRevision(expectedRevision, stop);
+                             const auto partCount = model->summary().partIds.size();
                              auto next = state->project;
                              ++next.revision;
                              next.modelId = state->session + "-model-" + std::to_string(next.revision);
@@ -487,58 +560,42 @@ std::string ProjectOperations::submitRecognizedReconstruct(const PlateBuildOptio
                                  next.warnings = model->summary().warnings;
                              }
                              state->commitEdit(std::move(next), std::move(model), "重建模型");
+                             lock.unlock();
+                             state->reportModelCommit("重建模型", expectedRevision + 1, partCount);
                          });
 }
 
 PlateEdit ProjectOperations::prepareDirectPlateEdit(const PlateEdit &request, bool all, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision)
-            throw GeometryError("stale_revision", "工程已变化，请重新选择模型。");
-        source = impl_->model;
-    }
-    if (!source)
-        throw GeometryError("no_model", "当前没有模型。");
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新选择模型。");
     return reverse::prepareDirectPlateEdit(*source, request, all, impl_->context.stop, impl_->context.output);
 }
 
 PlateEditResult ProjectOperations::previewPlateEdit(const PlateEdit &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    { std::lock_guard lock(impl_->stateMutex);
-      if (impl_->project.revision!=revision) throw GeometryError("stale_revision","工程已变化，请重新预览。");
-      source=impl_->model; }
-    if (!source) throw GeometryError("no_model","当前没有模型。");
-    return editModelPlates(*source,request,impl_->context.stop,impl_->context.progress);
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
+    return editModelPlates(*source, request, impl_->context.stop, impl_->context.progress);
 }
 EndCapInspection ProjectOperations::inspectEndCap(const std::string &part, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision)
-            throw GeometryError("stale_revision", "工程已变化，请重新选择封板。");
-        source = impl_->model;
-    }
-    if (!source)
-        throw GeometryError("no_model", "当前没有模型。");
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新选择封板。");
     return inspectModelEndCap(*source, part, impl_->context.stop);
 }
 void ProjectOperations::applyPlateEdit(const PlateEdit &request,std::uint64_t revision)
 {
-    auto result=previewPlateEdit(request,revision);
-    for (const auto &line:result.reports) if (impl_->context.output) impl_->context.output(line+"\n");
-    if (!result.changed) return;
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    if (impl_->project.revision!=revision) throw GeometryError("stale_revision","工程已变化，整批未提交。");
-    auto next=impl_->project;++next.revision;
-    next.modelId=impl_->session+"-model-"+std::to_string(next.revision);
-    next.model=std::shared_ptr<const ModelSummary>(result.model,&result.model->summary());
-    next.mesh=std::shared_ptr<const MeshData>(result.model,&result.model->mesh());
-    impl_->commitEdit(std::move(next),std::move(result.model),plateEditTitle(request.operation));
+    auto result = previewPlateEdit(request, revision);
+    for (const auto &line : result.reports)
+    {
+        if (impl_->context.output)
+        {
+            impl_->context.output(line + "\n");
+        }
+    }
+    if (result.changed)
+    {
+        impl_->commitModelEdit(std::move(result.model), revision, plateEditTitle(request.operation),
+            "工程已变化，整批未提交。");
+    }
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewPointModeling(PointModeling request, std::uint64_t revision)
@@ -568,14 +625,9 @@ std::shared_ptr<const Model> ProjectOperations::previewPointModeling(PointModeli
 void ProjectOperations::applyPointModeling(const PointModeling &request, std::uint64_t revision)
 {
     auto model = previewPointModeling(request, revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，选点建模未提交。");
-    auto next = impl_->project; ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-    impl_->commitEdit(std::move(next), std::move(model), request.shape == "box" ? "选点生成障碍物" : "选点建模");
+    impl_->commitModelEdit(std::move(model), revision,
+        request.shape == "box" ? "选点生成障碍物" : "选点建模",
+        "工程已变化，选点建模未提交。");
 }
 std::shared_ptr<const Model> ProjectOperations::previewLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision)
 {
@@ -596,191 +648,92 @@ std::shared_ptr<const Model> ProjectOperations::previewLocalReconstruction(const
 void ProjectOperations::applyLocalReconstruction(const LocalReconstruction &request, std::uint64_t revision)
 {
     auto model = previewLocalReconstruction(request, revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，局部重建未提交。");
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-    impl_->commitEdit(std::move(next), std::move(model), "局部重建");
+    impl_->commitModelEdit(std::move(model), revision,
+        "局部重建", "工程已变化，局部重建未提交。");
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewEdgeTreatment(const EdgeTreatment &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
-    return treatModelEdges(*source,request,impl_->context.stop,impl_->context.progress);
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
+    return treatModelEdges(*source, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyEdgeTreatment(const EdgeTreatment &request, std::uint64_t revision)
 {
-    auto model = previewEdgeTreatment(request,revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model,&model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model,&model->mesh());
-    impl_->commitEdit(std::move(next),std::move(model), "圆角 / 倒角");
+    auto model = previewEdgeTreatment(request, revision);
+    impl_->commitModelEdit(std::move(model), revision,
+        "圆角 / 倒角");
 }
 
 std::map<std::string, PlateThicknessInfo> ProjectOperations::inspectThickness(
     const std::vector<std::string> &parts, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision)
-        {
-            throw GeometryError("stale_revision", "工程已变化，请重新选择板件。");
-        }
-        source = impl_->model;
-    }
-    if (!source)
-    {
-        throw GeometryError("no_model", "当前没有模型。");
-    }
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新选择板件。");
     return inspectModelThickness(*source, parts, impl_->context.stop);
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewThickness(const PlateThicknessChange &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
-    return changeModelThickness(*source,request,impl_->context.stop,impl_->context.progress);
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
+    return changeModelThickness(*source, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyThickness(const PlateThicknessChange &request, std::uint64_t revision)
 {
-    auto model = previewThickness(request,revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model,&model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model,&model->mesh());
-    impl_->commitEdit(std::move(next),std::move(model), "修改板厚");
+    auto model = previewThickness(request, revision);
+    impl_->commitModelEdit(std::move(model), revision,
+        "修改板厚");
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewContourExpansion(const PlateContourExpansion &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
-    return expandModelContours(*source,request,impl_->context.stop,impl_->context.progress);
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
+    return expandModelContours(*source, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyContourExpansion(const PlateContourExpansion &request, std::uint64_t revision)
 {
-    auto model = previewContourExpansion(request,revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model,&model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model,&model->mesh());
-    impl_->commitEdit(std::move(next),std::move(model), "外扩板件轮廓");
+    auto model = previewContourExpansion(request, revision);
+    impl_->commitModelEdit(std::move(model), revision,
+        "外扩板件轮廓");
 }
 
 std::vector<std::string> ProjectOperations::inspectConnectedParts(const std::string &seedPartId, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新选择工件。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新选择工件。");
     return connectedModelParts(*source, seedPartId, impl_->context.stop, impl_->context.progress);
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
-    return completeModelMirror(*source,request,impl_->context.stop,impl_->context.progress);
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
+    return completeModelMirror(*source, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyMirrorCompletion(const MirrorCompletion &request, std::uint64_t revision)
 {
-    auto model = previewMirrorCompletion(request,revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model,&model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model,&model->mesh());
-    impl_->commitEdit(std::move(next),std::move(model), "镜像补全");
+    auto model = previewMirrorCompletion(request, revision);
+    impl_->commitModelEdit(std::move(model), revision,
+        "镜像补全");
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewStructuralSteel(const StructuralSteel &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
     return setModelStructuralSteel(*source, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyStructuralSteel(const StructuralSteel &request, std::uint64_t revision)
 {
     auto model = previewStructuralSteel(request, revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-    impl_->commitEdit(std::move(next), std::move(model),
+    impl_->commitModelEdit(std::move(model), revision,
         request.kind == StructuralSteelKind::Channel ? "设为槽钢" : "设为角钢");
 }
 
 std::shared_ptr<const Model> ProjectOperations::previewPlateGeneration(const PlateGeneration &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
     return generateModelPlate(*source, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyPlateGeneration(const PlateGeneration &request, std::uint64_t revision)
 {
     auto model = previewPlateGeneration(request, revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-    impl_->commitEdit(std::move(next), std::move(model),
+    impl_->commitModelEdit(std::move(model), revision,
         request.kind == PlateGenerationKind::Cover ? "生成外扩贴板" : "生成下底板");
 }
 
@@ -799,26 +752,14 @@ std::vector<PlateHoleBase> ProjectOperations::inspectHoleBases(const std::string
 
 std::shared_ptr<const Model> ProjectOperations::previewHole(const PlateHole &request, std::uint64_t revision)
 {
-    std::shared_ptr<const Model> source;
-    {
-        std::lock_guard lock(impl_->stateMutex);
-        if (impl_->project.revision != revision) throw GeometryError("stale_revision", "工程已变化，请重新预览。");
-        source = impl_->model;
-    }
-    if (!source) throw GeometryError("no_model", "当前没有模型。");
-    return addModelHole(*source,request,impl_->context.stop,impl_->context.progress);
+    const auto source = impl_->requireModel(revision, "工程已变化，请重新预览。");
+    return addModelHole(*source, request, impl_->context.stop, impl_->context.progress);
 }
 void ProjectOperations::applyHole(const PlateHole &request, std::uint64_t revision)
 {
-    auto model = previewHole(request,revision);
-    checkCancelled(impl_->context.stop);
-    std::lock_guard lock(impl_->stateMutex);
-    auto next = impl_->project;
-    ++next.revision;
-    next.modelId = impl_->session + "-model-" + std::to_string(next.revision);
-    next.model = std::shared_ptr<const ModelSummary>(model,&model->summary());
-    next.mesh = std::shared_ptr<const MeshData>(model,&model->mesh());
-    impl_->commitEdit(std::move(next),std::move(model), "添加孔");
+    auto model = previewHole(request, revision);
+    impl_->commitModelEdit(std::move(model), revision,
+        "添加孔");
 }
 
 std::string ProjectOperations::submitModelTransform(const std::vector<std::string> &partIds,
@@ -833,20 +774,11 @@ std::string ProjectOperations::submitModelTransform(const std::vector<std::strin
     }
     if (!source) throw GeometryError("no_model", "当前没有可变换的模型。");
     auto *state = impl_.get();
-    return state->launch("TransformModelParts", revision, [state, source, partIds, request](auto stop, const auto &progress) {
+    return state->runOperation(revision, [state, source, partIds, request, revision](auto stop, const auto &progress) {
         auto model = transformModelParts(*source, partIds, request, stop, progress);
         checkCancelled(stop);
         if (isIdentityTransform(request)) return;
-        std::lock_guard lock(state->stateMutex);
-        auto next = state->project;
-        ++next.revision;
-        next.modelId = state->session + "-model-" + std::to_string(next.revision);
-        next.model = std::shared_ptr<const ModelSummary>(model, &model->summary());
-        next.mesh = std::shared_ptr<const MeshData>(model, &model->mesh());
-        next.deviation.reset();
-        next.lastExport.reset();
-        next.exportedPathUtf8.clear();
-        state->commitEdit(std::move(next), std::move(model),
+        state->commitModelEdit(std::move(model), revision,
             request.kind == ModelTransformKind::Move ? "移动模型部件" : "旋转模型部件");
     });
 }
@@ -862,20 +794,11 @@ std::string ProjectOperations::submitDeleteModelParts(const std::vector<std::str
     }
     if (!source) throw GeometryError("no_model", "当前没有可删除的模型。");
     auto *state = impl_.get();
-    return state->launch("DeleteModelParts", revision, [state, source, partIds](auto stop, const auto &progress) {
+    return state->runOperation(revision, [state, source, partIds, revision](auto stop, const auto &progress) {
         auto model = deleteModelParts(*source, partIds, stop, progress);
         checkCancelled(stop);
-        std::lock_guard lock(state->stateMutex);
-        auto next = state->project;
-        ++next.revision;
-        next.modelId = model ? state->session + "-model-" + std::to_string(next.revision) : std::string{};
-        next.model = model ? std::shared_ptr<const ModelSummary>(model, &model->summary()) : nullptr;
-        next.mesh = model ? std::shared_ptr<const MeshData>(model, &model->mesh()) : nullptr;
-        next.deviation.reset();
-        next.lastExport.reset();
-        next.exportedPathUtf8.clear();
-        state->commitEdit(std::move(next), std::move(model),
-                          "删除模型（" + std::to_string(partIds.size()) + " 个部件）");
+        state->commitModelEdit(std::move(model), revision,
+            "删除模型（" + std::to_string(partIds.size()) + " 个部件）");
     });
 }
 
@@ -892,7 +815,7 @@ std::string ProjectOperations::submitExport(const std::filesystem::path &path, s
         throw GeometryError("no_model", "Reconstruct a model before exporting STEP.");
     const auto absolutePath = std::filesystem::absolute(path);
     auto *state = impl_.get();
-    return state->launch("ExportStep", expectedRevision, [state, model, absolutePath](auto stop, const auto &progress) {
+    return state->runOperation(expectedRevision, [state, model, absolutePath](auto stop, const auto &progress) {
         const auto result = exportStep(*model, absolutePath, stop, progress);
         std::lock_guard lock(state->stateMutex);
         state->project.lastExport = result;
@@ -906,7 +829,7 @@ void ProjectOperations::exportCwrmModel(const std::filesystem::path &path, std::
     { std::lock_guard lock(impl_->stateMutex); model = impl_->model; }
     if (!model) throw GeometryError("no_model", "请先导入模型或完成点云重建，再导出 CWRM");
     const auto target = std::filesystem::absolute(path);
-    (void)impl_->launch("ExportCwrm", revision, [&](auto stop, const auto &progress) {
+    (void)impl_->runOperation(revision, [&](auto stop, const auto &progress) {
         const auto result = exportCwrm(*model, target, stop, progress);
         std::lock_guard lock(impl_->stateMutex);
         impl_->project.lastExport = result;
@@ -919,7 +842,7 @@ void ProjectOperations::exportSampledModel(const std::filesystem::path &path, do
     { std::lock_guard lock(impl_->stateMutex); model = impl_->model; }
     if (!model) throw GeometryError("no_model", "请先导入或重建模型，再采样导出 PCD");
     const auto target = std::filesystem::absolute(path);
-    (void)impl_->launch("SampleModel", revision, [&](auto stop, const auto &progress) {
+    (void)impl_->runOperation(revision, [&](auto stop, const auto &progress) {
         const auto cloud = sampleModelSurface(*model, spacing, stop, [&](double p, auto m) { progress(p*0.5,m); });
         const auto result = exportPointCloud(*cloud, target, stop, [&](double p, auto m) { progress(0.5+p*0.5,m); });
         std::lock_guard lock(impl_->stateMutex);
@@ -954,7 +877,7 @@ void ProjectOperations::exportTaskOutput(TaskOutput &output, std::uint64_t expec
     {
         throw GeometryError("no_model", "当前没有可导出的模型。");
     }
-    (void)impl_->launch("ExportAndExit", expectedRevision, [&](auto stop, const auto &progress) {
+    (void)impl_->runOperation(expectedRevision, [&](auto stop, const auto &progress) {
         const auto result = output.deliver([&](const auto &path) {
             return exportStep(*model, path, stop, progress);
         }, stop);
@@ -973,7 +896,7 @@ std::string ProjectOperations::submitExportCloud(const std::filesystem::path &pa
         throw GeometryError("no_cloud", "当前没有可导出的点云");
     const auto absolutePath = std::filesystem::absolute(path);
     auto *state = impl_.get();
-    return state->launch("ExportPointCloud", expectedRevision,
+    return state->runOperation(expectedRevision,
                          [state, snapshot, absolutePath](auto stop, const auto &progress) {
                              const auto result = exportPointCloud(*snapshot.cloud, absolutePath, stop, progress);
                              std::lock_guard lock(state->stateMutex);
@@ -996,7 +919,7 @@ std::string ProjectOperations::submitDeviation(std::uint64_t expectedRevision)
     if (!model || !cloud)
         throw GeometryError("no_model", "A cloud and reconstructed model are required.");
     auto *state = impl_.get();
-    return state->launch("EvaluateDeviation", expectedRevision, [state, model, cloud](auto stop, const auto &progress) {
+    return state->runOperation(expectedRevision, [state, model, cloud](auto stop, const auto &progress) {
         auto result = std::make_shared<const DeviationResult>(evaluateDeviation(*cloud, *model, stop, progress));
         checkCancelled(stop);
         std::lock_guard lock(state->stateMutex);

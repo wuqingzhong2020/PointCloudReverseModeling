@@ -47,3 +47,7 @@ STEP/CWRM 板厚测试：`ReverseServiceTests.exe --gtest_filter=PlateThickness*
 其他模型专项：`ReverseServiceTests.exe --gtest_filter=OtherModelRecognition.*`。仅用俯视可见点验证底板＋筋板、圆角围板＋外部筋板、可见长圆孔、不同高度、断带不跨接、围板内外障碍物、旋转/倾斜与大坐标、命令撤销重做、底板视图及 STEP 回读；不将合成验证当作实物验收。
 
 板厚交互回归：`ReverseServiceTests.exe --gtest_filter=ThicknessLabel*:OtherModelRecognition.*`，包含圆角围板约 12 mm 测厚、保持中间轮廓和高度的改厚、底板默认 1 mm、未知观测面赋厚和保持焊接接触面。`ThicknessLabelEditor.*` 使用实际 Qt 输入事件验证回车提交、未知值默认 1 mm 确认、外部点击/失焦/Esc 取消；无桌面运行可设置 `QT_QPA_PLATFORM=offscreen`，并将 `QT_QPA_PLATFORM_PLUGIN_PATH` 指向 SDK 的 `Qt6/plugins/platforms`。
+
+## 编辑事务与文件诊断回归
+
+`ReverseServiceTests.exe --gtest_filter=ProjectEditTransactions.*:ProjectCommitTransactions.*:ProjectDiagnostics.*` 验证预览隔离、计算结束时取消、计算期间版本变化、诊断回调读取快照与抛错，移动/删除/首次重建的提交版本复核，以及 `commands.log` 的任务进度、任务关联、失败原因和模型提交版本。日志测试使用临时目录，不覆盖正式运行记录。大型实现拆分后仍通过公开接口运行几何、命令、选点向导和停靠窗口测试；`ModelState.h` 与各窗口私有 State 不作为测试 API。

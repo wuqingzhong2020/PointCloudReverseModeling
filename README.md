@@ -80,6 +80,10 @@ PointCloudReverseModeling/
 
 所有第三方包由 [Dependencies.cmake](cmake/Dependencies.cmake) 统一查找，系统线程通过 `Threads::Threads` 接入。库可由 vcpkg 或其他方式预先构建；本工程不负责下载或编译第三方库。
 
+C++ 编译约束统一在 [CompilerOptions.cmake](cmake/CompilerOptions.cmake) 维护，所有项目目标调用 `rm_apply_compiler_options(目标名)`。MSVC 使用 `/W4`、标准一致性模式和标准预处理器，GCC/Clang 使用 `-Wall -Wextra -Wpedantic`；默认 `RM_WARNINGS_AS_ERRORS=ON`，项目告警会阻止编译。诊断时可用 `-DRM_WARNINGS_AS_ERRORS=OFF` 暂时降为普通告警，不应以此代替修复。
+
+vcpkg 等 `find_package()` 导入库的头文件保持 `SYSTEM`，MSVC 通过 `/external:I` 与 `/external:W0` 忽略其内部告警，GCC/Clang 使用 `-isystem`；工程头文件仍正常检查。不要全局禁用告警编号或修改 SDK 来消除告警，工程自身调用过时 API 等问题仍需修正。
+
 根 [CMakePresets.json](CMakePresets.json) 保留通用工具链设置。先执行 `python envBuild.py init`，再在未纳入 Git 的 `envBuild.local.ini` 中填写本机 SDK 的实际安装前缀 `dependencies.prefix_paths`，可每行填写一个前缀；填写安装根目录，而非 `bin` 子目录。工程和 SDK 可以放在各自选择的位置，无需采用固定盘符或目录结构。已有构建时 init 会采用缓存中的 SDK；已有本地配置不覆盖。
 
 `envBuild.py` 入口使用 SDK 的 Python 3.15t 和标准库，无需 pip。下文的 `python` 应指向该解释器；也可使用其完整路径。命令代码生成器另需构建机 Jinja2 环境，见[命令框架指南](docs/命令框架与Python使用指南.md#4-构建依赖和生成)。CMake/CPack 从 PATH 或本地配置定位，CDB 仅 `debug` 启动命令需要，填写原生 `cdb.exe` 路径。脚本不下载或编译第三方 SDK。

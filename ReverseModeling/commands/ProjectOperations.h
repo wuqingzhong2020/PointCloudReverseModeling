@@ -11,7 +11,7 @@ class ProjectOperations
 {
   public:
     ProjectOperations();
-    ~ProjectOperations(); // 请求取消并等待工作线程结束；工作线程不访问 UI。
+    ~ProjectOperations(); // 仅释放同步业务状态；命令工作线程由 CommandService 管理。
     ProjectOperations(const ProjectOperations &) = delete;
     ProjectOperations &operator=(const ProjectOperations &) = delete;
 

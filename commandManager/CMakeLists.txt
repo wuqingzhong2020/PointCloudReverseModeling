@@ -10,9 +10,7 @@ add_library(RmCommandManager::RmCommandManager ALIAS RmCommandManager)
 target_compile_features(RmCommandManager PUBLIC cxx_std_20)
 target_include_directories(RmCommandManager PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
-if(MSVC)
-    target_compile_options(RmCommandManager PRIVATE /utf-8 /W4)
-endif()
+rm_apply_compiler_options(RmCommandManager)
 install(TARGETS RmCommandManager EXPORT RmCommandManagerTargets ARCHIVE DESTINATION lib COMPONENT development)
 install(DIRECTORY include/ DESTINATION include COMPONENT development)
 install(EXPORT RmCommandManagerTargets NAMESPACE RmCommandManager::

@@ -18,7 +18,8 @@ PointCloudReverseModeling/
 ├── CMakeLists.txt               # 总入口，加载两个子项目
 ├── CMakePresets.json            # 全仓库唯一的构建预设
 ├── cmake/
-│   ├── common.cmake             # C++ 标准、编译选项与输出目录
+│   ├── common.cmake             # C++ 标准、运行时与输出目录
+│   ├── CompilerOptions.cmake    # 自有目标严格告警与第三方头文件隔离
 │   └── Dependencies.cmake       # 全部第三方库查找与公共链接库
 ├── ReverseModeling/
 │   ├── CMakeLists.txt           # 主程序文件清单、头文件搜索目录和链接库
@@ -40,7 +41,9 @@ PointCloudReverseModeling/
 | 文件 | 重点 |
 |---|---|
 | [main.cpp](main.cpp) | 应用启动与主窗口创建 |
-| [MainWindow.cpp](workbench/MainWindow.cpp) | 用户操作、参数面板、任务轮询和界面刷新 |
+| [MainWindow.cpp](workbench/MainWindow.cpp) | 主窗口生命周期和界面装配 |
+| [MainWindowTools.cpp](workbench/MainWindowTools.cpp) / [MainWindowConnections.cpp](workbench/MainWindowConnections.cpp) | 工具初始化及动作/选择连接 |
+| [MainWindowCommands.cpp](workbench/MainWindowCommands.cpp) / [MainWindowTasks.cpp](workbench/MainWindowTasks.cpp) | 文件及建模操作、任务轮询和界面刷新 |
 | [WorkbenchActions.cpp](workbench/WorkbenchActions.cpp) / [RibbonBuilder.cpp](workbench/RibbonBuilder.cpp) | 共用动作、能力标记、Ribbon 与视图工具条 |
 | [DockWorkspace.cpp](workbench/DockWorkspace.cpp) | ADS 工具窗口、窗口菜单、布局保存与恢复 |
 | [ModelInspector.cpp](workbench/ModelInspector.cpp) | 部件模型树、只读属性、稳定 ID 与三维选择联动 |
@@ -54,12 +57,26 @@ PointCloudReverseModeling/
 | [PointCloudExport.cpp](geometry/PointCloudExport.cpp) | 全量点云 PCD 写出、回读核对与不覆盖提交 |
 | [ModelImport.cpp](geometry/ModelImport.cpp) | STEP/STP、CWRM v2 BRep 解码和导入 |
 | [ModelExchange.cpp](geometry/ModelExchange.cpp) | CWRM v2 写出回读、模型表面采样与独立文件转换 |
-| [BeamModel.cpp](geometry/BeamModel.cpp) | 板件建模、网格生成、STEP 导出与回读、偏差计算 |
+| [BeamModel.cpp](geometry/BeamModel.cpp) / [RecognizedShape.cpp](geometry/RecognizedShape.cpp) | 参数梁、识别板件及轮廓形状构建 |
+| [ModelState.cpp](geometry/ModelState.cpp) | 内部快照、实体校验、网格生成及导入厚度刷新 |
+| [ModelEditing.cpp](geometry/ModelEditing.cpp) / [ModelAssembly.cpp](geometry/ModelAssembly.cpp) | 板厚、轮廓、孔、边和变换编辑；连接关系、镜像及附加板 |
+| [ModelReconstruction.cpp](geometry/ModelReconstruction.cpp) | 点云关联、局部重建、障碍物与选点建模 |
+| [ModelExport.cpp](geometry/ModelExport.cpp) / [ModelDeviation.cpp](geometry/ModelDeviation.cpp) | 导入形状发布、STEP/CWRM 导出回读及偏差统计 |
 | [PlateRecognition.cpp](geometry/PlateRecognition.cpp) | 从点云顶边条带识别厚度和站位，按两侧板最大值估算底板，保留缺测观测面 |
-| [OccViewport.cpp](workbench/OccViewport.cpp) | 点云与三角网格的 OCCT 显示适配 |
+| [OccViewport.cpp](workbench/OccViewport.cpp) | 原生 OCCT 窗口生命周期与点云/模型显示 |
+| [OccViewportInput.cpp](workbench/OccViewportInput.cpp) / [OccViewportTools.cpp](workbench/OccViewportTools.cpp) | 拾取和框选输入、测量、参考面与编辑辅助显示 |
+| [OccViewportNavigation.cpp](workbench/OccViewportNavigation.cpp) | 视图立方体、相机动画、部件定位及适合视图 |
 | [ModelDisplayData.cpp](workbench/ModelDisplayData.cpp) / [OccModelPresentation.cpp](workbench/OccModelPresentation.cpp) | 按部件归属拆分网格、灰色实体与拓扑轮廓、模型板厚标注及屏幕避让 |
 | [ModelLabelVisibility.cpp](workbench/ModelLabelVisibility.cpp) | 板件主表面朝向及模型网格遮挡判断，避免显示背侧板厚 |
 | [PointCloudDisplayData.cpp](workbench/PointCloudDisplayData.cpp) | 中立点云显示采样与紫青高度渐变 |
+
+### 实现边界与诊断
+
+`MainWindowState.h`、`OccViewportState.h` 和 `geometry/ModelState.h` 只供同目录实现共享私有状态，不作为服务或插件接口。几何的公开入口仍为 `Geometry.h`；模型快照发布后不可修改。OCCT 的 `TShape` 会共享，编辑或三角化前必须复制相应拓扑，不能把 C++ 状态拷贝误认为几何深拷贝。
+
+`ProjectOperations` 在调用线程同步计算，`CommandService` 才负责后台线程、队列和任务编号。模型编辑先取得指定版本的只读模型，完成计算后在状态锁内再次校验版本和取消状态，再一次性发布模型、摘要、网格和历史。预览不提交；过期/取消不覆盖现有结果。日志回调在解锁后执行，回调错误不能把已经提交的编辑变成失败。
+
+后台任务按开始、上下文配置、执行、结果发布分阶段组织。`task.begin`、`task.progress`、`task.diagnostic` 和 `task.end` 均携带任务 ID；`model.commit` 记录操作、提交版本和部件数。进度按阶段变化和十分位写入，避免逐点落盘。输出使用现有 `ApplicationLog`，并保留 `CommandEnvironment.logDirectory/commands.log`，可通过注入测试目录读取日志验证；实际目录、轮转及崩溃文件见[根 README](../README.md)。业务失败必须仍返回错误码，不能仅写日志。
 
 ## 业务调用流程
 
